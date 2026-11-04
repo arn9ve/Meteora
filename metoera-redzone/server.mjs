@@ -1,8 +1,7 @@
 /**
- * Metoera red-zone camera: phone HTTPS page + motion events + optional takeoff hook.
- * Separate from metoera-voice so we do not fight open PRs there.
- *
- * Safety: drone takeoff runs only when the ARM switch is ON (default OFF).
+ * Metoera red-zone: up to 3 phone sessions + Mac console.
+ * Phones do on-device person detection; Mac oversees via snapshots + remote commands.
+ * ARM takeoff defaults OFF; resets OFF on process start.
  */
 import http from 'node:http';
 import https from 'node:https';
@@ -19,8 +18,9 @@ const port = Number(process.env.REDZONE_PORT ?? 18791);
 const phonePort = Number(process.env.REDZONE_PHONE_PORT ?? port + 1);
 const dataDir = join(root, 'data');
 const eventsPath = join(dataDir, 'events.jsonl');
-const statePath = join(dataDir, 'state.json');
 const phoneDir = join(root, '.phone');
+const STALE_MS = 8_000;
+const PREVIEW_MAX = 120_000;
 
 try {
   loadEnvFile(join(root, '.env'));
@@ -32,7 +32,15 @@ const voiceUrl = (process.env.METOERA_VOICE_URL ?? 'http://127.0.0.1:18787').rep
 const webhookUrl = (process.env.REDZONE_WEBHOOK_URL ?? '').trim();
 const debounceMs = Number(process.env.REDZONE_DEBOUNCE_MS ?? 8000);
 
-const files = { '/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css' };
+const files = {
+  '/': 'index.html',
+  '/app.js': 'app.js',
+  '/style.css': 'style.css',
+  '/console': 'console.html',
+  '/console.html': 'console.html',
+  '/console.js': 'console.js',
+  '/console.css': 'console.css',
+};
 const types = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -49,26 +57,79 @@ const lanAddress = Object.values(networkInterfaces())
       /^(192\.168|10\.|172\.(1[6-9]|2\d|3[01]))\./.test(a.address),
   )?.address;
 
-/** @type {{ armed: boolean; lastIntrusionAt: number | null; takeoffCount: number }} */
-let state = { armed: false, lastIntrusionAt: null, takeoffCount: 0 };
+const SLOT_IDS = ['1', '2', '3'];
 
-async function loadState() {
-  try {
-    const raw = JSON.parse(await readFile(statePath, 'utf8'));
-    state = {
-      armed: Boolean(raw.armed),
-      lastIntrusionAt: typeof raw.lastIntrusionAt === 'number' ? raw.lastIntrusionAt : null,
-      takeoffCount: Number(raw.takeoffCount) || 0,
-    };
-  } catch {
-    /* fresh state */
+function emptySlot(id) {
+  return {
+    id,
+    name: `Phone ${id}`,
+    token: null,
+    online: false,
+    lastSeenAt: null,
+    watching: false,
+    armed: false,
+    lens: 'normal',
+    lensesAvailable: { wide: false, normal: true, tele: false },
+    roi: null,
+    personScore: null,
+    lastIntrusionAt: null,
+    lastError: null,
+    previewJpeg: null,
+    previewAt: null,
+    /** @type {object[]} */
+    pendingCommands: [],
+  };
+}
+
+/** @type {Record<string, ReturnType<typeof emptySlot>>} */
+const slots = Object.fromEntries(SLOT_IDS.map((id) => [id, emptySlot(id)]));
+
+/** @type {Set<import('node:http').ServerResponse>} */
+const sseClients = new Set();
+
+function slotPublic(slot, { includePreviewMeta = true } = {}) {
+  return {
+    id: slot.id,
+    name: slot.name,
+    online: Boolean(slot.lastSeenAt && Date.now() - slot.lastSeenAt < STALE_MS),
+    lastSeenAt: slot.lastSeenAt,
+    watching: slot.watching,
+    armed: slot.armed,
+    lens: slot.lens,
+    lensesAvailable: slot.lensesAvailable,
+    roi: slot.roi,
+    personScore: slot.personScore,
+    lastIntrusionAt: slot.lastIntrusionAt,
+    lastError: slot.lastError,
+    hasPreview: Boolean(slot.previewJpeg),
+    previewAt: includePreviewMeta ? slot.previewAt : null,
+    joined: Boolean(slot.token),
+  };
+}
+
+function broadcast() {
+  const payload = `data: ${JSON.stringify({ type: 'slots', slots: SLOT_IDS.map((id) => slotPublic(slots[id])) })}\n\n`;
+  for (const res of sseClients) {
+    try {
+      res.write(payload);
+    } catch {
+      sseClients.delete(res);
+    }
   }
 }
 
-async function saveState() {
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(statePath, JSON.stringify(state, null, 2) + '\n');
-}
+setInterval(() => {
+  let changed = false;
+  for (const id of SLOT_IDS) {
+    const slot = slots[id];
+    const online = Boolean(slot.lastSeenAt && Date.now() - slot.lastSeenAt < STALE_MS);
+    if (slot.online !== online) {
+      slot.online = online;
+      changed = true;
+    }
+  }
+  if (changed) broadcast();
+}, 2000).unref();
 
 async function appendEvent(event) {
   await mkdir(dataDir, { recursive: true });
@@ -78,8 +139,10 @@ async function appendEvent(event) {
 async function readEvents(limit = 50) {
   try {
     const text = await readFile(eventsPath, 'utf8');
-    const lines = text.trim().split('\n').filter(Boolean);
-    return lines
+    return text
+      .trim()
+      .split('\n')
+      .filter(Boolean)
       .slice(-limit)
       .map((line) => {
         try {
@@ -98,13 +161,13 @@ function json(res, status, value) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }).end(JSON.stringify(value));
 }
 
-async function readJson(req) {
+async function readJson(req, max = 200_000) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += bytes.length;
-    if (size > 64_000) throw new Error('Message too large');
+    if (size > max) throw new Error('Message too large');
     chunks.push(bytes);
   }
   if (!chunks.length) return {};
@@ -117,6 +180,105 @@ function sameKey(a, b) {
 
 function cookieKey(req) {
   return /(?:^|;\s*)redzone_key=([0-9a-f]{32})/.exec(req.headers.cookie ?? '')?.[1] ?? '';
+}
+
+function parseSlotId(raw) {
+  const id = String(raw ?? '');
+  return SLOT_IDS.includes(id) ? id : null;
+}
+
+function authSlot(req, slot, bodyToken) {
+  const header = req.headers['x-slot-token'];
+  const token = typeof bodyToken === 'string' ? bodyToken : typeof header === 'string' ? header : '';
+  return Boolean(slot.token && token && sameKey(token, slot.token));
+}
+
+function enqueueCommand(slot, command) {
+  slot.pendingCommands.push({ ...command, id: randomBytes(4).toString('hex'), at: Date.now() });
+  if (slot.pendingCommands.length > 20) slot.pendingCommands.splice(0, slot.pendingCommands.length - 20);
+  broadcast();
+}
+
+async function tryTakeoff(eventId, slotId) {
+  const result = { attempted: true, voice: null, webhook: null, note: null, slotId };
+  if (webhookUrl) {
+    try {
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'redzone.intrusion',
+          eventId,
+          slotId,
+          at: new Date().toISOString(),
+          source: 'metoera-redzone',
+          actionRequested: 'takeoff',
+        }),
+        signal: AbortSignal.timeout(4000),
+      });
+      result.webhook = { ok: response.ok, status: response.status };
+    } catch (error) {
+      result.webhook = { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+  try {
+    const response = await fetch(`${voiceUrl}/api/command`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: voiceUrl.includes('127.0.0.1') ? 'http://127.0.0.1:18787' : 'http://localhost:18787',
+      },
+      body: JSON.stringify({ droneId: 'tello', action: 'takeoff' }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const body = await response.json().catch(() => ({}));
+    result.voice = { ok: response.ok && body?.ok !== false, status: response.status, body };
+    if (!result.voice.ok) {
+      result.note = 'Voice takeoff did not succeed. Is metoera-voice running with TELLO_IP set?';
+    }
+  } catch (error) {
+    result.voice = { ok: false, error: error instanceof Error ? error.message : String(error) };
+    result.note = 'Could not reach metoera-voice. Event logged; keep ARM OFF until ready.';
+  }
+  if (!webhookUrl && !result.voice?.ok) {
+    result.note = (result.note ? result.note + ' ' : '') + 'Stub: would takeoff.';
+  }
+  return result;
+}
+
+async function handleIntrusion(slot, body) {
+  const now = Date.now();
+  const force = Boolean(body?.force);
+  const since = slot.lastIntrusionAt == null ? Infinity : now - slot.lastIntrusionAt;
+  if (!force && since < debounceMs) {
+    return { accepted: false, debounced: true, retryAfterMs: debounceMs - since, armed: slot.armed };
+  }
+  slot.lastIntrusionAt = now;
+  const eventId = randomBytes(8).toString('hex');
+  const event = {
+    id: eventId,
+    type: 'intrusion',
+    slotId: slot.id,
+    at: new Date(now).toISOString(),
+    score: typeof body.score === 'number' ? body.score : null,
+    roi: body.roi && typeof body.roi === 'object' ? body.roi : slot.roi,
+    note: typeof body.note === 'string' ? body.note.slice(0, 200) : null,
+    lens: body.lens ?? slot.lens,
+    armed: slot.armed,
+    takeoff: null,
+  };
+  if (!slot.armed) {
+    event.takeoff = {
+      attempted: false,
+      reason: 'disarmed',
+      note: 'ARM is OFF (default). Enable from Mac console or phone only with a human next to the drone.',
+    };
+  } else {
+    event.takeoff = await tryTakeoff(eventId, slot.id);
+  }
+  await appendEvent(event);
+  broadcast();
+  return { accepted: true, debounced: false, event, armed: slot.armed };
 }
 
 async function phoneSetup() {
@@ -132,8 +294,10 @@ async function phoneSetup() {
   let cert = await readFile(certPath).catch(() => null);
   let certKey = await readFile(keyPath).catch(() => null);
   if (!cert || !certKey) {
-    const openssl = (await access('/usr/bin/openssl').then(() => '/usr/bin/openssl').catch(() => null))
-      ?? 'openssl';
+    const openssl =
+      (await access('/usr/bin/openssl')
+        .then(() => '/usr/bin/openssl')
+        .catch(() => null)) ?? 'openssl';
     execFileSync(
       openssl,
       [
@@ -162,111 +326,6 @@ async function phoneSetup() {
   return { key, cert, certKey };
 }
 
-/**
- * Optional real takeoff via metoera-voice when armed.
- * Voice checks Origin against its allow-list; we send the local origin so a server-side call works.
- */
-async function tryTakeoff(eventId) {
-  const result = {
-    attempted: true,
-    voice: null,
-    webhook: null,
-    note: null,
-  };
-
-  if (webhookUrl) {
-    try {
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'redzone.intrusion',
-          eventId,
-          at: new Date().toISOString(),
-          source: 'metoera-redzone',
-          actionRequested: 'takeoff',
-        }),
-        signal: AbortSignal.timeout(4000),
-      });
-      result.webhook = { ok: response.ok, status: response.status };
-    } catch (error) {
-      result.webhook = { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  }
-
-  try {
-    const response = await fetch(`${voiceUrl}/api/command`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Origin: voiceUrl.includes('127.0.0.1') ? 'http://127.0.0.1:18787' : 'http://localhost:18787',
-      },
-      body: JSON.stringify({ droneId: 'tello', action: 'takeoff' }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const body = await response.json().catch(() => ({}));
-    result.voice = { ok: response.ok && body?.ok !== false, status: response.status, body };
-    if (!result.voice.ok) {
-      result.note =
-        'Voice takeoff did not succeed. Is metoera-voice running with TELLO_IP set? See README for the stub path.';
-    }
-  } catch (error) {
-    result.voice = { ok: false, error: error instanceof Error ? error.message : String(error) };
-    result.note =
-      'Could not reach metoera-voice. Event was logged; start voice + set ARM only when a human is watching the drone.';
-  }
-
-  if (!webhookUrl && !result.voice?.ok) {
-    result.note =
-      (result.note ? result.note + ' ' : '') +
-      'Stub: would takeoff. Set REDZONE_WEBHOOK_URL and/or run metoera-voice; keep ARM OFF until ready.';
-  }
-
-  return result;
-}
-
-async function handleIntrusion(body) {
-  const now = Date.now();
-  const force = Boolean(body?.force);
-  const since = state.lastIntrusionAt == null ? Infinity : now - state.lastIntrusionAt;
-  if (!force && since < debounceMs) {
-    return {
-      accepted: false,
-      debounced: true,
-      retryAfterMs: debounceMs - since,
-      armed: state.armed,
-    };
-  }
-
-  state.lastIntrusionAt = now;
-  const eventId = randomBytes(8).toString('hex');
-  const event = {
-    id: eventId,
-    type: 'intrusion',
-    at: new Date(now).toISOString(),
-    score: typeof body.score === 'number' ? body.score : null,
-    roi: body.roi && typeof body.roi === 'object' ? body.roi : null,
-    note: typeof body.note === 'string' ? body.note.slice(0, 200) : null,
-    armed: state.armed,
-    takeoff: null,
-  };
-
-  if (!state.armed) {
-    event.takeoff = {
-      attempted: false,
-      reason: 'disarmed',
-      note: 'ARM is OFF (default). Flip ARM on the phone page only when a human is next to the drone.',
-    };
-  } else {
-    state.takeoffCount += 1;
-    event.takeoff = await tryTakeoff(eventId);
-  }
-
-  await saveState();
-  await appendEvent(event);
-  return { accepted: true, debounced: false, event, armed: state.armed };
-}
-
 async function handle(req, res, remote) {
   res.setHeader('Cache-Control', 'no-store');
   const url = new URL(req.url ?? '/', 'http://localhost');
@@ -278,7 +337,7 @@ async function handle(req, res, remote) {
       res
         .writeHead(302, {
           'Set-Cookie': `redzone_key=${phone.key}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`,
-          Location: path === '/' ? '/' : path,
+          Location: path + (url.searchParams.get('slot') ? `?slot=${url.searchParams.get('slot')}` : ''),
         })
         .end();
       return;
@@ -295,36 +354,18 @@ async function handle(req, res, remote) {
     json(res, 200, {
       ok: true,
       service: 'metoera-redzone',
-      armed: state.armed,
       debounceMs,
       voiceUrl,
       webhookConfigured: Boolean(webhookUrl),
       lan: lanAddress ?? null,
       phonePort: phone ? phonePort : null,
+      slots: SLOT_IDS.map((id) => slotPublic(slots[id])),
     });
     return;
   }
 
-  if (req.method === 'GET' && path === '/api/state') {
-    json(res, 200, { ...state, debounceMs });
-    return;
-  }
-
-  if (req.method === 'POST' && path === '/api/arm') {
-    try {
-      const body = await readJson(req);
-      state.armed = Boolean(body.armed);
-      await saveState();
-      await appendEvent({
-        id: randomBytes(6).toString('hex'),
-        type: 'arm',
-        at: new Date().toISOString(),
-        armed: state.armed,
-      });
-      json(res, 200, { ok: true, armed: state.armed });
-    } catch {
-      json(res, 400, { ok: false, error: 'Invalid request' });
-    }
+  if (req.method === 'GET' && path === '/api/slots') {
+    json(res, 200, { slots: SLOT_IDS.map((id) => slotPublic(slots[id])), debounceMs });
     return;
   }
 
@@ -334,13 +375,210 @@ async function handle(req, res, remote) {
     return;
   }
 
-  if (req.method === 'POST' && path === '/api/intrusion') {
+  if (req.method === 'GET' && path === '/api/stream') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store',
+      Connection: 'keep-alive',
+    });
+    res.write(`data: ${JSON.stringify({ type: 'slots', slots: SLOT_IDS.map((id) => slotPublic(slots[id])) })}\n\n`);
+    sseClients.add(res);
+    req.on('close', () => sseClients.delete(res));
+    return;
+  }
+
+  const previewMatch = /^\/api\/slots\/([123])\/preview\.jpg$/.exec(path);
+  if (req.method === 'GET' && previewMatch) {
+    const slot = slots[previewMatch[1]];
+    if (!slot.previewJpeg) {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' }).end(slot.previewJpeg);
+    return;
+  }
+
+  const slotMatch = /^\/api\/slots\/([123])(?:\/([a-z]+))?$/.exec(path);
+  if (slotMatch) {
+    const slotId = slotMatch[1];
+    const action = slotMatch[2] || '';
+    const slot = slots[slotId];
+
+    if (req.method === 'POST' && action === 'join') {
+      try {
+        const body = await readJson(req);
+        slot.token = randomBytes(16).toString('hex');
+        slot.name = typeof body.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 40) : `Phone ${slotId}`;
+        slot.lastSeenAt = Date.now();
+        slot.online = true;
+        slot.watching = false;
+        slot.armed = false;
+        slot.lastError = null;
+        slot.pendingCommands = [];
+        await appendEvent({
+          id: randomBytes(6).toString('hex'),
+          type: 'join',
+          slotId,
+          at: new Date().toISOString(),
+          name: slot.name,
+        });
+        broadcast();
+        json(res, 200, { ok: true, token: slot.token, slot: slotPublic(slot) });
+      } catch {
+        json(res, 400, { ok: false, error: 'Invalid join' });
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && action === 'leave') {
+      try {
+        const body = await readJson(req);
+        if (!authSlot(req, slot, body.token)) {
+          json(res, 401, { ok: false, error: 'Unauthorized slot' });
+          return;
+        }
+        Object.assign(slot, emptySlot(slotId));
+        broadcast();
+        json(res, 200, { ok: true });
+      } catch {
+        json(res, 400, { ok: false, error: 'Invalid leave' });
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && action === 'heartbeat') {
+      try {
+        const body = await readJson(req);
+        if (!authSlot(req, slot, body.token)) {
+          json(res, 401, { ok: false, error: 'Unauthorized slot' });
+          return;
+        }
+        slot.lastSeenAt = Date.now();
+        slot.online = true;
+        if (typeof body.watching === 'boolean') slot.watching = body.watching;
+        if (typeof body.armed === 'boolean') slot.armed = body.armed;
+        if (typeof body.lens === 'string') slot.lens = body.lens;
+        if (body.lensesAvailable && typeof body.lensesAvailable === 'object') {
+          slot.lensesAvailable = {
+            wide: Boolean(body.lensesAvailable.wide),
+            normal: Boolean(body.lensesAvailable.normal),
+            tele: Boolean(body.lensesAvailable.tele),
+          };
+        }
+        if (body.roi && typeof body.roi === 'object') slot.roi = body.roi;
+        if (typeof body.personScore === 'number' || body.personScore === null) slot.personScore = body.personScore;
+        if (typeof body.error === 'string') slot.lastError = body.error.slice(0, 200);
+        const commands = slot.pendingCommands.splice(0, slot.pendingCommands.length);
+        broadcast();
+        json(res, 200, { ok: true, commands, slot: slotPublic(slot) });
+      } catch {
+        json(res, 400, { ok: false, error: 'Invalid heartbeat' });
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && action === 'preview') {
+      try {
+        const body = await readJson(req, 300_000);
+        if (!authSlot(req, slot, body.token)) {
+          json(res, 401, { ok: false, error: 'Unauthorized slot' });
+          return;
+        }
+        const dataUrl = typeof body.jpeg === 'string' ? body.jpeg : '';
+        const b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+        const buf = Buffer.from(b64, 'base64');
+        if (buf.length > 0 && buf.length <= PREVIEW_MAX) {
+          slot.previewJpeg = buf;
+          slot.previewAt = Date.now();
+          slot.lastSeenAt = Date.now();
+          slot.online = true;
+          broadcast();
+        }
+        json(res, 200, { ok: true });
+      } catch {
+        json(res, 400, { ok: false, error: 'Invalid preview' });
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && action === 'intrusion') {
+      try {
+        const body = await readJson(req);
+        if (!authSlot(req, slot, body.token)) {
+          json(res, 401, { ok: false, error: 'Unauthorized slot' });
+          return;
+        }
+        slot.lastSeenAt = Date.now();
+        json(res, 200, await handleIntrusion(slot, body));
+      } catch {
+        json(res, 400, { ok: false, error: 'Invalid intrusion' });
+      }
+      return;
+    }
+
+    // Mac (or phone) remote command into the slot queue
+    if (req.method === 'POST' && action === 'command') {
+      try {
+        const body = await readJson(req);
+        const cmd = body.command && typeof body.command === 'object' ? body.command : body;
+        const type = cmd.type;
+        if (!['watch', 'arm', 'lens', 'roi', 'clearRoi'].includes(type)) {
+          json(res, 400, { ok: false, error: 'Unknown command type' });
+          return;
+        }
+        // Optimistic local state for Mac UI; phone confirms via heartbeat.
+        if (type === 'watch') slot.watching = Boolean(cmd.watching);
+        if (type === 'arm') {
+          slot.armed = Boolean(cmd.armed);
+          await appendEvent({
+            id: randomBytes(6).toString('hex'),
+            type: 'arm',
+            slotId,
+            at: new Date().toISOString(),
+            armed: slot.armed,
+            source: 'console',
+          });
+        }
+        if (type === 'lens' && typeof cmd.lens === 'string') slot.lens = cmd.lens;
+        if (type === 'roi' && cmd.roi && typeof cmd.roi === 'object') slot.roi = cmd.roi;
+        if (type === 'clearRoi') slot.roi = null;
+        enqueueCommand(slot, cmd);
+        json(res, 200, { ok: true, slot: slotPublic(slot) });
+      } catch {
+        json(res, 400, { ok: false, error: 'Invalid command' });
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && action === '') {
+      json(res, 200, { slot: slotPublic(slot) });
+      return;
+    }
+  }
+
+  // Legacy global arm/intrusion kept for simple tests — maps to slot 1
+  if (req.method === 'POST' && path === '/api/arm') {
     try {
       const body = await readJson(req);
-      json(res, 200, await handleIntrusion(body ?? {}));
+      const slot = slots['1'];
+      slot.armed = Boolean(body.armed);
+      enqueueCommand(slot, { type: 'arm', armed: slot.armed });
+      await appendEvent({
+        id: randomBytes(6).toString('hex'),
+        type: 'arm',
+        slotId: '1',
+        at: new Date().toISOString(),
+        armed: slot.armed,
+      });
+      json(res, 200, { ok: true, armed: slot.armed });
     } catch {
       json(res, 400, { ok: false, error: 'Invalid request' });
     }
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/api/state') {
+    json(res, 200, { ...slotPublic(slots['1']), debounceMs, slots: SLOT_IDS.map((id) => slotPublic(slots[id])) });
     return;
   }
 
@@ -356,12 +594,8 @@ async function handle(req, res, remote) {
   }
 }
 
-await loadState();
-// Always boot disarmed after restart — never inherit a previous ARM across process restarts.
-if (state.armed) {
-  state.armed = false;
-  await saveState();
-  console.log('Safety: ARM reset to OFF on startup.');
+for (const id of SLOT_IDS) {
+  slots[id].armed = false;
 }
 
 const phone = await phoneSetup().catch((error) => {
@@ -373,8 +607,8 @@ const server = http.createServer((req, res) => {
   void handle(req, res, false);
 });
 server.listen(port, '0.0.0.0', () => {
-  console.log(`Redzone (Mac):     http://127.0.0.1:${port}/`);
-  console.log(`Redzone (LAN http): http://${lanAddress ?? 'YOUR-LAN-IP'}:${port}/  (camera may need HTTPS on iPhone)`);
+  console.log(`Redzone Mac console: http://127.0.0.1:${port}/console`);
+  console.log(`Redzone (LAN http):  http://${lanAddress ?? 'YOUR-LAN-IP'}:${port}/console`);
 });
 
 if (phone) {
@@ -383,11 +617,13 @@ if (phone) {
       void handle(req, res, true);
     })
     .listen(phonePort, '0.0.0.0', () => {
-      console.log(
-        `Redzone (iPhone HTTPS): https://${lanAddress}:${phonePort}/?key=${phone.key}\n` +
-          '  Self-signed cert: tap Advanced → Proceed on Safari once.\n' +
-          '  ARM takeoff defaults OFF. Only enable with a human next to the drone.',
-      );
+      const base = `https://${lanAddress}:${phonePort}/?key=${phone.key}`;
+      console.log('Redzone phones (same Wi‑Fi) — one phone per slot:');
+      console.log(`  Phone 1: ${base}&slot=1`);
+      console.log(`  Phone 2: ${base}&slot=2`);
+      console.log(`  Phone 3: ${base}&slot=3`);
+      console.log('  Or open without slot= and pick A/B/C on the phone.');
+      console.log('  Self-signed cert: Advanced → Proceed once. ARM defaults OFF.');
     });
 } else {
   console.log('Phone HTTPS not started (no LAN IPv4 or PHONE_ACCESS=off).');

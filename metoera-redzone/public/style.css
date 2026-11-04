@@ -33,22 +33,24 @@ body {
     env(safe-area-inset-left);
 }
 
-.rotate-hint {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
+.join-gate {
+  min-height: 100dvh;
   display: grid;
   place-content: center;
-  gap: 0.4rem;
-  text-align: center;
-  background: rgba(13, 11, 9, 0.92);
+  gap: 0.75rem;
   padding: 1.5rem;
+  text-align: center;
 }
 
-.rotate-hint[hidden] { display: none; }
+.join-gate .brand {
+  font-family: var(--font);
+  font-size: 2rem;
+  margin: 0;
+}
 
-.rotate-hint p { margin: 0; color: var(--muted); }
-.rotate-hint strong { color: var(--ink); font-size: 1.2rem; }
+.join-gate .sub { margin: 0; color: var(--muted); }
+
+.slot-pick { justify-content: center; }
 
 .top {
   display: flex;
@@ -114,8 +116,8 @@ body {
   padding: 0 0.7rem 0.9rem;
 }
 
-@media (orientation: landscape) and (min-width: 600px),
-       (orientation: landscape) and (max-height: 500px) {
+/* Landscape: side-by-side. Portrait: stacked. Both fully usable. */
+@media (orientation: landscape) {
   .layout {
     flex-direction: row;
     align-items: stretch;
@@ -123,15 +125,15 @@ body {
   }
 
   .stage {
-    flex: 1 1 68%;
+    flex: 1 1 62%;
     max-height: none;
     height: calc(100dvh - 4.5rem);
     aspect-ratio: auto;
   }
 
   .panel {
-    flex: 0 1 32%;
-    max-width: 22rem;
+    flex: 0 1 38%;
+    max-width: 24rem;
     overflow: auto;
     padding-top: 0.2rem;
   }
@@ -140,11 +142,15 @@ body {
 .stage {
   position: relative;
   width: 100%;
-  aspect-ratio: 16 / 9;
-  max-height: 62vh;
+  aspect-ratio: 3 / 4;
+  max-height: 58vh;
   overflow: hidden;
   background: #0d0b09;
   border: 1px solid var(--line);
+}
+
+@media (orientation: landscape) {
+  .stage { aspect-ratio: 16 / 9; max-height: none; }
 }
 
 #video, #overlay {
@@ -312,8 +318,4 @@ body {
 .stage.alerting {
   outline: 3px solid var(--red);
   outline-offset: -3px;
-}
-
-@media (orientation: portrait) {
-  body.force-rotate-hint #rotateHint { display: grid; }
 }

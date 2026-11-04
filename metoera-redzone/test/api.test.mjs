@@ -45,62 +45,72 @@ async function withServer(fn) {
   }
 }
 
-test('health and default disarm', async () => {
+test('health lists three disarmed slots', async () => {
   await withServer(async (port) => {
     const health = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
     assert.equal(health.ok, true);
-    assert.equal(health.armed, false);
-    const state = await (await fetch(`http://127.0.0.1:${port}/api/state`)).json();
-    assert.equal(state.armed, false);
+    assert.equal(health.slots.length, 3);
+    assert.ok(health.slots.every((s) => s.armed === false));
   });
 });
 
-test('intrusion logs while disarmed; debounce works', async () => {
+test('slot join + intrusion while disarmed + debounce', async () => {
   await withServer(async (port) => {
-    const first = await (
-      await fetch(`http://127.0.0.1:${port}/api/intrusion`, {
+    const joined = await (
+      await fetch(`http://127.0.0.1:${port}/api/slots/1/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ score: 0.2, note: 'test-a' }),
+        body: JSON.stringify({ name: 'Test phone' }),
+      })
+    ).json();
+    assert.ok(joined.token);
+    const token = joined.token;
+
+    const first = await (
+      await fetch(`http://127.0.0.1:${port}/api/slots/1/intrusion`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, score: 0.2, note: 'test-a' }),
       })
     ).json();
     assert.equal(first.accepted, true);
     assert.equal(first.event.takeoff.reason, 'disarmed');
 
     const second = await (
-      await fetch(`http://127.0.0.1:${port}/api/intrusion`, {
+      await fetch(`http://127.0.0.1:${port}/api/slots/1/intrusion`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ score: 0.3, note: 'test-b' }),
+        body: JSON.stringify({ token, score: 0.3, note: 'test-b' }),
       })
     ).json();
     assert.equal(second.debounced, true);
 
-    const forced = await (
-      await fetch(`http://127.0.0.1:${port}/api/intrusion`, {
+    const cmd = await (
+      await fetch(`http://127.0.0.1:${port}/api/slots/1/command`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ score: 1, note: 'force', force: true }),
+        body: JSON.stringify({ command: { type: 'watch', watching: true } }),
       })
     ).json();
-    assert.equal(forced.accepted, true);
+    assert.equal(cmd.ok, true);
 
-    const events = await (await fetch(`http://127.0.0.1:${port}/api/events`)).json();
-    assert.ok(events.events.some((e) => e.type === 'intrusion'));
+    const hb = await (
+      await fetch(`http://127.0.0.1:${port}/api/slots/1/heartbeat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, watching: false, armed: false, lens: 'normal' }),
+      })
+    ).json();
+    assert.equal(hb.ok, true);
+    assert.ok(hb.commands.some((c) => c.type === 'watch'));
   });
 });
 
-test('arm toggle persists until restart semantics via API', async () => {
+test('console page is served', async () => {
   await withServer(async (port) => {
-    const armed = await (
-      await fetch(`http://127.0.0.1:${port}/api/arm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ armed: true }),
-      })
-    ).json();
-    assert.equal(armed.armed, true);
-    const state = await (await fetch(`http://127.0.0.1:${port}/api/state`)).json();
-    assert.equal(state.armed, true);
+    const res = await fetch(`http://127.0.0.1:${port}/console`);
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.match(text, /Mac console/i);
   });
 });

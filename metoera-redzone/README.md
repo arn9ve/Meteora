@@ -1,6 +1,8 @@
 # Metoera Red Zone (iPhone camera)
 
-Phone-usable red-zone camera for Track D: point an **iPhone 12** at a restricted area, draw a red ROI, and when motion appears inside it the page **alerts** and posts an event. Optional **drone takeoff** only runs when **ARM** is ON (default **OFF**).
+Phone-usable red-zone camera for Track D: point an **iPhone 12** at a restricted area, draw a red ROI, and when a **person** (COCO-SSD) enters that zone the page **alerts** and posts an event. Landscape-first UI with up to **3 cameras**. Optional **drone takeoff** only when **ARM** is ON (default **OFF**).
+
+Detection: browser **TensorFlow.js COCO-SSD** (`lite_mobilenet_v2`). Arbitrary motion does not alert.
 
 This is a **separate** small service (`metoera-redzone/`). It does not edit `metoera-voice` hot files.
 

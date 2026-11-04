@@ -2,60 +2,71 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="screen-orientation" content="landscape" />
   <meta name="theme-color" content="#1a1510" />
   <title>Metoera Red Zone</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+  <div id="rotateHint" class="rotate-hint" hidden>
+    <p><strong>Rotate to landscape</strong></p>
+    <p>Wider view for the red-zone camera.</p>
+  </div>
+
   <header class="top">
-    <p class="brand">Metoera</p>
-    <p class="sub">Red-zone camera</p>
+    <div class="brand-block">
+      <p class="brand">Metoera</p>
+      <p class="sub">Red-zone · person only</p>
+    </div>
+    <div class="cam-switch" role="group" aria-label="Camera">
+      <button type="button" class="cam-btn" data-slot="0" id="cam0" disabled>Cam 1</button>
+      <button type="button" class="cam-btn" data-slot="1" id="cam1" disabled>Cam 2</button>
+      <button type="button" class="cam-btn" data-slot="2" id="cam2" disabled>Cam 3</button>
+    </div>
   </header>
 
-  <main>
+  <main class="layout">
     <section class="stage" aria-label="Camera">
       <video id="video" playsinline muted autoplay></video>
       <canvas id="overlay" aria-hidden="true"></canvas>
-      <canvas id="work" hidden></canvas>
       <div id="flash" class="flash" hidden></div>
-      <p id="camStatus" class="cam-status">Starting camera…</p>
+      <p id="camStatus" class="cam-status">Starting…</p>
     </section>
 
     <section class="panel" aria-label="Controls">
       <div class="row status-row">
         <span id="armedBadge" class="badge off">ARM OFF</span>
         <span id="detectBadge" class="badge idle">Idle</span>
+        <span id="modelBadge" class="badge idle">Model…</span>
       </div>
 
-      <p class="hint">Drag on the video to draw the red zone. It is saved on this phone.</p>
+      <p class="hint">Landscape · drag a red zone · alerts only when a <strong>person</strong> enters it.</p>
 
       <div class="row actions">
         <button type="button" id="btnStart" class="btn primary">Start watching</button>
         <button type="button" id="btnClear" class="btn">Clear zone</button>
+        <button type="button" id="btnTest" class="btn">Test alert</button>
       </div>
 
       <label class="arm">
         <input type="checkbox" id="armToggle" />
         <span>
           <strong>ARM drone takeoff</strong>
-          <small>Default off. Only enable with a human next to the aircraft.</small>
+          <small>Default off. Only with a human next to the aircraft.</small>
         </span>
       </label>
-
-      <div class="row actions">
-        <button type="button" id="btnTest" class="btn">Test intrusion (no wait)</button>
-      </div>
 
       <p id="message" class="message" role="status"></p>
       <ul id="log" class="log" aria-label="Recent events"></ul>
     </section>
   </main>
 
-  <audio id="siren" preload="auto">
-    <source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=" type="audio/wav" />
-  </audio>
+  <!-- COCO-SSD (person class) — lite MobileNet for iPhone Safari -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
   <script src="/app.js" type="module"></script>
 </body>
 </html>

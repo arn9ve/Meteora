@@ -1,38 +1,62 @@
-const ROI_KEY = 'metoera-redzone-roi';
-const SAMPLE = 96;
-const DIFF_THRESHOLD = 28;
-const MOTION_RATIO = 0.045;
+/**
+ * Metoera red-zone phone UI.
+ * Person-only alerts via TensorFlow.js COCO-SSD (lite_mobilenet_v2).
+ * Landscape-first + up to 3 cameras.
+ */
+const CAM_KEY = 'metoera-redzone-cam';
+const PERSON_MIN_SCORE = 0.45;
+const DETECT_EVERY_MS = 350;
+const CLIENT_ALERT_GAP_MS = 1500;
 
 const $ = (id) => document.getElementById(id);
 const video = $('video');
 const overlay = $('overlay');
-const work = $('work');
 const camStatus = $('camStatus');
 const message = $('message');
 const logEl = $('log');
 const armedBadge = $('armedBadge');
 const detectBadge = $('detectBadge');
+const modelBadge = $('modelBadge');
 const armToggle = $('armToggle');
 const flash = $('flash');
 const btnStart = $('btnStart');
 const btnClear = $('btnClear');
 const btnTest = $('btnTest');
+const rotateHint = $('rotateHint');
+const camButtons = [0, 1, 2].map((i) => $(`cam${i}`));
 
 const octx = overlay.getContext('2d');
-const wctx = work.getContext('2d', { willReadFrequently: true });
 
 /** @type {{ x: number, y: number, w: number, h: number } | null} */
 let roi = null;
-/** @type {Uint8ClampedArray | null} */
-let prevGray = null;
+/** @type {MediaDeviceInfo[]} */
+let videoInputs = [];
+/** @type {string | null} */
+let activeDeviceId = null;
+/** @type {MediaStream | null} */
+let stream = null;
+/** @type {import('@tensorflow-models/coco-ssd').ObjectDetection | null} */
+let model = null;
+/** @type {{bbox: number[], score: number}[]} */
+let lastPeople = [];
+
 let watching = false;
-let raf = 0;
+let detectTimer = 0;
 let drag = null;
 let lastClientAlert = 0;
+let modelReady = false;
+
+function roiKey(deviceId) {
+  return `metoera-redzone-roi:${deviceId || 'default'}`;
+}
+
+function clamp01(n) {
+  return Math.min(1, Math.max(0, n));
+}
 
 function loadRoi() {
   try {
-    const raw = JSON.parse(localStorage.getItem(ROI_KEY) ?? '');
+    const raw = JSON.parse(localStorage.getItem(roiKey(activeDeviceId)) ?? '');
     if (
       raw &&
       typeof raw.x === 'number' &&
@@ -42,25 +66,19 @@ function loadRoi() {
       raw.w > 0.02 &&
       raw.h > 0.02
     ) {
-      roi = {
-        x: clamp01(raw.x),
-        y: clamp01(raw.y),
-        w: clamp01(raw.w),
-        h: clamp01(raw.h),
-      };
+      roi = { x: clamp01(raw.x), y: clamp01(raw.y), w: clamp01(raw.w), h: clamp01(raw.h) };
+      return;
     }
   } catch {
-    roi = null;
+    /* ignore */
   }
+  roi = null;
 }
 
 function saveRoi() {
-  if (roi) localStorage.setItem(ROI_KEY, JSON.stringify(roi));
-  else localStorage.removeItem(ROI_KEY);
-}
-
-function clamp01(n) {
-  return Math.min(1, Math.max(0, n));
+  const key = roiKey(activeDeviceId);
+  if (roi) localStorage.setItem(key, JSON.stringify(roi));
+  else localStorage.removeItem(key);
 }
 
 function setMessage(text, isAlert = false) {
@@ -77,7 +95,25 @@ function setArmedUi(armed) {
 function setDetectUi(mode) {
   detectBadge.className = `badge ${mode}`;
   detectBadge.textContent =
-    mode === 'watch' ? 'Watching' : mode === 'alert' ? 'Intrusion' : 'Idle';
+    mode === 'watch' ? 'Watching' : mode === 'alert' ? 'Person!' : 'Idle';
+}
+
+function updateOrientationHint() {
+  const portrait = window.matchMedia('(orientation: portrait)').matches;
+  rotateHint.hidden = !portrait;
+  document.body.classList.toggle('force-rotate-hint', portrait);
+  tryLockLandscape();
+}
+
+async function tryLockLandscape() {
+  try {
+    const orientation = screen.orientation;
+    if (orientation && typeof orientation.lock === 'function') {
+      await orientation.lock('landscape').catch(() => undefined);
+    }
+  } catch {
+    /* iOS Safari usually denies lock outside fullscreen */
+  }
 }
 
 function syncCanvasSize() {
@@ -88,22 +124,52 @@ function syncCanvasSize() {
   drawOverlay();
 }
 
-function drawOverlay(highlight = false) {
+function drawOverlay() {
   const { width, height } = overlay;
   octx.clearRect(0, 0, width, height);
-  if (!roi) return;
-  const x = roi.x * width;
-  const y = roi.y * height;
-  const w = roi.w * width;
-  const h = roi.h * height;
-  octx.fillStyle = highlight ? 'rgba(194, 59, 42, 0.35)' : 'rgba(194, 59, 42, 0.22)';
-  octx.fillRect(x, y, w, h);
-  octx.strokeStyle = '#c23b2a';
-  octx.lineWidth = Math.max(2, width * 0.006);
-  octx.strokeRect(x, y, w, h);
-  octx.fillStyle = '#f3ebe0';
-  octx.font = `${Math.max(12, width * 0.035)}px sans-serif`;
-  octx.fillText('RED ZONE', x + 8, Math.max(y - 8, 18));
+
+  if (roi) {
+    const x = roi.x * width;
+    const y = roi.y * height;
+    const w = roi.w * width;
+    const h = roi.h * height;
+    octx.fillStyle = 'rgba(194, 59, 42, 0.22)';
+    octx.fillRect(x, y, w, h);
+    octx.strokeStyle = '#c23b2a';
+    octx.lineWidth = Math.max(2, width * 0.005);
+    octx.strokeRect(x, y, w, h);
+    octx.fillStyle = '#f3ebe0';
+    octx.font = `${Math.max(12, width * 0.028)}px sans-serif`;
+    octx.fillText('RED ZONE', x + 8, Math.max(y - 8, 18));
+  }
+
+  for (const person of lastPeople) {
+    const [bx, by, bw, bh] = person.bbox;
+    const vw = video.videoWidth || 1;
+    const vh = video.videoHeight || 1;
+    const x = (bx / vw) * width;
+    const y = (by / vh) * height;
+    const w = (bw / vw) * width;
+    const h = (bh / vh) * height;
+    const hits = roi && boxesOverlapNorm(
+      { x: bx / vw, y: by / vh, w: bw / vw, h: bh / vh },
+      roi,
+    );
+    octx.strokeStyle = hits ? '#e05a48' : '#3d8f6a';
+    octx.lineWidth = Math.max(2, width * 0.004);
+    octx.strokeRect(x, y, w, h);
+    octx.fillStyle = hits ? '#e05a48' : '#3d8f6a';
+    octx.font = `${Math.max(11, width * 0.024)}px sans-serif`;
+    octx.fillText(`person ${(person.score * 100) | 0}%`, x + 4, Math.max(y - 4, 14));
+  }
+}
+
+function boxesOverlapNorm(a, b) {
+  const ax2 = a.x + a.w;
+  const ay2 = a.y + a.h;
+  const bx2 = b.x + b.w;
+  const by2 = b.y + b.h;
+  return a.x < bx2 && ax2 > b.x && a.y < by2 && ay2 > b.y;
 }
 
 function pointerToNorm(e) {
@@ -143,74 +209,128 @@ overlay.addEventListener('pointerup', (e) => {
   if (next) {
     roi = next;
     saveRoi();
-    setMessage('Red zone saved on this phone.');
+    setMessage('Red zone saved for this camera.');
   }
   drawOverlay();
 });
 
 btnClear.addEventListener('click', () => {
   roi = null;
-  prevGray = null;
   saveRoi();
   drawOverlay();
   setMessage('Zone cleared.');
 });
 
-async function startCamera() {
+function stopStream() {
+  if (stream) {
+    for (const track of stream.getTracks()) track.stop();
+    stream = null;
+  }
+  video.srcObject = null;
+}
+
+async function listCameras() {
+  if (!navigator.mediaDevices?.enumerateDevices) return [];
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((d) => d.kind === 'videoinput').slice(0, 3);
+}
+
+function renderCamButtons() {
+  for (let i = 0; i < 3; i += 1) {
+    const btn = camButtons[i];
+    const device = videoInputs[i];
+    if (!device) {
+      btn.disabled = true;
+      btn.classList.remove('active');
+      btn.title = 'No camera';
+      continue;
+    }
+    btn.disabled = false;
+    btn.title = device.label || `Camera ${i + 1}`;
+    btn.classList.toggle('active', device.deviceId === activeDeviceId);
+  }
+}
+
+async function startCamera(deviceId) {
   camStatus.textContent = 'Asking for camera…';
+  stopStream();
+  const constraints = {
+    audio: false,
+    video: deviceId
+      ? {
+          deviceId: { exact: deviceId },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        }
+      : {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+  };
+
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        facingMode: { ideal: 'environment' },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-      },
-    });
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
     video.srcObject = stream;
     await video.play();
-    camStatus.textContent = 'Camera live — draw a red zone';
+    const track = stream.getVideoTracks()[0];
+    activeDeviceId = track?.getSettings?.().deviceId || deviceId || null;
+    if (activeDeviceId) localStorage.setItem(CAM_KEY, activeDeviceId);
+    videoInputs = await listCameras();
+    renderCamButtons();
+    loadRoi();
     syncCanvasSize();
+    const label = track?.label || 'Camera';
+    camStatus.textContent = `${label} · draw red zone`;
+    setMessage(videoInputs.length ? `${videoInputs.length} camera(s) available.` : 'Camera live.');
   } catch (error) {
     const name = error instanceof Error ? error.name : 'Error';
-    camStatus.textContent = `Camera blocked (${name}). Use HTTPS link from the Mac terminal.`;
-    setMessage('iOS Safari needs HTTPS (or localhost) for getUserMedia.', true);
+    camStatus.textContent = `Camera blocked (${name}). Use the HTTPS link.`;
+    setMessage('iOS Safari needs HTTPS for camera access.', true);
+    throw error;
   }
 }
 
-function sampleRoiGray() {
-  if (!roi || video.readyState < 2) return null;
-  const vw = video.videoWidth;
-  const vh = video.videoHeight;
-  if (!vw || !vh) return null;
-
-  const sx = Math.floor(roi.x * vw);
-  const sy = Math.floor(roi.y * vh);
-  const sw = Math.max(1, Math.floor(roi.w * vw));
-  const sh = Math.max(1, Math.floor(roi.h * vh));
-
-  work.width = SAMPLE;
-  work.height = SAMPLE;
-  wctx.drawImage(video, sx, sy, sw, sh, 0, 0, SAMPLE, SAMPLE);
-  const { data } = wctx.getImageData(0, 0, SAMPLE, SAMPLE);
-  const gray = new Uint8ClampedArray(SAMPLE * SAMPLE);
-  for (let i = 0, j = 0; i < data.length; i += 4, j += 1) {
-    gray[j] = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) | 0;
+async function switchCamera(slot) {
+  const device = videoInputs[slot];
+  if (!device) return;
+  const wasWatching = watching;
+  if (watching) stopWatching();
+  try {
+    await startCamera(device.deviceId);
+    if (wasWatching) startWatching();
+  } catch {
+    /* message already set */
   }
-  return gray;
 }
 
-function motionScore(curr) {
-  if (!prevGray || prevGray.length !== curr.length) {
-    prevGray = curr;
-    return 0;
+for (const btn of camButtons) {
+  btn.addEventListener('click', () => {
+    const slot = Number(btn.dataset.slot);
+    void switchCamera(slot);
+  });
+}
+
+async function loadModel() {
+  modelBadge.textContent = 'Model…';
+  modelBadge.className = 'badge idle';
+  if (typeof cocoSsd === 'undefined' || typeof tf === 'undefined') {
+    modelBadge.textContent = 'No TF';
+    setMessage('Could not load TensorFlow.js / COCO-SSD from CDN. Check network.', true);
+    return;
   }
-  let changed = 0;
-  for (let i = 0; i < curr.length; i += 1) {
-    if (Math.abs(curr[i] - prevGray[i]) > DIFF_THRESHOLD) changed += 1;
+  try {
+    // Prefer WebGL; fall back silently.
+    await tf.ready();
+    model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    modelReady = true;
+    modelBadge.textContent = 'COCO-SSD';
+    modelBadge.className = 'badge ready';
+    setMessage('Person model ready (COCO-SSD lite).');
+  } catch (error) {
+    modelBadge.textContent = 'Fail';
+    setMessage(`Model load failed: ${error instanceof Error ? error.message : error}`, true);
   }
-  prevGray = curr;
-  return changed / curr.length;
 }
 
 function beep() {
@@ -246,13 +366,13 @@ function visualAlert() {
 
 async function postIntrusion({ score, note, force = false } = {}) {
   const now = Date.now();
-  if (!force && now - lastClientAlert < 1500) return;
+  if (!force && now - lastClientAlert < CLIENT_ALERT_GAP_MS) return;
   lastClientAlert = now;
 
   setDetectUi('alert');
   visualAlert();
   beep();
-  setMessage('Movement in red zone — alerting…', true);
+  setMessage('Person in red zone — alerting…', true);
 
   try {
     const response = await fetch('/api/intrusion', {
@@ -261,20 +381,22 @@ async function postIntrusion({ score, note, force = false } = {}) {
       body: JSON.stringify({
         score: typeof score === 'number' ? score : null,
         roi,
-        note: note ?? 'motion',
+        note: note ?? 'person',
         force,
+        kind: 'person',
+        cameraId: activeDeviceId,
       }),
     });
     const data = await response.json();
     if (data.debounced) {
-      setMessage(`Logged locally; server debounce (${Math.ceil((data.retryAfterMs ?? 0) / 1000)}s).`);
+      setMessage(`Server debounce (${Math.ceil((data.retryAfterMs ?? 0) / 1000)}s).`);
     } else if (data.accepted) {
       const takeoff = data.event?.takeoff;
       if (takeoff?.reason === 'disarmed') {
         setMessage('Alert logged. Takeoff skipped (ARM OFF).');
       } else if (takeoff?.attempted) {
         const ok = takeoff.voice?.ok || takeoff.webhook?.ok;
-        setMessage(ok ? 'Alert logged + takeoff hook fired.' : takeoff.note || 'Alert logged; takeoff hook stubbed.');
+        setMessage(ok ? 'Alert logged + takeoff hook fired.' : takeoff.note || 'Alert logged; takeoff stubbed.');
       } else {
         setMessage('Alert logged.');
       }
@@ -290,38 +412,61 @@ async function postIntrusion({ score, note, force = false } = {}) {
   }, 1200);
 }
 
-function loop() {
-  if (!watching) return;
-  const gray = sampleRoiGray();
-  if (gray) {
-    const score = motionScore(gray);
-    if (score >= MOTION_RATIO) {
-      void postIntrusion({ score });
+async function detectOnce() {
+  if (!model || !modelReady || video.readyState < 2) return;
+  try {
+    const preds = await model.detect(video, 20, PERSON_MIN_SCORE);
+    const people = preds
+      .filter((p) => p.class === 'person')
+      .map((p) => ({ bbox: p.bbox, score: p.score }));
+    lastPeople = people;
+    drawOverlay();
+
+    if (!watching || !roi) return;
+    const vw = video.videoWidth || 1;
+    const vh = video.videoHeight || 1;
+    for (const person of people) {
+      const [bx, by, bw, bh] = person.bbox;
+      const box = { x: bx / vw, y: by / vh, w: bw / vw, h: bh / vh };
+      if (boxesOverlapNorm(box, roi)) {
+        void postIntrusion({ score: person.score, note: 'person-in-roi' });
+        break;
+      }
     }
+  } catch (error) {
+    camStatus.textContent = `Detect error: ${error instanceof Error ? error.message : error}`;
   }
-  raf = requestAnimationFrame(loop);
 }
 
-btnStart.addEventListener('click', () => {
-  if (watching) {
-    watching = false;
-    cancelAnimationFrame(raf);
-    prevGray = null;
-    btnStart.textContent = 'Start watching';
-    setDetectUi('idle');
-    setMessage('Watching paused.');
-    return;
-  }
+function startWatching() {
   if (!roi) {
     setMessage('Draw a red zone first.', true);
     return;
   }
+  if (!modelReady) {
+    setMessage('Wait for the person model to finish loading.', true);
+    return;
+  }
   watching = true;
-  prevGray = null;
   btnStart.textContent = 'Pause watching';
   setDetectUi('watch');
-  setMessage('Watching red zone…');
-  raf = requestAnimationFrame(loop);
+  setMessage('Watching for people in the red zone…');
+  void detectOnce();
+  detectTimer = window.setInterval(() => void detectOnce(), DETECT_EVERY_MS);
+}
+
+function stopWatching() {
+  watching = false;
+  window.clearInterval(detectTimer);
+  detectTimer = 0;
+  btnStart.textContent = 'Start watching';
+  setDetectUi('idle');
+  setMessage('Watching paused.');
+}
+
+btnStart.addEventListener('click', () => {
+  if (watching) stopWatching();
+  else startWatching();
 });
 
 btnTest.addEventListener('click', () => {
@@ -332,7 +477,7 @@ armToggle.addEventListener('change', async () => {
   const armed = armToggle.checked;
   if (armed) {
     const ok = window.confirm(
-      'ARM will allow real drone takeoff on the next intrusion (if metoera-voice is running).\n\nIs a human standing next to the drone?',
+      'ARM will allow real drone takeoff on the next person intrusion (if metoera-voice is running).\n\nIs a human standing next to the drone?',
     );
     if (!ok) {
       armToggle.checked = false;
@@ -347,7 +492,7 @@ armToggle.addEventListener('change', async () => {
     });
     const data = await response.json();
     setArmedUi(Boolean(data.armed));
-    setMessage(data.armed ? 'ARMED — takeoff enabled on detect.' : 'Disarmed — alerts log only.', data.armed);
+    setMessage(data.armed ? 'ARMED — takeoff enabled on person detect.' : 'Disarmed — alerts log only.', data.armed);
     await refreshLog();
   } catch {
     armToggle.checked = !armed;
@@ -364,12 +509,13 @@ async function refreshLog() {
       const li = document.createElement('li');
       const when = event.at ? new Date(event.at).toLocaleTimeString() : '';
       if (event.type === 'intrusion') {
-        const takeoff = event.takeoff?.reason === 'disarmed'
-          ? 'takeoff skipped'
-          : event.takeoff?.attempted
-            ? 'takeoff hook'
-            : '';
-        li.innerHTML = `<strong>Intrusion</strong> ${when}${takeoff ? ` · ${takeoff}` : ''}`;
+        const takeoff =
+          event.takeoff?.reason === 'disarmed'
+            ? 'takeoff skipped'
+            : event.takeoff?.attempted
+              ? 'takeoff hook'
+              : '';
+        li.innerHTML = `<strong>Person / intrusion</strong> ${when}${takeoff ? ` · ${takeoff}` : ''}`;
       } else if (event.type === 'arm') {
         li.innerHTML = `<strong>ARM ${event.armed ? 'ON' : 'OFF'}</strong> ${when}`;
       } else {
@@ -392,10 +538,31 @@ async function syncState() {
   }
 }
 
-window.addEventListener('resize', syncCanvasSize);
-loadRoi();
+window.addEventListener('resize', () => {
+  updateOrientationHint();
+  syncCanvasSize();
+});
+window.addEventListener('orientationchange', () => {
+  updateOrientationHint();
+  setTimeout(syncCanvasSize, 250);
+});
+
+updateOrientationHint();
 setDetectUi('idle');
-void startCamera();
-void syncState();
-void refreshLog();
-setInterval(() => void refreshLog(), 5000);
+void (async () => {
+  const preferred = localStorage.getItem(CAM_KEY);
+  try {
+    // Permission first so device labels populate.
+    await startCamera(preferred || undefined);
+  } catch {
+    /* already messaged */
+  }
+  void loadModel();
+  void syncState();
+  void refreshLog();
+  setInterval(() => void refreshLog(), 5000);
+  // Keep painting boxes while idle too (light).
+  setInterval(() => {
+    if (!watching && modelReady) void detectOnce();
+  }, 800);
+})();

@@ -42,7 +42,7 @@ function animatePattern() {
 }
 
 let analyser;
-let socket,stream,context,processor,source,playAt=0,playing=[], pending=[],activity=0, flying=false, stopping=false;
+let socket,stream,context,processor,source,playAt=0,playing=[], pending=[],activity=0, stopping=false;
 const button=$('#voiceButton');
 function state(label, hint, connected=false){$('#connection').textContent=label;$('#hint').textContent=hint; $('#voiceHint').textContent=hint; $('#startVoice').hidden=connected;$('#buttonLabel').textContent=connected?'Termina conversazione':'Avvia conversazione';$('.voice').classList.toggle('listening',connected); $('#textHint').textContent=connected?'Il messaggio verrà inviato a Grok.':'Avvia prima la conversazione dalle impostazioni.'; button.setAttribute('aria-pressed',String(connected))}
 function log(name,detail){if(!activity)$('#activity').textContent='';activity++;$('#count').textContent=String(activity).padStart(2,'0');const row=document.createElement('div');row.className='entry';const icon=document.createElement('span');icon.className='icon';icon.textContent='↗';const body=document.createElement('div');body.textContent=name;const sub=document.createElement('small');sub.textContent=detail;body.append(sub);row.append(icon,body);$('#activity').prepend(row)}
@@ -50,11 +50,37 @@ function send(obj){if(socket?.readyState===WebSocket.OPEN)socket.send(JSON.strin
 function stopAudio(){for(const node of playing){try{node.stop()}catch{}}playing=[];playAt=0}
 function disconnect(){stopping=true;cancelAnimationFrame(frame);analyser=null;stopAudio();processor?.disconnect();source?.disconnect();stream?.getTracks().forEach(t=>t.stop());context?.close();socket?.close();socket=stream=context=processor=source=null;pending=[];button.disabled=false;$('#startVoice').disabled=false;state('SESSIONE TERMINATA','Avvia la voce per ricominciare')}
 function playback(base64){if(!context)return;const raw=atob(base64);const len=Math.floor(raw.length/2);const buf=context.createBuffer(1,len,24000);const data=buf.getChannelData(0);for(let i=0;i<len;i++){let n=raw.charCodeAt(i*2)|(raw.charCodeAt(i*2+1)<<8);if(n>=32768)n-=65536;data[i]=n/32768}const node=context.createBufferSource();node.buffer=buf;node.connect(context.destination);playAt=Math.max(context.currentTime,playAt);node.start(playAt);playAt+=buf.duration;playing.push(node);node.onended=()=>{playing=playing.filter(n=>n!==node)}}
-// The simulation deliberately has no connection to a physical drone.
-async function simulate(name,args){const labels={takeoff:'Decollo',land:'Atterraggio',move:'Spostamento',rotate:'Rotazione'};if(!labels[name])return {ok:false,mode:'simulation',error:'Azione non disponibile'};if(name==='takeoff'&&flying)return {ok:false,mode:'simulation',error:'Il drone simulato è già in volo'};if(name!=='takeoff'&&!flying)return {ok:false,mode:'simulation',error:'Il drone simulato è a terra'};if(name==='takeoff')flying=true;if(name==='land')flying=false;$('#droneState').textContent=flying?'In volo':'A terra';log(labels[name],`Simulato${Object.keys(args).length?' · '+Object.values(args).join(' '):''}`);return {ok:true,mode:'simulation',action:name,state:flying?'flying':'landed',message:'Azione simulata, nessun drone fisico controllato'} }
-async function finishCalls(){const calls=pending;pending=[];for(const event of calls){let result;try{result=await simulate(event.name,JSON.parse(event.arguments||'{}'))}catch{result={ok:false,mode:'simulation',error:'Argomenti non validi'}}send({type:'conversation.item.create',item:{type:'function_call_output',call_id:event.call_id,output:JSON.stringify(result)}})}if(calls.length)send({type:'response.create'})}
+// All drone commands go to the simulator on the local server.
+async function simulate(name,args){
+  try {
+    const response=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...args,action:name})});
+    const result=await response.json();
+    if(!response.ok) return {ok:false,mode:'simulation',error:result.error||'Simulatore non disponibile'};
+    const labels={takeoff:'Decollo',land:'Atterraggio',move:'Spostamento',rotate:'Rotazione'};
+    log(`${args.droneId === 'drone-1' ? 'Drone 1' : 'Drone 2'} · ${labels[name] || name}`,result.ok?'Eseguito in simulazione':`Rifiutato · ${result.error}`);
+    await refreshDrones();
+    return result;
+  } catch { return {ok:false,mode:'simulation',error:'Simulatore non raggiungibile'}; }
+}
+
+async function finishCalls(){
+  const calls=pending;
+  pending=[];
+  let stopped=false;
+  for(const event of calls){
+    let result;
+    if(stopped) result={ok:false,mode:'simulation',error:'Sequenza interrotta dopo il fallimento di un comando precedente'};
+    else {
+      try {result=await simulate(event.name,JSON.parse(event.arguments||'{}'));}
+      catch {result={ok:false,mode:'simulation',error:'Argomenti non validi'};}
+    }
+    if(!result.ok) stopped=true;
+    send({type:'conversation.item.create',item:{type:'function_call_output',call_id:event.call_id,output:JSON.stringify(result)}});
+  }
+  if(calls.length)send({type:'response.create'});
+}
 const tool=(name,description,properties={},required=[])=>({type:'function',name,description,parameters:{type:'object',properties,required,additionalProperties:false}});
-async function start(){state('CONNESSIONE…','Connessione vocale in corso.');button.disabled=true;$('#startVoice').disabled=true;stopping=false;try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true},video:false});context=new AudioContext({sampleRate:24000});await context.resume();const tokenResponse=await fetch('/session',{method:'POST'});const token=await tokenResponse.json();if(!tokenResponse.ok)throw Error(token.error||'Token non disponibile');if(!token.value)throw Error('Risposta token non valida');socket=new WebSocket('wss://api.x.ai/v1/realtime?model=grok-voice-latest',[`xai-client-secret.${token.value}`]);socket.onopen=()=>{send({type:'session.update',session:{voice:'eve',instructions:'Sei Grok, assistente vocale di Metoera. Parla in italiano in modo conciso. Il controller è esclusivamente simulato: specifica sempre che ogni azione è simulata. Non affermare mai che un drone reale si è mosso. Esegui una sola azione per volta, attendi il risultato prima della successiva. Se una azione fallisce interrompi la sequenza.',turn_detection:{type:'server_vad'},audio:{input:{format:{type:'audio/pcm',rate:context.sampleRate},transcription:{language_hint:'it'}},output:{format:{type:'audio/pcm',rate:24000}}},tools:[tool('takeoff','Simula il decollo'),tool('land','Simula atterraggio'),tool('move','Simula uno spostamento',{direction:{type:'string',enum:['forward','back','left','right','up','down']},centimeters:{type:'integer',minimum:20,maximum:500}},['direction','centimeters']),tool('rotate','Simula una rotazione',{direction:{type:'string',enum:['clockwise','counterclockwise']},degrees:{type:'integer',minimum:1,maximum:360}},['direction','degrees'])]}});source=context.createMediaStreamSource(stream);analyser=context.createAnalyser();analyser.fftSize=256;source.connect(analyser);animatePattern();processor=context.createScriptProcessor(4096,1,1);processor.onaudioprocess=e=>{if(socket?.readyState!==WebSocket.OPEN)return;const input=e.inputBuffer.getChannelData(0);const pcm=new Int16Array(input.length);for(let i=0;i<input.length;i++)pcm[i]=Math.max(-1,Math.min(1,input[i]))*32767;let str='';const bytes=new Uint8Array(pcm.buffer);for(let i=0;i<bytes.length;i++)str+=String.fromCharCode(bytes[i]);send({type:'input_audio_buffer.append',audio:btoa(str)})};source.connect(processor);processor.connect(context.destination);state('IN ASCOLTO','Parla con Grok',true);if ($('#settingsDialog').open) $('#settingsDialog').close();button.disabled=false;$('#startVoice').disabled=false};socket.onmessage=async message=>{const e=JSON.parse(message.data);if(e.type==='input_audio_buffer.speech_started')stopAudio();if(e.type==='response.output_audio.delta'||e.type==='response.audio.delta')playback(e.delta);if(e.type==='conversation.item.input_audio_transcription.completed'){$('#transcript').textContent=`“${e.transcript}”`;$('#headline').textContent='Tu'}if(e.type==='response.output_audio_transcript.delta'||e.type==='response.audio_transcript.delta'){if($('#headline').textContent!=='Grok'){$('#headline').textContent='Grok';$('#transcript').textContent=''}$('#transcript').textContent+=e.delta}if(e.type==='response.function_call_arguments.done')pending.push(e);if(e.type==='response.done'&&pending.length)await finishCalls();if(e.type==='error'){$('#hint').textContent=e.error?.message||'Errore nella sessione'}};socket.onerror=()=>{$('#hint').textContent='Connessione vocale non riuscita.'};socket.onclose=()=>{if(!stopping){disconnect();state('CONNESSIONE INTERROTTA','Riprova ad avviare la sessione')}}}catch(error){disconnect();state('NON CONNESSO',error.message||'Impossibile avviare la sessione')}}
+async function start(){state('CONNESSIONE…','Connessione vocale in corso.');button.disabled=true;$('#startVoice').disabled=true;stopping=false;try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true},video:false});context=new AudioContext({sampleRate:24000});await context.resume();const tokenResponse=await fetch('/session',{method:'POST'});const token=await tokenResponse.json();if(!tokenResponse.ok)throw Error(token.error||'Token non disponibile');if(!token.value)throw Error('Risposta token non valida');socket=new WebSocket('wss://api.x.ai/v1/realtime?model=grok-voice-latest',[`xai-client-secret.${token.value}`]);socket.onopen=()=>{send({type:'session.update',session:{voice:'eve',instructions:'Sei Grok, assistente vocale di Metoera. Parla in italiano in modo conciso. Ci sono due droni virtuali: drone-1 è Drone 1, drone-2 è Drone 2. Il controller è esclusivamente simulato: specifica sempre che ogni azione è simulata. Devi chiedere quale drone se la persona non lo specifica; mai scegliere da solo. Usa lo stesso drone per una sequenza se la persona lo ha identificato. Non affermare mai che un drone reale si è mosso. Esegui una sola azione per volta, attendi il risultato prima della successiva. Se una azione fallisce interrompi la sequenza.',turn_detection:{type:'server_vad'},audio:{input:{format:{type:'audio/pcm',rate:context.sampleRate},transcription:{language_hint:'it'}},output:{format:{type:'audio/pcm',rate:24000}}},tools:[tool('takeoff','Simula il decollo del drone indicato',{droneId:{type:'string',enum:['drone-1','drone-2']}},['droneId']),tool('land','Simula atterraggio del drone indicato',{droneId:{type:'string',enum:['drone-1','drone-2']}},['droneId']),tool('move','Simula uno spostamento',{droneId:{type:'string',enum:['drone-1','drone-2']},direction:{type:'string',enum:['forward','back','left','right','up','down']},centimeters:{type:'integer',minimum:20,maximum:500}},['droneId','direction','centimeters']),tool('rotate','Simula una rotazione',{droneId:{type:'string',enum:['drone-1','drone-2']},direction:{type:'string',enum:['clockwise','counterclockwise']},degrees:{type:'integer',minimum:1,maximum:360}},['droneId','direction','degrees'])]}});source=context.createMediaStreamSource(stream);analyser=context.createAnalyser();analyser.fftSize=256;source.connect(analyser);animatePattern();processor=context.createScriptProcessor(4096,1,1);processor.onaudioprocess=e=>{if(socket?.readyState!==WebSocket.OPEN)return;const input=e.inputBuffer.getChannelData(0);const pcm=new Int16Array(input.length);for(let i=0;i<input.length;i++)pcm[i]=Math.max(-1,Math.min(1,input[i]))*32767;let str='';const bytes=new Uint8Array(pcm.buffer);for(let i=0;i<bytes.length;i++)str+=String.fromCharCode(bytes[i]);send({type:'input_audio_buffer.append',audio:btoa(str)})};source.connect(processor);processor.connect(context.destination);state('IN ASCOLTO','Parla con Grok',true);if ($('#settingsDialog').open) $('#settingsDialog').close();button.disabled=false;$('#startVoice').disabled=false};socket.onmessage=async message=>{const e=JSON.parse(message.data);if(e.type==='input_audio_buffer.speech_started')stopAudio();if(e.type==='response.output_audio.delta'||e.type==='response.audio.delta')playback(e.delta);if(e.type==='conversation.item.input_audio_transcription.completed'){$('#transcript').textContent=`“${e.transcript}”`;$('#headline').textContent='Tu'}if(e.type==='response.output_audio_transcript.delta'||e.type==='response.audio_transcript.delta'){if($('#headline').textContent!=='Grok'){$('#headline').textContent='Grok';$('#transcript').textContent=''}$('#transcript').textContent+=e.delta}if(e.type==='response.function_call_arguments.done')pending.push(e);if(e.type==='response.done'&&pending.length)await finishCalls();if(e.type==='error'){$('#hint').textContent=e.error?.message||'Errore nella sessione'}};socket.onerror=()=>{$('#hint').textContent='Connessione vocale non riuscita.'};socket.onclose=()=>{if(!stopping){disconnect();state('CONNESSIONE INTERROTTA','Riprova ad avviare la sessione')}}}catch(error){disconnect();state('NON CONNESSO',error.message||'Impossibile avviare la sessione')}}
 button.addEventListener('click',()=>socket?disconnect():start());
 $('#startVoice').addEventListener('click',()=>{ if (!socket && !button.disabled) start(); });
 
@@ -102,15 +128,15 @@ function renderDrones() {
     card.className = 'drone-card';
     card.innerHTML = '<div class="drone-card-head"><h3></h3><span class="drone-availability"></span></div><p class="drone-position">POSIZIONE</p><div class="drone-coordinates"></div><div class="drone-motion"><span>Movimento</span><strong></strong></div>';
     card.querySelector('h3').textContent = id === 'drone-1' ? 'Drone 1' : 'Drone 2';
-    card.querySelector('.drone-availability').textContent = recent ? 'Dati ricevuti' : (record ? 'Dati non aggiornati' : 'In attesa');
+    card.querySelector('.drone-availability').textContent = recent ? 'Simulato · connesso' : (record ? 'Dati non aggiornati' : 'In attesa');
     card.querySelector('.drone-coordinates').textContent = recent && record.position ? `X ${positionLabel(record.position.x)} · Y ${positionLabel(record.position.y)} · Z ${positionLabel(record.position.z)} m` : 'Non disponibile';
     card.querySelector('.drone-position').textContent = recent && record.position ? `POSIZIONE · ${record.position.frame}` : 'POSIZIONE';
     const labels = {moving: 'In movimento', stationary: 'Fermo', unknown: 'Non disponibile'};
     const velocity = recent && record.velocity ? ` · ${['x','y','z'].map(axis => `${axis.toUpperCase()} ${positionLabel(record.velocity[axis])}`).join(' / ')} m/s` : '';
-    card.querySelector('.drone-motion strong').textContent = recent ? labels[record.motion] + velocity : 'Non disponibile';
+    card.querySelector('.drone-motion strong').textContent = recent ? `${record.flight === 'flying' ? 'In volo' : 'A terra'} · ${labels[record.motion]}${Number.isFinite(record.heading) ? ` · ${record.heading}°` : ''}${velocity}` : 'Non disponibile';
     grid.append(card);
   }
-  $('#telemetryNote').textContent = recentCount ? 'Coordinate in metri nel sistema indicato dal controller. I dati non aggiornati non vengono mostrati.' : 'In attesa dei dati del controller. Le posizioni non sono ancora disponibili.';
+  $('#telemetryNote').textContent = recentCount ? 'Posizioni virtuali in metri, calcolate dal simulatore. I dati non aggiornati non vengono mostrati.' : 'In attesa dei dati del controller. Le posizioni non sono ancora disponibili.';
 }
 window.addEventListener('metoera:telemetry', event => {
   const data = event.detail;
@@ -131,10 +157,32 @@ window.addEventListener('metoera:telemetry', event => {
   }
   const previous = droneRecords.get(data.id);
   if (previous && timestamp <= previous.timestamp) return;
-  droneRecords.set(data.id, {position, velocity, motion:data.motion, timestamp, receivedAt:timestamp});
+  droneRecords.set(data.id, {position, velocity, motion:data.motion, flight:data.flight, heading:data.heading, timestamp, receivedAt:timestamp});
   renderDrones();
 });
 $('#dronesButton').addEventListener('click', () => { renderDrones(); droneDialog.showModal(); });
 droneDialog.querySelector('.dismiss').addEventListener('click', () => droneDialog.close());
 setInterval(() => { if (droneDialog.open) renderDrones(); }, 1000);
 renderDrones();
+
+async function refreshDrones() {
+  try {
+    const response = await fetch('/api/drones', {cache:'no-store'});
+    const data = await response.json();
+    if (!response.ok || data.mode !== 'simulation' || !Array.isArray(data.drones)) throw new Error('Invalid status');
+    for (const drone of data.drones) {
+      if (!drone.position) continue;
+      window.dispatchEvent(new CustomEvent('metoera:telemetry', {detail:{
+        id:drone.id, timestamp:drone.timestamp,
+        position:{...drone.position, frame:'origine virtuale'}, motion:drone.motion, flight:drone.flight, heading:drone.heading
+      }}));
+    }
+    $('#droneState').textContent='2 droni virtuali';
+  } catch {
+    droneRecords.clear();
+    $('#droneState').textContent='Simulatore non disponibile';
+    renderDrones();
+  }
+}
+refreshDrones();
+setInterval(refreshDrones, 1500);

@@ -9,7 +9,7 @@ import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { RealTello, type Detections, type DepthView } from './src/tello.ts';
-import { loadPlan, loadConfig, saveConfig, homography, calibrationError, project, inside, feet, type Point, type RoomConfig } from './src/room.ts';
+import { loadPlan, loadConfig, saveConfig, estimateFromPose, homography, calibrationError, project, inside, feet, type Point, type RoomConfig } from './src/room.ts';
 import { Claims, CLAIMS_PORT, describeElsewhere, parsePeers, udpTransport } from './src/claims.ts';
 import { Pilots, TAKEOFF } from './src/pilots.ts';
 
@@ -286,8 +286,8 @@ async function proxyStream(source: string, res: http.ServerResponse) {
 // Grok about and, with auto-send on, use to send the nearest drone to that person.
 const redzoneUrl = (process.env.REDZONE_URL ?? 'http://127.0.0.1:18791').replace(/\/$/, '');
 const redzonePhonePort = Number(process.env.REDZONE_PHONE_PORT ?? 18792);
-type RedzoneSlot = {id: string; name?: string; online: boolean; watching: boolean; armed: boolean; personScore?: number | null; lastIntrusionAt: number | null; hasPreview: boolean; joined: boolean; people?: {x: number; y: number; w: number; h: number; score: number | null}[]};
-type Person = {slot: string; x: number; y: number; score: number | null};
+type RedzoneSlot = {id: string; name?: string; online: boolean; watching: boolean; armed: boolean; personScore?: number | null; lastIntrusionAt: number | null; hasPreview: boolean; joined: boolean; lens?: string; people?: {x: number; y: number; w: number; h: number; score: number | null}[]};
+type Person = {slot: string; x: number; y: number; score: number | null; approx?: boolean};
 type ZoneEvent = {id: string; zone: string; name: string; at: number; x: number; y: number; claimedBy: string | null};
 const redzone = {available:false, slots:[] as RedzoneSlot[], people:[] as Person[], events:[] as ZoneEvent[]};
 const zoneState = new Map<string, {occupied: boolean; lastEventAt: number}>();
@@ -300,16 +300,19 @@ async function pollRedzone() {
     redzone.available = true;
     redzone.slots = data.slots;
   } catch { redzone.available = false; redzone.slots = []; }
-  // People on the plan, from every calibrated phone that is connected.
+  // People on the plan from every connected phone: exact with a calibration (4 clicks), otherwise
+  // estimated from where the phone stands and faces on the plan and how big the person looks.
   const people: Person[] = [];
   for (const slot of redzone.slots) {
-    const h = room.cameras[slot.id]?.h;
-    if (!h || !slot.online) continue;
+    const cam = room.cameras[slot.id];
+    if (!cam || !slot.online) continue;
+    const placed = typeof cam.x === 'number' && typeof cam.y === 'number' && typeof cam.heading === 'number';
+    if (!cam.h && !placed) continue;
     for (const box of slot.people ?? []) {
       const [u, v] = feet(box);
-      const p = project(h, u, v);
+      const p = cam.h ? project(cam.h, u, v) : estimateFromPose({x:cam.x!, y:cam.y!, heading:cam.heading!}, box, slot.lens);
       if (p && plan && p[0] > plan.bounds.min[0] - 2 && p[0] < plan.bounds.max[0] + 2 && p[1] > plan.bounds.min[1] - 2 && p[1] < plan.bounds.max[1] + 2) {
-        people.push({slot:slot.id, x:Math.round(p[0] * 100) / 100, y:Math.round(p[1] * 100) / 100, score:box.score});
+        people.push({slot:slot.id, x:Math.round(p[0] * 100) / 100, y:Math.round(p[1] * 100) / 100, score:box.score, ...(cam.h ? {} : {approx:true})});
       }
     }
   }
@@ -321,7 +324,7 @@ async function pollRedzone() {
       state.lastEventAt = Date.now();
       redzone.events.push({id:`${zone.id}-${state.lastEventAt}`, zone:zone.id, name:zone.name, at:state.lastEventAt, x:who.x, y:who.y, claimedBy:null});
       if (redzone.events.length > 20) redzone.events.shift();
-      console.log(`${new Date().toLocaleTimeString()} ${zone.name}: person at (${who.x.toFixed(2)}, ${who.y.toFixed(2)}) m, seen by phone ${who.slot}`);
+      console.log(`${new Date().toLocaleTimeString()} ${zone.name}: person at (${who.x.toFixed(2)}, ${who.y.toFixed(2)}) m, seen by phone ${who.slot}${who.approx ? ' (estimate, phone not calibrated)' : ''}`);
     }
     state.occupied = Boolean(who);
     zoneState.set(zone.id, state);

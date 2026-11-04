@@ -93,3 +93,28 @@ export function inside(point: Point, polygon: Point[]): boolean {
 export function feet(box: { x: number; y: number; w: number; h: number }): Point {
   return [box.x + box.w / 2, Math.min(1, box.y + box.h)];
 }
+
+/** Horizontal field of view of a phone camera, in degrees, per lens (typical phone values). */
+export const LENS_FOV: Record<string, number> = {wide: 100, normal: 68, tele: 32};
+const PERSON_HEIGHT_M = 1.7;
+
+/**
+ * Where a person seen by a phone that is placed on the plan but not calibrated probably stands.
+ * Direction: the phone's heading, turned by where the person is across the picture.
+ * Distance: from how tall the person looks (a 1.7 m person; picture assumed 16:9 landscape).
+ * Rough (about ±1 m at 5 m), but it needs no calibration. Returns null when nothing sensible.
+ */
+export function estimateFromPose(cam: { x: number; y: number; heading: number }, box: { x: number; y: number; w: number; h: number }, lens = 'normal', aspect = 9 / 16): Point | null {
+  const hfov = (LENS_FOV[lens] ?? LENS_FOV.normal) * Math.PI / 180;
+  const vfov = 2 * Math.atan(Math.tan(hfov / 2) * aspect);
+  if (!(box.h > 0.02)) return null;
+  // A person cut by the bottom or top of the picture looks shorter than they are: they are nearer.
+  const clipped = box.y + box.h > 0.98 || box.y < 0.02;
+  let distance = PERSON_HEIGHT_M / (box.h * 2 * Math.tan(vfov / 2));
+  if (clipped) distance *= 0.8;
+  distance = Math.min(15, Math.max(0.5, distance));
+  const u = box.x + box.w / 2;
+  // Right of the picture centre = turned clockwise (headings are counterclockwise).
+  const bearing = cam.heading * Math.PI / 180 - Math.atan((u - 0.5) * 2 * Math.tan(hfov / 2));
+  return [cam.x + Math.cos(bearing) * distance, cam.y + Math.sin(bearing) * distance];
+}

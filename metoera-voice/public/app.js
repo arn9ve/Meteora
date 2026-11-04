@@ -143,8 +143,15 @@ const SILENT_WHEN_OK=['takeoff','land','move','rotate','flip','speed','stop','te
 async function runOnDrone(id,name,rest){
   try {
     // droneId and action go last so the model's arguments cannot override them.
-    const response=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...rest,droneId:id,action:name})});
-    const result=await response.json();
+    const body=JSON.stringify({...rest,droneId:id,action:name});
+    let response=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body});
+    let result=await response.json();
+    // The server forgot this browser's name (restarted, or a new session): say it again and retry once.
+    if(!result.ok&&myName&&/Type your name first/.test(String(result.error||''))){
+      await sendName(myName);
+      response=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body});
+      result=await response.json();
+    }
     return response.ok?result:{ok:false,mode:'real',error:serverMessage(result.error)||'Server unavailable'};
   } catch { return {ok:false,mode:'real',error:'Server unreachable'}; }
 }
@@ -413,6 +420,8 @@ async function refreshDrone() {
     $('#droneState').textContent = parts.map(p => p.text).join(' · ');
     for (const [i, p] of parts.entries()) $(`#dot${i}`).setAttribute('data-state', p.state);
     decideName(data.pilot&&typeof data.pilot.name==='string'?data.pilot.name:'', true);
+    // This page has a name but the server session has none (server restarted): send it again.
+    if(nameDecided&&myName&&!(data.pilot&&data.pilot.name)&&!resendingName){ resendingName=true; void sendName(myName).finally(()=>{resendingName=false}); }
     handleRedzone(data.redzone ?? null);
   } catch {
     drones = [];
@@ -425,7 +434,7 @@ async function refreshDrone() {
 // The name belongs to this browser, shared by its tabs: localStorage and a metoera_name cookie.
 // Saving only after the dialog's close event misses a new tab: that event can run once the input is already cleared.
 let myName='';
-let nameDecided=false;
+let nameDecided=false, resendingName=false;
 function storedName(){
   try {
     const saved = localStorage.getItem('metoera_name');
@@ -555,7 +564,7 @@ function updateCameras(){
   for(const slot of redzone.slots||[]){
     let card=grid.querySelector?.(`[data-slot="${slot.id}"]`);
     if(!card){ card=cameraCard(slot); grid.append(card); }
-    const state=!slot.online?'Phone not connected':`${slot.watching?'Watching':'Not watching'} · ${slot.peopleCount||0} people · ${slot.calibrated?'calibrated':'not calibrated'}${slot.armed?' · ARM on':''}`;
+    const state=!slot.online?'Phone not connected':`${slot.watching?'Watching':'Not watching'} · ${slot.peopleCount||0} people · ${slot.calibrated?'calibrated':'estimate only'}${slot.armed?' · ARM on':''}`;
     card.querySelector('.camera-state').textContent=state;
     card.querySelector('.watch').textContent=slot.watching?'Stop watching':'Start watching';
     card.querySelector('.watch').disabled=!slot.online;
@@ -692,12 +701,13 @@ async function renderMap(){
     const a1=h-0.6,a2=h+0.6;
     svg.append(svgEl('path',{d:`M${x},${y} L${x+Math.cos(a1)*L},${y-Math.sin(a1)*L} L${x+Math.cos(a2)*L},${y-Math.sin(a2)*L} Z`,fill:'#7e57c2','fill-opacity':.15,stroke:'#7e57c2','stroke-width':unit}));
     svg.append(svgEl('rect',{x:x-8*unit,y:y-8*unit,width:16*unit,height:16*unit,rx:3*unit,fill:'#7e57c2'}));
-    svg.append(svgEl('text',{x:x+11*unit,y:y-10*unit,'font-size':12*unit,fill:'#5e35b1'},`Phone ${slot}${c.calibrated?'':' · not calibrated'}`));
+    svg.append(svgEl('text',{x:x+11*unit,y:y-10*unit,'font-size':12*unit,fill:'#5e35b1'},`Phone ${slot}${c.calibrated?'':' · estimate (calibrate for precision)'}`));
   }
   // People seen by the phones (feet on the floor)
   for(const p of data.people||[]){
-    svg.append(svgEl('circle',{cx:p.x*100,cy:-p.y*100,r:10*unit,fill:'#fb8c00',stroke:'#fff','stroke-width':2*unit}));
-    svg.append(svgEl('text',{x:p.x*100+13*unit,y:-p.y*100+4*unit,'font-size':11*unit,fill:'#e65100'},`person (phone ${p.slot})`));
+    if(p.approx) svg.append(svgEl('circle',{cx:p.x*100,cy:-p.y*100,r:40*unit,fill:'#fb8c00','fill-opacity':.12,stroke:'#fb8c00','stroke-dasharray':`${4*unit} ${3*unit}`,'stroke-width':1.5*unit}));
+    svg.append(svgEl('circle',{cx:p.x*100,cy:-p.y*100,r:10*unit,fill:p.approx?'#fff':'#fb8c00',stroke:p.approx?'#fb8c00':'#fff','stroke-width':(p.approx?3:2)*unit}));
+    svg.append(svgEl('text',{x:p.x*100+13*unit,y:-p.y*100+4*unit,'font-size':11*unit,fill:'#e65100'},`person (phone ${p.slot}${p.approx?', estimate':''})`));
   }
   // Calibration points on the plan
   if(calib) calib.plan.forEach((p,i)=>{ svg.append(svgEl('circle',{cx:p[0]*100,cy:-p[1]*100,r:7*unit,fill:'#e53935'})); svg.append(svgEl('text',{x:p[0]*100+9*unit,y:-p[1]*100-6*unit,'font-size':13*unit,fill:'#e53935'},String(i+1))); });

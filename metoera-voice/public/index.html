@@ -1,28 +1,28 @@
 <!doctype html>
-<html lang="it">
+<html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#ffffff"><title>Metoera · Voice</title><link rel="stylesheet" href="/style.css"></head>
 <body>
 <main class="voice">
   <div id="pattern" aria-hidden="true"></div>
-  <header><span class="wordmark">metoera</span><div class="header-actions"><button id="dronesButton" class="drones-button" aria-haspopup="dialog">Droni <span>↗</span></button><span id="connection" role="status">PRONTO A CONNETTERE</span></div></header>
-  <section id="emptyState" class="empty-state" aria-label="Suggerimenti per iniziare">
-    <p class="suggestions-title">PROVA A CHIEDERE</p>
+  <header><span class="wordmark">metoera</span><div class="header-actions"><button id="dronesButton" class="drones-button" aria-haspopup="dialog">Drones <span>↗</span></button><span id="connection" role="status">READY TO CONNECT</span></div></header>
+  <section id="emptyState" class="empty-state" aria-label="Suggestions to get started">
+    <p class="suggestions-title">TRY ASKING</p>
     <div class="suggestions">
-      <div class="suggestion"><span aria-hidden="true">↗</span><p>Fai decollare<br>il drone 1</p></div>
-      <div class="suggestion"><span aria-hidden="true">⌁</span><p>Avanza di<br>mezzo metro</p></div>
-      <div class="suggestion"><span aria-hidden="true">↻</span><p>Ruota<br>di 90 gradi</p></div>
-      <div class="suggestion"><span aria-hidden="true">↘</span><p>Fai atterrare<br>il drone 1</p></div>
+      <div class="suggestion"><span aria-hidden="true">↗</span><p>Have drone 1<br>take off</p></div>
+      <div class="suggestion"><span aria-hidden="true">⌁</span><p>Move forward<br>half a meter</p></div>
+      <div class="suggestion"><span aria-hidden="true">↻</span><p>Turn<br>90 degrees</p></div>
+      <div class="suggestion"><span aria-hidden="true">↘</span><p>Have drone 1<br>land</p></div>
     </div>
   </section>
-  <section class="conversation" id="conversation" aria-label="Conversazione" hidden><span id="headline" class="caption">Grok</span><div id="transcript" aria-live="polite">Ti ascolto.</div></section>
+  <section class="conversation" id="conversation" aria-label="Conversation" hidden><span id="headline" class="caption">Grok</span><div id="transcript" aria-live="polite">I'm listening.</div></section>
   <div id="wave" class="wave" aria-hidden="true"></div>
-  <div class="session-info"><p id="hint" role="status">Cosa vuoi fare?</p><button id="startVoice" class="tap-to-speak" aria-label="Tocca per parlare"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3" class="solid"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v4m-3.5 0h7"/></svg><span>TOCCA PER PARLARE</span></button><span class="mode-label">Simulazione</span></div>
-  <nav class="controls" aria-label="Controlli conversazione">
-    <button id="closeButton" class="round" aria-label="Termina conversazione" title="Termina conversazione" hidden><svg viewBox="0 0 24 24"><path d="m5 5 14 14M19 5 5 19"/></svg></button>
-    <button id="settingsButton" class="round" aria-label="Impostazioni voce" title="Impostazioni voce" aria-haspopup="dialog"><svg viewBox="0 0 24 24"><path class="solid" d="m10 1-.7 3-2 .9L4.7 3.4 2 6.1l1.5 2.6-.8 2L0 11.4v3.8l2.7.7.8 2L2 20.5l2.7 2.7 2.6-1.5 2 .8.7 2.7h3.8l.7-2.7 2-.8 2.6 1.5 2.7-2.7-1.5-2.6.8-2 2.7-.7v-3.8l-2.7-.7-.8-2 1.5-2.6-2.7-2.7-2.6 1.5-2-.9-.7-3z" transform="translate(1 -1) scale(.9)"/><circle cx="12" cy="11.5" r="4" class="hole"/></svg></button>
+  <div class="session-info"><p id="hint" role="status">What would you like to do?</p><button id="startVoice" class="tap-to-speak" aria-label="Tap to speak"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3" class="solid"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v4m-3.5 0h7"/></svg><span>TAP TO SPEAK</span></button><span class="mode-label">Simulation</span></div>
+  <nav class="controls" aria-label="Conversation controls">
+    <button id="closeButton" class="round" aria-label="End conversation" title="End conversation" hidden><svg viewBox="0 0 24 24"><path d="m5 5 14 14M19 5 5 19"/></svg></button>
+    <button id="settingsButton" class="round" aria-label="Voice settings" title="Voice settings" aria-haspopup="dialog"><svg viewBox="0 0 24 24"><path class="solid" d="m10 1-.7 3-2 .9L4.7 3.4 2 6.1l1.5 2.6-.8 2L0 11.4v3.8l2.7.7.8 2L2 20.5l2.7 2.7 2.6-1.5 2 .8.7 2.7h3.8l.7-2.7 2-.8 2.6 1.5 2.7-2.7-1.5-2.6.8-2 2.7-.7v-3.8l-2.7-.7-.8-2 1.5-2.6-2.7-2.7-2.6 1.5-2-.9-.7-3z" transform="translate(1 -1) scale(.9)"/><circle cx="12" cy="11.5" r="4" class="hole"/></svg></button>
   </nav>
 </main>
-<dialog id="dronesDialog" class="drones-dialog"><div class="dialog-head"><div><p class="dialog-kicker">MONITORAGGIO</p><h2>I tuoi droni</h2></div><button class="dismiss" aria-label="Chiudi vista droni">×</button></div><p class="drone-intro">Posizione e movimento dei due droni virtuali.</p><div class="drone-grid" id="droneGrid"></div><p class="telemetry-note" id="telemetryNote">In attesa dei dati del controller. Le posizioni non sono ancora disponibili.</p></dialog>
-<dialog id="settingsDialog"><div class="dialog-head"><h2>La tua voce, Grok.</h2><button class="dismiss" aria-label="Chiudi impostazioni">×</button></div><p>Conversazione vocale con Grok. Le azioni del drone sono simulate.</p><p id="voiceHint" role="status">Autorizza il microfono per parlare con Grok.</p><div class="drone-info"><span>Simulatore</span><strong id="droneState">Connessione…</strong></div><div class="activity-head"><h3>Attività</h3><span id="count">00</span></div><div id="activity"><p class="empty">Nessuna azione eseguita.</p></div></dialog>
+<dialog id="dronesDialog" class="drones-dialog"><div class="dialog-head"><div><p class="dialog-kicker">MONITORING</p><h2>Your drones</h2></div><button class="dismiss" aria-label="Close drone view">×</button></div><p class="drone-intro">Position and movement of the two virtual drones.</p><div class="drone-grid" id="droneGrid"></div><p class="telemetry-note" id="telemetryNote">Waiting for controller data. Positions are not available yet.</p></dialog>
+<dialog id="settingsDialog"><div class="dialog-head"><h2>Your voice, Grok.</h2><button class="dismiss" aria-label="Close settings">×</button></div><p>Voice conversation with Grok. Drone actions are simulated.</p><p id="voiceHint" role="status">Allow microphone access to speak with Grok.</p><div class="drone-info"><span>Simulator</span><strong id="droneState">Connecting…</strong></div><div class="activity-head"><h3>Activity</h3><span id="count">00</span></div><div id="activity"><p class="empty">No actions yet.</p></div></dialog>
 <script type="module" src="/app.js"></script>
 </body></html>

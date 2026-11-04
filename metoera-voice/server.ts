@@ -23,7 +23,7 @@ async function readJson(req: http.IncomingMessage): Promise<unknown> {
   for await (const chunk of req) {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += bytes.length;
-    if (size > 4096) throw new Error('Messaggio troppo grande');
+    if (size > 4096) throw new Error('Message too large');
     chunks.push(bytes);
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
@@ -32,24 +32,24 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const path = req.url ?? '';
   if (req.method === 'POST' && ['/session','/api/command'].includes(path)) {
-    if (!req.headers.origin || !allowedOrigins.has(req.headers.origin)) { json(res, 403, {error:'Origine non autorizzata'}); return; }
+    if (!req.headers.origin || !allowedOrigins.has(req.headers.origin)) { json(res, 403, {error:'Unauthorized origin'}); return; }
     if (path === '/api/command') {
       try { const result = await simulator.execute(await readJson(req)); json(res, 200, result); }
-      catch { json(res, 400, {ok:false, mode:'simulation', error:'Richiesta non valida'}); }
+      catch { json(res, 400, {ok:false, mode:'simulation', error:'Invalid request'}); }
       return;
     }
     if (!process.env.XAI_API_KEY) {
       delete process.env.XAI_API_KEY;
       try { loadEnvFile(join(root, '.env')); } catch (error) {
-        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) { json(res, 500, {error:'Impossibile leggere il file .env.'}); return; }
+        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) { json(res, 500, {error:'Unable to read the .env file.'}); return; }
       }
     }
-    if (!process.env.XAI_API_KEY) { json(res, 503, {error:'Aggiungi XAI_API_KEY nel file .env del progetto.'}); return; }
+    if (!process.env.XAI_API_KEY) { json(res, 503, {error:'Add XAI_API_KEY to the project .env file.'}); return; }
     try {
       const upstream = await fetch('https://api.x.ai/v1/realtime/client_secrets', {method:'POST', headers:{Authorization:`Bearer ${process.env.XAI_API_KEY}`,'Content-Type':'application/json'}, body:JSON.stringify({expires_after:{seconds:300}})});
-      if (!upstream.ok) { json(res, 502, {error:'Impossibile ottenere il token xAI. Verifica chiave e account.'}); return; }
+      if (!upstream.ok) { json(res, 502, {error:'Unable to obtain an xAI token. Check your key and account.'}); return; }
       json(res, 200, await upstream.json());
-    } catch { json(res, 502, {error:'Connessione a xAI non disponibile.'}); }
+    } catch { json(res, 502, {error:'Unable to connect to xAI.'}); }
     return;
   }
   if (req.method === 'GET' && path === '/api/drones') { json(res, 200, {mode:'simulation', drones:simulator.snapshot().map(drone => ({...drone, timestamp:new Date().toISOString()}))}); return; }
@@ -57,4 +57,4 @@ const server = http.createServer(async (req, res) => {
   try { const file = files[path]; res.writeHead(200, {'Content-Type':types[extname(file)]}).end(await readFile(join(root,'public',file))); }
   catch { res.writeHead(500).end(); }
 });
-server.listen(port, '127.0.0.1', () => console.log(`Metoera: http://localhost:${port} (droni simulati)`));
+server.listen(port, '127.0.0.1', () => console.log(`Metoera: http://localhost:${port} (simulated drones)`));

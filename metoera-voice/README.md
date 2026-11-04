@@ -8,11 +8,13 @@ Serve Node.js 20 o successivo, una chiave API xAI abilitata e accesso a Internet
 
 ```sh
 cd metoera-voice
-export XAI_API_KEY='la-tua-chiave'
+read -s 'XAI_API_KEY?Chiave API xAI: '
+echo
+export XAI_API_KEY
 node server.mjs
 ```
 
-Aprire http://localhost:18787, premere l’ingranaggio e poi «Avvia conversazione», e consentire l'accesso al microfono. Interrompere il server con Ctrl+C. La chiave rimane nel processo locale; il browser riceve un token temporaneo xAI. Non pubblicare la chiave o inserirla nel repository.
+Aprire http://localhost:18787, premere «Avvia conversazione vocale», e consentire l'accesso al microfono. Interrompere il server con Ctrl+C. La chiave rimane nel processo locale; il browser riceve un token temporaneo xAI. Non pubblicare la chiave o inserirla nel repository.
 
 ## Collegamento con il team drone
 

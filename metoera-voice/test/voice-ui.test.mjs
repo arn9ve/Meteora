@@ -7,7 +7,7 @@ const source = await readFile(new URL('../public/app.js', import.meta.url), 'utf
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // `drones()` makes /api/drones answer with those drones (as this laptop sees them).
-function setup({ drones, pilot, names } = {}) {
+function setup({ drones, pilot, names, cookie, failDrones: failDronesOption } = {}) {
   const elements = new Map();
   const created = [];
   class Element {
@@ -34,8 +34,11 @@ function setup({ drones, pilot, names } = {}) {
     send(message){(this.sent ??= []).push(JSON.parse(message))} close(){this.readyState=3} open(){this.readyState=1;this.onopen()}
   }
   const store = names ?? new Map();
+  let failDrones = failDronesOption ?? 0;
+  const timers = [];
+  const timeouts = [];
   const globals = {
-    document:{querySelector:element,createElement:()=>{const e=new Element();created.push(e);return e}},
+    document:{cookie:cookie ?? '', querySelector:element,createElement:()=>{const e=new Element();created.push(e);return e}},
     window:{addEventListener(){},dispatchEvent(){}},
     navigator:{mediaDevices:{getUserMedia:()=>media}}, AudioContext, WebSocket,
     localStorage:{getItem(key){ return store.has(key) ? store.get(key) : null; }, setItem(key, value){ store.set(key, String(value)); }},
@@ -43,15 +46,21 @@ function setup({ drones, pilot, names } = {}) {
     fetch:async (url, options) => {
       fetches.push({url, body:options?.body});
       if (url==='/session') return {ok:true,json:async()=>({value:'test-token'})};
-      if (url==='/api/drones' && drones) return {ok:true,json:async()=>({drones:drones(), me:'Barry', clients:[{name:'Arnove',lastSeen:0}], claimsError:null, ...(pilot !== undefined ? {pilot:{name:pilot}} : {})})};
+      if (url==='/api/drones' && drones) {
+        if (failDrones > 0) { failDrones--; throw new Error('offline'); }
+        return {ok:true,json:async()=>({drones:drones(), me:'Barry', clients:[{name:'Arnove',lastSeen:0}], claimsError:null, ...(pilot !== undefined ? {pilot:{name:pilot}} : {})})};
+      }
       if (url==='/api/pilot') return {ok:true,json:async()=>({ok:true, name:JSON.parse(options.body).name})};
       if (url==='/api/command' && drones) return {ok:true,json:async()=>({ok:true,mode:'real',action:JSON.parse(options.body).action})};
       return {ok:false,json:async()=>({})};
     },
-    innerWidth:390, performance:{now:()=>0},requestAnimationFrame:()=>1,cancelAnimationFrame(){},setInterval(){},setTimeout:()=>0,console,Date,Math,Number,Array,Map,Uint8Array,Int16Array,Promise,Error,
+    innerWidth:390, performance:{now:()=>0},requestAnimationFrame:()=>1,cancelAnimationFrame(){},
+    setInterval(fn){ timers.push(fn); }, clearTimeout(){}, setTimeout(fn){ timeouts.push(fn); return timeouts.length; },
+    encodeURIComponent, decodeURIComponent,
+    console,Date,Math,Number,Array,Map,Uint8Array,Int16Array,Promise,Error,
   };
   vm.runInNewContext(source,globals);
-  return {element,resolveMedia,track,get stopped(){return stopped},WebSocket,fetches,created,names:store};
+  return {element,resolveMedia,track,get stopped(){return stopped},WebSocket,fetches,created,names:store,timers,timeouts,document:globals.document};
 }
 
 const MINE = {state:'mine', conflict:null};
@@ -270,4 +279,37 @@ test('a first visit asks for a name', async () => {
   await tick(); await tick();
   assert.equal(app.element('#nameDialog').open, true);
   assert.equal(app.names.has('metoera_name'), false);
+});
+
+test('submitting the name saves it before the dialog closes', async () => {
+  const app = setup({drones:()=>[], pilot:''});
+  await tick(); await tick();
+  app.element('#pilotName').value = 'Amir';
+  app.element('#nameDialog').querySelector('form').handlers.submit();
+  assert.equal(app.names.get('metoera_name'), 'Amir');
+  assert.match(app.document.cookie, /metoera_name=Amir/);
+  app.element('#pilotName').value = '';
+  app.element('#nameDialog').open = false;
+  app.element('#nameDialog').handlers.close();
+  for (const fn of app.timeouts) fn();
+  assert.equal(app.element('#nameDialog').open, false);
+});
+
+test('a name cookie keeps the dialog closed when this tab has no stored name', async () => {
+  const app = setup({drones:()=>[], pilot:'', cookie:'metoera_name=Amir'});
+  await tick(); await tick();
+  assert.equal(app.element('#nameDialog').open, false);
+  assert.equal(app.names.get('metoera_name'), 'Amir');
+  assert.equal(JSON.parse(app.fetches.find(f=>f.url==='/api/pilot').body).name, 'Amir');
+});
+
+test('a failed status check does not ask, and the next one keeps the server name', async () => {
+  const app = setup({drones:()=>[], pilot:'Marco', failDrones:1});
+  await tick(); await tick();
+  assert.equal(app.element('#nameDialog').open, false);
+  assert.equal(app.names.has('metoera_name'), false);
+  await app.timers[0]();
+  await tick(); await tick();
+  assert.equal(app.element('#nameDialog').open, false);
+  assert.equal(app.names.get('metoera_name'), 'Marco');
 });

@@ -368,40 +368,55 @@ async function refreshDrone() {
     showLink(parts.map(p => p.text).join(' · '), overall, parts.map(p => p.detail).join('. '));
     $('#droneState').textContent = parts.map(p => p.text).join(' · ');
     for (const [i, p] of parts.entries()) $(`#dot${i}`).setAttribute('data-state', p.state);
-    decideName(data.pilot&&typeof data.pilot.name==='string'?data.pilot.name:'');
+    decideName(data.pilot&&typeof data.pilot.name==='string'?data.pilot.name:'', true);
   } catch {
     drones = [];
     $('#droneState').textContent = 'Server unreachable';
     showLink('Server offline', 'offline', 'Start the server with npm start');
-    decideName('');
+    decideName('', false);
   }
   if (droneDialog.open) updateCards();
 }
-// The name belongs to this browser, shared by its tabs: localStorage and the metoera_pilot cookie.
+// The name belongs to this browser, shared by its tabs: localStorage and a metoera_name cookie.
+// Saving only after the dialog's close event misses a new tab: that event can run once the input is already cleared.
 let myName='';
 let nameDecided=false;
 function storedName(){
-  try { return localStorage.getItem('metoera_name')||''; } catch { return ''; }
+  try {
+    const saved = localStorage.getItem('metoera_name');
+    if (saved) return saved;
+  } catch {}
+  try {
+    const match = /(?:^|;\s*)metoera_name=([^;]*)/.exec(document.cookie || '');
+    return match ? decodeURIComponent(match[1]) : '';
+  } catch { return ''; }
 }
 function rememberName(name){
   myName=name;
   try { localStorage.setItem('metoera_name', myName); } catch {}
+  try { document.cookie = `metoera_name=${encodeURIComponent(myName)}; Path=/; Max-Age=31536000; SameSite=Lax`; } catch {}
   $('#pilotLine').textContent=`You are ${myName}`;
 }
 async function sendName(name){
   try { const r=await fetch('/api/pilot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}); const j=await r.json(); if(j.ok) rememberName(j.name); } catch {}
 }
-function decideName(serverName){
+// A failed poll must not open the dialog. The next poll may still carry this browser's name, and opening now would ignore it.
+function decideName(serverName, confirmed){
   if(nameDecided) return;
-  nameDecided=true;
   const fromServer=typeof serverName==='string'?serverName.trim():'';
-  if(fromServer){ rememberName(fromServer); return; }
   const saved=storedName();
-  if(saved){ void sendName(saved); return; }
+  if(!confirmed && !fromServer && !saved) return;
+  nameDecided=true;
+  if(fromServer){ rememberName(fromServer); return; }
+  if(saved){ rememberName(saved); void sendName(saved); return; }
   nameDialog.showModal?.();
 }
 const nameDialog=$('#nameDialog');
-nameDialog.addEventListener('close',()=>{ const v=$('#pilotName').value.trim(); if(v) void sendName(v); else if(!myName) setTimeout(()=>nameDialog.showModal?.(),0); });
+nameDialog.querySelector('form').addEventListener('submit', () => {
+  const v = ($('#pilotName').value || '').trim();
+  if (v) { rememberName(v); void sendName(v); }
+});
+nameDialog.addEventListener('close',()=>{ const v=($('#pilotName').value || '').trim(); if(v) void sendName(v); else if(!myName) setTimeout(()=>nameDialog.showModal?.(),0); });
 // The lock goes by the name: renaming while flying gives up control of the drone.
 $('#pilotLine').addEventListener('click',()=>{
   $('#pilotName').value=myName;
@@ -411,5 +426,6 @@ $('#pilotLine').addEventListener('click',()=>{
   warning.textContent=flying.length?`You fly ${flying.join(' and ')}. With another name you can't command it, and the server lands it after 15 s.`:'';
   nameDialog.showModal();
 });
+if (storedName()) rememberName(storedName());
 refreshDrone();
 setInterval(refreshDrone, 1500);

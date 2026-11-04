@@ -216,14 +216,30 @@ async function readJson(req: http.IncomingMessage): Promise<unknown> {
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
 }
+// The display name, shared by every tab. Separate from the session id: a new tab can arrive
+// without metoera_pilot and must not be asked again.
+function nameFromCookie(req: http.IncomingMessage): string {
+  const raw = /(?:^|;\s*)metoera_name=([^;]*)/.exec(req.headers.cookie ?? '')?.[1] ?? '';
+  if (!raw) return '';
+  try { return decodeURIComponent(raw); } catch { return ''; }
+}
+function rememberNameCookie(res: http.ServerResponse, name: string, secure: boolean) {
+  res.appendHeader('Set-Cookie', `metoera_name=${encodeURIComponent(name)}; Path=/; Max-Age=31536000; SameSite=Lax${secure ? '; Secure' : ''}`);
+}
 // Each browser is a session (cookie); its name is what the lock goes by (src/pilots.ts).
 function sessionOf(req: http.IncomingMessage, res: http.ServerResponse, secure: boolean): string {
   let id = /(?:^|;\s*)metoera_pilot=([0-9a-f]{32})/.exec(req.headers.cookie ?? '')?.[1];
   if (!id) {
     id = randomBytes(16).toString('hex');
-    res.appendHeader('Set-Cookie', `metoera_pilot=${id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${secure ? '; Secure' : ''}`);
+    // Lax so a new tab opened from another page still sends it. Strict would omit it, and this
+    // response would replace the old session with an empty one.
+    res.appendHeader('Set-Cookie', `metoera_pilot=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${secure ? '; Secure' : ''}`);
   }
   pilots.seen(id);
+  if (!pilots.nameOf(id)) {
+    const named = nameFromCookie(req);
+    if (named) pilots.setName(id, named);
+  }
   return id;
 }
 
@@ -284,6 +300,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
         const body = await readJson(req) as {name?: unknown};
         const name = pilots.setName(sid, body?.name);
         if (!name) { json(res, 400, {ok:false, error:'Name required'}); return; }
+        rememberNameCookie(res, name, remote);
         json(res, 200, {ok:true, name});
       } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
       return;

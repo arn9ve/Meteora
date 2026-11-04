@@ -86,27 +86,17 @@ function setMuted(value){
   else if(socket)$('#hint').textContent='Speak to Grok';
 }
 
-// Emergency controls skip the command queue on the server and cancel what is waiting.
+// A spoken emergency skips the command queue. There is no button for it.
 async function emergency(kind){
   const label=kind==='motors'?'Motors cut':'Switch off';
-  $('#safetyStatus').textContent=kind==='motors'?'Cutting motors…':'Landing…';
   if(socket)disconnect(); // no more voice commands after an emergency
   try{
     const response=await fetch('/api/emergency',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind})});
     const result=await response.json();
-    $('#safetyStatus').textContent=result.ok?(kind==='motors'?'Motors stopped':'Landed'):serverMessage(result.error)||'Failed';
     log(`Tello · ${label}`,result.ok?'Done':`Failed · ${serverMessage(result.error)}`);
-  }catch{$('#safetyStatus').textContent='Server unreachable'}
+  }catch{log(`Tello · ${label}`,'Server unreachable')}
   await refreshDrone();
 }
-$('#switchOff').addEventListener('click',()=>emergency('land'));
-// Cutting the motors drops the drone, so the button needs a second tap within 2 s.
-let killArmed=0;
-$('#killMotors').addEventListener('click',()=>{
-  if(Date.now()-killArmed<2000){killArmed=0;$('#killMotors').textContent='Cut motors';emergency('motors');return}
-  killArmed=Date.now();$('#killMotors').textContent='Tap again to cut';
-  setTimeout(()=>{if(killArmed&&Date.now()-killArmed>=2000){killArmed=0;$('#killMotors').textContent='Cut motors'}},2100);
-});
 $('#muteButton').addEventListener('click',()=>setMuted(!muted));
 
 // Two real drones. Grok names them by colour; the server knows them as tello and rmtt.
@@ -315,7 +305,6 @@ settings.addEventListener('click', event => { if(event.target === settings) {
 window.addEventListener('pagehide', disconnect);
 
 // The real drones as reported by the server: Drone 1 · Black and Drone 2 · Red.
-const droneDialog = $('#dronesDialog');
 const CHECKING = 'Checking that no other laptop controls this drone';
 // Dot colour: green connected, amber connecting (or still checking the other laptops), red
 // offline, grey when someone else flies it or it is linked to another laptop.
@@ -330,68 +319,13 @@ function availability(d) {
   if (o?.state === 'mine') return `${d.connected ? 'Connected' : (d.linkError || 'Connecting…')} · ${d.pilot ? (d.pilot.me ? 'you fly it' : `flown by ${d.pilot.name}`) : 'free'}${o.conflict ? ` · also claimed by ${o.conflict}` : ''}`;
   return o?.reason && o.reason !== CHECKING ? o.reason : 'Checking other laptops…';
 }
-const coordinates = d => d?.connected ? `Battery ${d.battery ?? '–'}% · Height ${d.heightCm ?? '–'} cm` : 'Unavailable';
-const motion = d => d ? `${d.flight === 'flying' ? 'Flying' : 'On the ground'}${Number.isFinite(d.heading) ? ` · ${d.heading}°` : ''}${d.lastError && !elsewhere(d) ? ` · ${d.lastError}` : ''}` : 'Set its IP in .env.tello';
-let clientsText = '';
-// The cards are rebuilt (video started or dropped) only when a drone changes laptop.
-const videoKey = () => JSON.stringify(drones.map(d => [d.id, d.owner?.state, d.owner?.name ?? '']));
-let cardsKey = '';
-function renderDrone() {
-  const grid = $('#droneGrid');
-  grid.replaceChildren();
-  cardsKey = videoKey();
-  for (const [colour, info] of Object.entries(FLEET)) {
-    const d = drones.find(x => x.id === info.id);
-    const card = document.createElement('article');
-    card.className = `drone-card drone-${colour}${blocked(d) ? ' drone-other' : ''}`;
-    card.innerHTML = '<div class="drone-card-head"><h3></h3><span class="drone-availability"></span></div><div class="drone-video"><img alt=""><span>Camera off: start metoera-vision</span></div><p class="drone-position"></p><div class="drone-coordinates"></div><div class="drone-motion"><span>State</span><strong></strong></div>';
-    // Live YOLO video of this laptop's drones, only while the panel is open (the stream stops
-    // when the image goes away). Another laptop's drone sends its video to that laptop.
-    const img = card.querySelector('.drone-video img');
-    if (d?.connected && d.owner?.state === 'mine') { img.src = `/video/${info.id}`; img.alt = `${info.name} camera`; img.onerror = () => card.querySelector('.drone-video').classList.add('off'); }
-    else {
-      card.querySelector('.drone-video').classList.add('off');
-      if (elsewhere(d)) card.querySelector('.drone-video span').textContent = `Camera on ${d.owner.name}'s laptop`;
-    }
-    card.querySelector('h3').textContent = info.name;
-    card.querySelector('.drone-position').textContent = info.model.toUpperCase();
-    card.querySelector('.drone-availability').textContent = availability(d);
-    card.querySelector('.drone-coordinates').textContent = coordinates(d);
-    card.querySelector('.drone-motion strong').textContent = motion(d);
-    grid.append(card);
-  }
-  $('#telemetryNote').textContent = 'The server checks each of its drones every 5 seconds. Drone 1 uses TELLO_IP, Drone 2 uses RMTT_IP. The person who takes off a drone flies it until it lands; a landed drone on another laptop moves here when someone takes off with it.';
-  $('#clientsLine').textContent = clientsText;
-}
-$('#dronesButton').addEventListener('click', () => { renderDrone(); droneDialog.showModal(); });
-droneDialog.querySelector('.dismiss').addEventListener('click', () => droneDialog.close());
-// Closing the panel drops the video streams.
-droneDialog.addEventListener('close', () => $('#droneGrid').replaceChildren());
-
-// While the panel is open, refresh the text only, so the video is not rebuilt. When a drone
-// changes hands (ours ↔ another laptop's) the cards are rebuilt to start or drop its video.
-function updateCards() {
-  if (videoKey() !== cardsKey) { renderDrone(); return; }
-  for (const [colour, info] of Object.entries(FLEET)) {
-    const card = $('#droneGrid').querySelector?.(`.drone-${colour}`);
-    if (!card) continue;
-    const d = drones.find(x => x.id === info.id);
-    card.classList.toggle('drone-other', blocked(d));
-    card.querySelector('.drone-availability').textContent = availability(d);
-    card.querySelector('.drone-coordinates').textContent = coordinates(d);
-    card.querySelector('.drone-motion strong').textContent = motion(d);
-  }
-  $('#clientsLine').textContent = clientsText;
-}
-
 // Always-visible link indicator, one dot per drone: green connected, amber linked without telemetry, red offline.
 function showLink(text, state, detail) {
   const pill=$('#linkStatus');
   pill.setAttribute('data-state',state);
-  pill.title=`${detail}. Click for details`;
+  pill.title=detail;
   $('#linkText').textContent=text;
 }
-$('#linkStatus').addEventListener('click', () => { renderDrone(); droneDialog.showModal(); });
 
 async function refreshDrone() {
   try {
@@ -399,8 +333,6 @@ async function refreshDrone() {
     const data = await response.json();
     if (!response.ok || !Array.isArray(data.drones)) throw new Error('Invalid status');
     drones = data.drones.filter(d => Object.values(FLEET).some(f => f.id === d.id));
-    const others = (data.clients || []).map(c => c.name);
-    clientsText = data.claimsError || `Laptops on this network: you${data.me ? ` (${data.me})` : ''}${others.length ? `, ${others.join(', ')}` : '. No other laptop heard'}`;
     // A drone changed hands during a voice session: Grok gets the new list of drones it may fly.
     const key = ownershipKey();
     if (key !== sessionKey) { sessionKey = key; if (socket?.readyState === WebSocket.OPEN) send({type:'session.update',session:sessionConfig()}); }
@@ -417,40 +349,54 @@ async function refreshDrone() {
     showLink(parts.map(p => p.text).join(' · '), overall, parts.map(p => p.detail).join('. '));
     $('#droneState').textContent = parts.map(p => p.text).join(' · ');
     for (const [i, p] of parts.entries()) $(`#dot${i}`).setAttribute('data-state', p.state);
-    decideName(data.pilot&&typeof data.pilot.name==='string'?data.pilot.name:'');
+    decideName(data.pilot&&typeof data.pilot.name==='string'?data.pilot.name:'', true);
   } catch {
     drones = [];
     $('#droneState').textContent = 'Server unreachable';
     showLink('Server offline', 'offline', 'Start the server with npm start');
-    decideName('');
+    decideName('', false);
   }
-  if (droneDialog.open) updateCards();
 }
-// The name belongs to this browser, shared by its tabs: localStorage and the metoera_pilot cookie.
+// The name belongs to this browser, shared by its tabs: localStorage and a metoera_name cookie.
+// Saving only after the dialog's close event misses a new tab: that event can run once the input is already cleared.
 let myName='';
 let nameDecided=false;
 function storedName(){
-  try { return localStorage.getItem('metoera_name')||''; } catch { return ''; }
+  try {
+    const saved = localStorage.getItem('metoera_name');
+    if (saved) return saved;
+  } catch {}
+  try {
+    const match = /(?:^|;\s*)metoera_name=([^;]*)/.exec(document.cookie || '');
+    return match ? decodeURIComponent(match[1]) : '';
+  } catch { return ''; }
 }
 function rememberName(name){
   myName=name;
   try { localStorage.setItem('metoera_name', myName); } catch {}
+  try { document.cookie = `metoera_name=${encodeURIComponent(myName)}; Path=/; Max-Age=31536000; SameSite=Lax`; } catch {}
   $('#pilotLine').textContent=`You are ${myName}`;
 }
 async function sendName(name){
   try { const r=await fetch('/api/pilot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}); const j=await r.json(); if(j.ok) rememberName(j.name); } catch {}
 }
-function decideName(serverName){
+// A failed poll must not open the dialog. The next poll may still carry this browser's name, and opening now would ignore it.
+function decideName(serverName, confirmed){
   if(nameDecided) return;
-  nameDecided=true;
   const fromServer=typeof serverName==='string'?serverName.trim():'';
-  if(fromServer){ rememberName(fromServer); return; }
   const saved=storedName();
-  if(saved){ void sendName(saved); return; }
+  if(!confirmed && !fromServer && !saved) return;
+  nameDecided=true;
+  if(fromServer){ rememberName(fromServer); return; }
+  if(saved){ rememberName(saved); void sendName(saved); return; }
   nameDialog.showModal?.();
 }
 const nameDialog=$('#nameDialog');
-nameDialog.addEventListener('close',()=>{ const v=$('#pilotName').value.trim(); if(v) void sendName(v); else if(!myName) setTimeout(()=>nameDialog.showModal?.(),0); });
+nameDialog.querySelector('form').addEventListener('submit', () => {
+  const v = ($('#pilotName').value || '').trim();
+  if (v) { rememberName(v); void sendName(v); }
+});
+nameDialog.addEventListener('close',()=>{ const v=($('#pilotName').value || '').trim(); if(v) void sendName(v); else if(!myName) setTimeout(()=>nameDialog.showModal?.(),0); });
 // The lock goes by the name: renaming while flying gives up control of the drone.
 $('#pilotLine').addEventListener('click',()=>{
   $('#pilotName').value=myName;
@@ -515,5 +461,6 @@ async function renderMap(){
 $('#mapButton').addEventListener('click',()=>{void renderMap();mapDialog.showModal()});
 mapDialog.querySelector('.dismiss').addEventListener('click',()=>mapDialog.close());
 setInterval(()=>{if(mapDialog.open) void renderMap()},1500);
+if (storedName()) rememberName(storedName());
 refreshDrone();
 setInterval(refreshDrone, 1500);

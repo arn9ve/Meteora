@@ -7,7 +7,7 @@ const source = await readFile(new URL('../public/app.js', import.meta.url), 'utf
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // `drones()` makes /api/drones answer with those drones (as this laptop sees them).
-function setup({ drones, pilot, names } = {}) {
+function setup({ drones, pilot, names, cookie, failDrones: failDronesOption } = {}) {
   const elements = new Map();
   const created = [];
   class Element {
@@ -34,8 +34,11 @@ function setup({ drones, pilot, names } = {}) {
     send(message){(this.sent ??= []).push(JSON.parse(message))} close(){this.readyState=3} open(){this.readyState=1;this.onopen()}
   }
   const store = names ?? new Map();
+  let failDrones = failDronesOption ?? 0;
+  const timers = [];
+  const timeouts = [];
   const globals = {
-    document:{querySelector:element,createElement:()=>{const e=new Element();created.push(e);return e}},
+    document:{cookie:cookie ?? '', querySelector:element,createElement:()=>{const e=new Element();created.push(e);return e}},
     window:{addEventListener(){},dispatchEvent(){}},
     navigator:{mediaDevices:{getUserMedia:()=>media}}, AudioContext, WebSocket,
     localStorage:{getItem(key){ return store.has(key) ? store.get(key) : null; }, setItem(key, value){ store.set(key, String(value)); }},
@@ -43,15 +46,21 @@ function setup({ drones, pilot, names } = {}) {
     fetch:async (url, options) => {
       fetches.push({url, body:options?.body});
       if (url==='/session') return {ok:true,json:async()=>({value:'test-token'})};
-      if (url==='/api/drones' && drones) return {ok:true,json:async()=>({drones:drones(), me:'Barry', clients:[{name:'Arnove',lastSeen:0}], claimsError:null, ...(pilot !== undefined ? {pilot:{name:pilot}} : {})})};
+      if (url==='/api/drones' && drones) {
+        if (failDrones > 0) { failDrones--; throw new Error('offline'); }
+        return {ok:true,json:async()=>({drones:drones(), me:'Barry', clients:[{name:'Arnove',lastSeen:0}], claimsError:null, ...(pilot !== undefined ? {pilot:{name:pilot}} : {})})};
+      }
       if (url==='/api/pilot') return {ok:true,json:async()=>({ok:true, name:JSON.parse(options.body).name})};
       if (url==='/api/command' && drones) return {ok:true,json:async()=>({ok:true,mode:'real',action:JSON.parse(options.body).action})};
       return {ok:false,json:async()=>({})};
     },
-    innerWidth:390, performance:{now:()=>0},requestAnimationFrame:()=>1,cancelAnimationFrame(){},setInterval(){},setTimeout:()=>0,console,Date,Math,Number,Array,Map,Uint8Array,Int16Array,Promise,Error,
+    innerWidth:390, performance:{now:()=>0},requestAnimationFrame:()=>1,cancelAnimationFrame(){},
+    setInterval(fn){ timers.push(fn); }, clearTimeout(){}, setTimeout(fn){ timeouts.push(fn); return timeouts.length; },
+    encodeURIComponent, decodeURIComponent,
+    console,Date,Math,Number,Array,Map,Uint8Array,Int16Array,Promise,Error,
   };
   vm.runInNewContext(source,globals);
-  return {element,resolveMedia,track,get stopped(){return stopped},WebSocket,fetches,created,names:store};
+  return {element,resolveMedia,track,get stopped(){return stopped},WebSocket,fetches,created,names:store,timers,timeouts,document:globals.document};
 }
 
 const MINE = {state:'mine', conflict:null};
@@ -61,7 +70,6 @@ const redOther = {id:'rmtt', mode:'real', connected:true, verified:false, batter
 const redTakeable = {...redOther, flight:'landed', owner:{state:'other', name:'Arnove', pilot:null, locked:false}};
 // On this laptop, flown by another person on the link.
 const blackFlownByMarco = {...blackMine, flight:'flying', heightCm:80, pilot:{name:'Marco', me:false}};
-const cardOf = (app, colour) => app.created.filter(e => e.className?.includes(`drone-${colour}`)).at(-1);
 async function openVoice(app) {
   app.element('#startVoice').click();
   app.resolveMedia({getTracks:()=>[app.track]});
@@ -70,21 +78,10 @@ async function openVoice(app) {
   return app.WebSocket.last;
 }
 
-test('a drone flown from another laptop is greyed, says who flies it, and has no video here', async () => {
+test('the status line names a drone flown from another laptop', async () => {
   const app = setup({drones:()=>[blackMine, redOther]});
-  await tick(); await tick(); // first /api/drones
-  app.element('#dronesButton').click();
-  const red = cardOf(app, 'red');
-  const black = cardOf(app, 'black');
-  assert.match(red.className, /drone-other/);
-  assert.equal(red.querySelector('.drone-availability').textContent, "Flown by Amir · Arnove's laptop");
-  assert.equal(red.querySelector('.drone-video img').src, undefined);
-  assert.equal(red.querySelector('.drone-video span').textContent, "Camera on Arnove's laptop");
-  assert.equal(red.querySelector('.drone-motion strong').textContent, 'Flying');
-  assert.doesNotMatch(black.className, /drone-other/);
-  assert.equal(black.querySelector('.drone-availability').textContent, 'Connected · free');
-  assert.equal(black.querySelector('.drone-video img').src, '/video/tello');
-  assert.equal(app.element('#clientsLine').textContent, 'Laptops on this network: you (Barry), Arnove');
+  await tick(); await tick();
+  assert.equal(app.element('#linkText').textContent, 'Black 80% · Red · Amir');
 });
 
 test('Grok only gets the drones this person may fly, and is told who flies the others', async () => {
@@ -101,10 +98,7 @@ test('Grok only gets the drones this person may fly, and is told who flies the o
 test('a landed drone on another laptop can be taken off from here', async () => {
   const app = setup({drones:()=>[blackMine, redTakeable]});
   await tick(); await tick();
-  app.element('#dronesButton').click();
-  const red = cardOf(app, 'red');
-  assert.doesNotMatch(red.className, /drone-other/);
-  assert.equal(red.querySelector('.drone-availability').textContent, "On the ground · on Arnove's laptop · say take off to fly it here");
+  assert.equal(app.element('#linkText').textContent, 'Black 80% · Red · Arnove');
   const ws = await openVoice(app);
   const session = ws.sent.find(m => m.type === 'session.update').session;
   assert.deepEqual(session.tools.find(t => t.name === 'takeoff').parameters.properties.drone.enum, ['black', 'red']);
@@ -120,11 +114,7 @@ test('a landed drone on another laptop can be taken off from here', async () => 
 test('a drone another person here flies: greyed with its video, left out of Grok and of land with no drone', async () => {
   const app = setup({drones:()=>[blackFlownByMarco, redTakeable]});
   await tick(); await tick();
-  app.element('#dronesButton').click();
-  const black = cardOf(app, 'black');
-  assert.match(black.className, /drone-other/);
-  assert.equal(black.querySelector('.drone-availability').textContent, 'Connected · flown by Marco');
-  assert.equal(black.querySelector('.drone-video img').src, '/video/tello'); // same laptop: the camera is here
+  assert.equal(app.element('#linkText').textContent, 'Black 80% ✈ · Marco · Red · Arnove');
   const ws = await openVoice(app);
   const session = ws.sent.find(m => m.type === 'session.update').session;
   assert.deepEqual(session.tools.find(t => t.name === 'land').parameters.properties.drone.enum, ['red']);
@@ -229,27 +219,6 @@ test('microphone off clears Grok input and ignores later commands except safety 
   assert.deepEqual(lands.map(b=>[b.droneId,b.action]),[['tello','land'],['rmtt','land']]);
 });
 
-test('switch off ends the voice session and calls the emergency endpoint', async () => {
-  const app=setup();
-  app.element('#startVoice').click();
-  app.resolveMedia({getTracks:()=>[app.track]});
-  await tick(); await tick();
-  app.WebSocket.last.open();
-  await app.element('#switchOff').click();
-  assert.equal(app.element('#startVoice').hidden,false);
-  const call=app.fetches.find(f=>f.url==='/api/emergency');
-  assert.ok(call);
-  assert.deepEqual(JSON.parse(call.body),{kind:'land'});
-});
-
-test('cut motors needs a second tap', async () => {
-  const app=setup();
-  await app.element('#killMotors').click();
-  assert.equal(app.fetches.some(f=>f.url==='/api/emergency'),false);
-  await app.element('#killMotors').click();
-  assert.deepEqual(JSON.parse(app.fetches.find(f=>f.url==='/api/emergency').body),{kind:'motors'});
-});
-
 test('a name saved in this browser is reused and the dialog stays closed', async () => {
   const app = setup({drones:()=>[], names:new Map([['metoera_name','Amir']])});
   await tick(); await tick();
@@ -270,4 +239,37 @@ test('a first visit asks for a name', async () => {
   await tick(); await tick();
   assert.equal(app.element('#nameDialog').open, true);
   assert.equal(app.names.has('metoera_name'), false);
+});
+
+test('submitting the name saves it before the dialog closes', async () => {
+  const app = setup({drones:()=>[], pilot:''});
+  await tick(); await tick();
+  app.element('#pilotName').value = 'Amir';
+  app.element('#nameDialog').querySelector('form').handlers.submit();
+  assert.equal(app.names.get('metoera_name'), 'Amir');
+  assert.match(app.document.cookie, /metoera_name=Amir/);
+  app.element('#pilotName').value = '';
+  app.element('#nameDialog').open = false;
+  app.element('#nameDialog').handlers.close();
+  for (const fn of app.timeouts) fn();
+  assert.equal(app.element('#nameDialog').open, false);
+});
+
+test('a name cookie keeps the dialog closed when this tab has no stored name', async () => {
+  const app = setup({drones:()=>[], pilot:'', cookie:'metoera_name=Amir'});
+  await tick(); await tick();
+  assert.equal(app.element('#nameDialog').open, false);
+  assert.equal(app.names.get('metoera_name'), 'Amir');
+  assert.equal(JSON.parse(app.fetches.find(f=>f.url==='/api/pilot').body).name, 'Amir');
+});
+
+test('a failed status check does not ask, and the next one keeps the server name', async () => {
+  const app = setup({drones:()=>[], pilot:'Marco', failDrones:1});
+  await tick(); await tick();
+  assert.equal(app.element('#nameDialog').open, false);
+  assert.equal(app.names.has('metoera_name'), false);
+  await app.timers[0]();
+  await tick(); await tick();
+  assert.equal(app.element('#nameDialog').open, false);
+  assert.equal(app.names.get('metoera_name'), 'Marco');
 });

@@ -1,4 +1,5 @@
 import http from 'node:http';
+import net from 'node:net';
 import { readFile } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,6 +7,10 @@ import { loadEnvFile } from 'node:process';
 import { RealTello, type Detections } from './src/tello.ts';
 
 const port = 18787;
+// Node gives each address only 250 ms to connect before trying the next one. On a busy
+// network (the hackathon Wi-Fi took ~2 s to reach api.x.ai) every attempt is cut short
+// and fetch fails with "Unable to connect to xAI". Give each attempt more time.
+net.setDefaultAutoSelectFamilyAttemptTimeout(2500);
 const root = dirname(fileURLToPath(import.meta.url));
 try { loadEnvFile(join(root, '.env')); } catch (error) {
   if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;

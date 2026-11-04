@@ -4,6 +4,7 @@ import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { Simulator } from './src/simulator.ts';
+import { RealTello } from './src/tello.ts';
 
 const port = 18787;
 const simulator = new Simulator();
@@ -11,6 +12,14 @@ const root = dirname(fileURLToPath(import.meta.url));
 try { loadEnvFile(join(root, '.env')); } catch (error) {
   if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
 }
+try { loadEnvFile(join(root, '.env.tello')); } catch (error) {
+  if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+}
+// The real Tello is enabled only when TELLO_IP is set (in .env or .env.tello).
+// TELLO_PORT is for local tests against a fake drone.
+const tello = process.env.TELLO_IP
+  ? new RealTello({host:process.env.TELLO_IP, expectedSerial:process.env.TELLO_SETUP_SERIAL, port:Number(process.env.TELLO_PORT ?? 8889)})
+  : null;
 const files: Record<string, string> = {'/':'index.html','/app.js':'app.js','/style.css':'style.css'};
 const types: Record<string, string> = {'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8'};
 const allowedOrigins = new Set([`http://localhost:${port}`, `http://127.0.0.1:${port}`]);
@@ -34,7 +43,14 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && ['/session','/api/command'].includes(path)) {
     if (!req.headers.origin || !allowedOrigins.has(req.headers.origin)) { json(res, 403, {error:'Unauthorized origin'}); return; }
     if (path === '/api/command') {
-      try { const result = await simulator.execute(await readJson(req)); json(res, 200, result); }
+      try {
+        const body = await readJson(req);
+        if ((body as {droneId?: unknown})?.droneId === 'tello') {
+          json(res, 200, tello ? await tello.execute(body) : {ok:false, mode:'real', error:'The real Tello is not configured. Set TELLO_IP and restart the server.'});
+        } else {
+          json(res, 200, await simulator.execute(body));
+        }
+      }
       catch { json(res, 400, {ok:false, mode:'simulation', error:'Invalid request'}); }
       return;
     }
@@ -52,9 +68,20 @@ const server = http.createServer(async (req, res) => {
     } catch { json(res, 502, {error:'Unable to connect to xAI.'}); }
     return;
   }
-  if (req.method === 'GET' && path === '/api/drones') { json(res, 200, {mode:'simulation', drones:simulator.snapshot().map(drone => ({...drone, timestamp:new Date().toISOString()}))}); return; }
+  if (req.method === 'GET' && path === '/api/drones') { json(res, 200, {mode:'simulation', drones:simulator.snapshot().map(drone => ({...drone, timestamp:new Date().toISOString()})), real:tello?.snapshot() ?? null}); return; }
   if (req.method !== 'GET' || !files[path]) { res.writeHead(404).end(); return; }
   try { const file = files[path]; res.writeHead(200, {'Content-Type':types[extname(file)]}).end(await readFile(join(root,'public',file))); }
   catch { res.writeHead(500).end(); }
 });
-server.listen(port, '127.0.0.1', () => console.log(`Metoera: http://localhost:${port} (simulated drones)`));
+server.listen(port, '127.0.0.1', () => console.log(`Metoera: http://localhost:${port} (simulated drones${tello ? ` + real Tello at ${process.env.TELLO_IP}` : ''})`));
+// If the server stops while the real drone is flying, land it first.
+let shuttingDown = false;
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, async () => {
+    if (shuttingDown) process.exit(1);
+    shuttingDown = true;
+    if (tello?.snapshot().flight === 'flying') { console.log('Landing the Tello before exit…'); await tello.emergencyLand(); }
+    tello?.close();
+    process.exit(0);
+  });
+}

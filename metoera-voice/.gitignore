@@ -1,4 +1,15 @@
 .env
 .env.*
 !.env.example
+!.env.tello.example
 node_modules/
+
+.tello-station-result.json
+
+.tello-diagnostics.json
+
+.tello-wire.log
+
+.tello-wire-errors.log
+
+__pycache__/

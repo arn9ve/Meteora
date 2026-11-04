@@ -1,27 +1,29 @@
 # Metoera Voice
 
-Interfaccia locale per conversare con Grok Voice. Le funzioni di volo sono simulate: nessun comando viene trasmesso a un drone.
+Interfaccia vocale Grok e simulatore locale di due droni indipendenti. Tutti i movimenti sono virtuali. Il progetto non invia comandi a droni fisici e non simula una vera rete Wi-Fi.
 
 ## Avvio
 
-Serve Node.js 20 o successivo, una chiave API xAI abilitata e accesso a Internet.
+Richiede Node.js 24.12 o successivo, una chiave API xAI abilitata, Internet e un microfono. Per la verifica dei tipi serve installare le dipendenze con `npm install`.
 
-```sh
-cd metoera-voice
-export XAI_API_KEY='la-tua-chiave'
-node server.mjs
-```
+1. Copia `.env.example` in `.env` se il file `.env` non esiste già.
+2. Apri `.env` e inserisci la chiave dopo `XAI_API_KEY=`. Non metterla tra virgolette se non è necessario, né in chat. Il file `.env` è escluso da Git.
+3. Nella cartella del progetto esegui `npm install` e poi `npm start`.
+4. Apri http://localhost:18787, clicca su «Avvia conversazione vocale» e autorizza il microfono. Esempio: «Drone 1, decolla, avanza di 50 centimetri e atterra».
+5. Apri «Droni» per vedere lo stato dei due droni virtuali. Ferma il server con Ctrl+C.
 
-Aprire http://localhost:18787, premere l’ingranaggio e poi «Avvia conversazione», e consentire l'accesso al microfono. Interrompere il server con Ctrl+C. La chiave rimane nel processo locale; il browser riceve un token temporaneo xAI. Non pubblicare la chiave o inserirla nel repository.
+La chiave resta sul server locale. Il browser riceve solo un token temporaneo per connettersi a Grok. Se la chiave viene aggiunta a `.env` mentre il server è in esecuzione senza chiave, viene letta alla successiva richiesta di avvio della voce. Per sostituire una chiave già caricata, riavvia il server.
 
-## Collegamento con il team drone
+## Simulazione
 
-In `public/app.js`, `simulate(name, args)` rappresenta il punto da sostituire con una chiamata al backend del team. Le azioni sono `takeoff`, `land`, `move` (direction, centimeters), `rotate` (direction, degrees). Il risultato viene inoltrato a Grok come output della funzione. Concordare con il team contratto, autenticazione, stato, timeout, concorrenza e arresto prima di collegare un drone.
+Il server avvia Drone 1 e Drone 2 in stato connesso e a terra. Le posizioni iniziali sono (-1, 0, 0) e (1, 0, 0) metri. L'asse +Y è davanti a un drone con orientamento 0°, +X è a destra e +Z è verso l'alto. I movimenti orizzontali sono relativi all'orientamento del drone. I comandi sono istantanei e le coordinate rappresentano un mondo virtuale, non una misurazione di un drone reale. Riavviare il server ripristina lo stato iniziale.
 
-Questo progetto non implementa il controllo reale, la validazione di sicurezza, l'armamento, la telemetria o un atterraggio di emergenza. Il backend del team deve applicare autonomamente ogni vincolo e confermare il risultato effettivo. Non collegare direttamente la UI ai motori. La simulazione non rappresenta lo stato di un drone vero.
+Grok richiede un drone esplicito; quando manca deve chiedere quale usare. I comandi `takeoff`, `land`, `move` e `rotate` vengono validati sul server, indirizzati al drone specificato e restituiti a Grok insieme al risultato. La UI legge periodicamente `GET /api/drones`; `POST /api/command` accetta comandi strutturati con `droneId` e `action`. Il servizio ascolta solo su localhost e controlla l'origine delle richieste POST.
 
-L'integrazione con l'API xAI e l'audio richiede una prova con credenziali valide e hardware; non è stata verificata con un drone o con lo starter Python non ancora fornito. Il prototipo non include wake word né riconnessione automatica.
+## Collegamento al controller del team
 
-## Interfaccia
+`src/simulator.ts` definisce il contratto `snapshot()` e `execute(command)`. Per connettere il controller Python servirà un adattatore server che esponga lo stesso significato dei risultati, inoltri i comandi al controller e restituisca stato e misurazioni reali. Concordare protocollo, identificativi, sistema di coordinate, unità, tempi e gestione errori con il team. Il controller reale deve applicare i propri controlli e non può trattare coordinate simulate come misure. Il browser e Grok non devono aggirare il controller.
 
-La schermata mostra la trascrizione dell’utente e la risposta di Grok, con un fondo di simboli geometrici che reagisce al microfono. L’ingranaggio apre avvio voce, stato del simulatore e registro. La tastiera permette di inviare testo nella sessione connessa. La X termina la sessione e rilascia il microfono. I dialoghi si chiudono anche con Esc.
+## Verifica
+
+`npm run typecheck` verifica i tipi TypeScript; `npm test` prova isolamento, sequenze, rotazioni e comandi non validi. La sessione Grok live richiede una chiave valida e il consenso al microfono; non è verificata automaticamente dai test del simulatore.

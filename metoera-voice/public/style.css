@@ -63,3 +63,10 @@
 .photo-view{position:fixed;inset:auto 16px 16px auto;z-index:20;width:min(360px,calc(100% - 32px));background:#111;color:#fff;border-radius:16px;overflow:hidden;box-shadow:0 20px 60px #0005;cursor:pointer}
 .photo-view img{display:block;width:100%}
 .photo-view p{margin:0;padding:10px 12px;font-size:12px}
+/* A drone another laptop flies: see-only here. */
+/* The card fades, but "Connected to <name>" must stay readable on both card colours. */
+.drone-card.drone-other{opacity:.7}
+.drone-card.drone-other .drone-availability{color:#222;font-weight:600}
+.drone-black.drone-other .drone-availability{color:#fff}
+.link-status .dot[data-state=other]{background:#bbb;box-shadow:none}
+.link-status[data-state=other]{color:#777}

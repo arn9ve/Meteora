@@ -39,9 +39,10 @@ config dir. Its anonymous usage analytics (`sync`) is switched off.
 ## Run
 
 ```bash
-# Tello (default): listen on udp://0.0.0.0:11111.
+# Drones (default source udp://0.0.0.0:11111). The drone list is required:
+# every drone that got `streamon` sends to this port. Use the same IPs as .env.tello.
 # Start metoera-voice first so it sends `command` + `streamon`.
-.venv/bin/python -m metoera_vision
+.venv/bin/python -m metoera_vision --drones tello=192.168.5.137,rmtt=192.168.5.68
 
 # A video or image file (loops, paced to real time)
 .venv/bin/python -m metoera_vision --source samples/sample.mp4
@@ -49,8 +50,9 @@ config dir. Its anonymous usage analytics (`sync`) is switched off.
 # Webcam (dev). macOS will ask for camera permission for the terminal.
 .venv/bin/python -m metoera_vision --source webcam:0
 
-# Simulate the Tello without a drone: replay a clip as raw H.264 in
+# Simulate one drone without a drone: replay a clip as raw H.264 in
 # 1460-byte UDP datagrams to 127.0.0.1:11111 (run in a second terminal)
+.venv/bin/python -m metoera_vision --drones tello=127.0.0.1
 scripts/replay_udp.sh samples/sample.mp4
 ```
 
@@ -74,13 +76,14 @@ counted (`/health` → `source_stats.unknown_senders`) and dropped.
 - Entry format: `id=ip` matches any source port from that IP. `id=ip:port`
   matches IP **and** source port, which lets one machine simulate two drones.
   Ids may use letters, digits, `-` and `_`.
-- The first drone listed is the default: endpoints called without `?drone=`
-  use it, so a single-drone client calling `/detections` keeps working.
+- There is no default drone: `/detections`, `/find`, `/frame.jpg` and `/stream`
+  need `?drone=<id>` and answer 400 without it.
 - One YOLO model is shared. The detector serves the drones round-robin, always
   on each drone's newest frame, at up to `--detect-fps` **per drone** (5 by
   default, so about 10 inferences/s in total for two). If the model can't keep up,
   each drone gets an equal share.
-- Without `--drones`, every source (file, webcam, plain `udp://`) behaves exactly as before.
+- A `udp://` source without `--drones` is refused at start: the streams of
+  several drones would mix in one decoder. File and webcam sources need no list.
 
 Simulate both drones locally (no drone needed). The script replays
 `samples/sample.h264` from two source ports to one receiver port:
@@ -93,7 +96,7 @@ Simulate both drones locally (no drone needed). The script replays
 | Flag | Env var | Default |
 |---|---|---|
 | `--source` | `METOERA_VISION_SOURCE` | `udp://0.0.0.0:11111` (or a file path, or `webcam:N`) |
-| `--drones` | `METOERA_VISION_DRONES` | off; `id=ip[:port],...`, e.g. `tello=192.168.5.137,rmtt=192.168.5.68` (needs a `udp://` source) |
+| `--drones` | `METOERA_VISION_DRONES` | required with a `udp://` source; `id=ip[:port],...`, e.g. `tello=192.168.5.137,rmtt=192.168.5.68` |
 | `--host` / `--port` | `METOERA_VISION_HOST` / `_PORT` | `127.0.0.1` / `18790` |
 | `--model` | `METOERA_VISION_MODEL` | `yolo11n.pt` (any Ultralytics detect model, e.g. `yolov8n.pt`, `yolo11s.pt`) |
 | `--device` | `METOERA_VISION_DEVICE` | `auto` (mps, then cuda, then cpu) |
@@ -110,13 +113,14 @@ Simulate both drones locally (no drone needed). The script replays
 All responses are JSON unless noted, with `Cache-Control: no-store`. CORS is
 allowed for the voice UI origin, and `OPTIONS` preflight is supported.
 
-**Multi-drone mode.** Every endpoint accepts `?drone=<id>` (for example
-`/find?label=person&drone=rmtt` or `/stream?drone=tello`). Without it, the first
-drone in `--drones` is used. Results from `/detections` and `/find` include
-`"drone": "<id>"`. An unknown id returns
-`404 {"error": "unknown drone", "drone": "x", "drones": ["tello", "rmtt"]}`.
-That is also what any `?drone=` returns in single-source mode. `/` shows all
-the drones' streams side by side.
+**Drones.** `/detections`, `/find`, `/frame.jpg` and `/stream` take
+`?drone=<id>` (for example `/find?label=person&drone=rmtt` or
+`/stream?drone=tello`). Without it they return
+`400 {"error": "say which drone: add ?drone=<id>", "drones": ["tello", "rmtt"]}`.
+Results from `/detections` and `/find` include `"drone": "<id>"`. An unknown id
+returns `404 {"error": "unknown drone", "drone": "x", "drones": ["tello", "rmtt"]}`.
+That is also what any `?drone=` returns for a file or webcam source. `/` shows
+all the drones' streams side by side.
 
 ### `GET /health`
 ```json
@@ -130,11 +134,11 @@ the drones' streams side by side.
 error state. With no video (no `streamon` yet, or the drone is out of range),
 `ok` is `false` and `last_frame_age_ms` is `null` or growing.
 
-With `--drones`, `/health` adds a `drones` object. The top-level `ok` is true
-only when **every** drone is ok. The flat `fps_in`, `fps_detect`,
-`last_frame_age_ms`, ... fields mirror the default drone:
+That shape is for a file or webcam source. With `--drones`, `/health` has one
+entry per drone under `drones`, and the top-level `ok` is true only when
+**every** drone is ok. No top-level field stands for one drone:
 ```json
-{"ok": true, "default_drone": "tello", "fps_in": 30.2, "fps_detect": 4.6, "last_frame_age_ms": 24, ...,
+{"ok": true, "source": "udp://0.0.0.0:11111", "model": "yolo11n.pt", "device": "mps", ...,
  "drones": {
    "tello": {"ok": true, "address": "192.168.5.137", "fps_in": 30.2, "fps_detect": 4.6,
              "last_frame_age_ms": 24, "last_detection_age_ms": 257, "frame_size": [960, 720],
@@ -179,25 +183,24 @@ The latest frame as a JPEG, with the latest boxes and labels drawn on it. Return
 
 ### `GET /stream`
 An MJPEG stream (`multipart/x-mixed-replace`) of annotated frames, up to
-`--stream-fps`. It works directly in `<img src="http://127.0.0.1:18790/stream">`.
+`--stream-fps`. It works directly in `<img src="http://127.0.0.1:18790/stream?drone=tello">`.
 
 ### `GET /`
 A small debug page with the stream and live JSON.
 
 ## How it plugs into metoera-voice
 
-1. Start metoera-vision (`.venv/bin/python -m metoera_vision`). It starts listening on UDP 11111.
-2. metoera-voice connects to the Tello on 8889 and sends `command`, then
-   `streamon`. The Tello then pushes video to the controlling computer's port
-   11111, which is this service. Re-send `streamon` after a Tello reboot or
-   reconnect. If the stream stops, `/health.ok` turns `false`.
-3. Give Grok one tool, for example `look_for(label)` and/or `describe_scene()`.
-   The Node server implements it with `fetch("http://127.0.0.1:18790/find?label=...")`
-   or `/detections`, and returns a short summary: "Yes, a person on the left
-   (92%)." Reject results with a large `age_ms` (more than about 1500 ms) so
-   Grok doesn't answer from stale video.
-4. The voice UI on :18787 can show `<img src="http://127.0.0.1:18790/stream">`.
-   CORS is already allowed for `fetch` calls from that origin.
+1. Start metoera-vision with the same drones as `.env.tello`
+   (`.venv/bin/python -m metoera_vision --drones tello=IP,rmtt=IP`). It starts listening on UDP 11111.
+2. metoera-voice connects to each drone on 8889 and sends `command`, then
+   `streamon`. Each drone then pushes video to the controlling computer's port
+   11111, which is this service. Re-send `streamon` after a drone reboot or
+   reconnect. If a stream stops, that drone's `/health` entry turns `ok: false`.
+3. Each drone's `scan` and `look` tools read `/detections?drone=<id>` and return a
+   short summary to Grok: "Yes, a person on the left (92%)." Reject results with
+   a large `age_ms` (more than about 1500 ms) so Grok doesn't answer from stale video.
+4. The voice UI shows each drone's video through the voice server's `/video/<id>`,
+   which passes `/stream?drone=<id>` through.
 
 Only one process can bind UDP 11111. Don't run another Tello video consumer
 (an SDK `cv2.VideoCapture('udp://...')` or another copy of this service) at

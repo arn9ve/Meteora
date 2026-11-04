@@ -25,7 +25,7 @@
   </nav>
 </main>
 <div id="photoView" class="photo-view" hidden role="dialog" aria-label="Photo from the drone"><img alt="Photo from the drone"><p></p></div>
-<dialog id="dronesDialog" class="drones-dialog"><div class="dialog-head"><div><p class="dialog-kicker">MONITORING</p><h2>Your drones</h2></div><button class="dismiss" aria-label="Close drone view">×</button></div><p class="drone-intro">Drone 1 · Black and Drone 2 · Red. Every voice command moves a real drone.</p><div class="drone-grid" id="droneGrid"></div><p class="telemetry-note" id="telemetryNote">Waiting for the server.</p></dialog>
+<dialog id="dronesDialog" class="drones-dialog"><div class="dialog-head"><div><p class="dialog-kicker">MONITORING</p><h2>Your drones</h2></div><button class="dismiss" aria-label="Close drone view">×</button></div><p class="drone-intro">Drone 1 · Black and Drone 2 · Red. Every voice command moves a real drone.</p><div class="drone-grid" id="droneGrid"></div><p class="telemetry-note" id="telemetryNote">Waiting for the server.</p><p class="telemetry-note" id="clientsLine"></p></dialog>
 <dialog id="settingsDialog"><div class="dialog-head"><h2>Your voice, Grok.</h2><button class="dismiss" aria-label="Close settings">×</button></div><p>Voice conversation with Grok. Commands fly the real Tello.</p><p id="voiceHint" role="status">Allow microphone access to speak with Grok.</p><div class="drone-info"><span>Drones</span><strong id="droneState">Connecting…</strong></div><div class="activity-head"><h3>Activity</h3><span id="count">00</span></div><div id="activity"><p class="empty">No actions yet.</p></div></dialog>
 <script type="module" src="/app.js"></script>
 </body></html>

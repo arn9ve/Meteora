@@ -60,6 +60,12 @@
           <button type="button" id="btnTest" class="btn">Test alert</button>
         </div>
 
+        <label class="sens">
+          <span class="sens-label">Sensitivity <strong id="sensValue">35</strong> <small>(lower = fewer false alerts)</small></span>
+          <input type="range" id="sensSlider" min="0" max="100" value="35" />
+        </label>
+        <p id="dwellStatus" class="dwell-status">Dwell 0% · need ~1s in zone</p>
+
         <label class="arm">
           <input type="checkbox" id="armToggle" />
           <span>

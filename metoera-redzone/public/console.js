@@ -4,50 +4,103 @@ const joinHint = document.getElementById('joinHint');
 
 /** @type {Record<string, any>} */
 let slots = {};
+let panelsReady = false;
 
 function badge(text, cls = '') {
   return `<span class="badge ${cls}">${text}</span>`;
 }
 
-function panelHtml(slot) {
-  const online = slot.online;
-  const preview = online && slot.hasPreview
-    ? `<img class="preview" alt="Phone ${slot.id} preview" src="/api/slots/${slot.id}/preview.jpg?t=${slot.previewAt || Date.now()}" />`
-    : `<div class="preview missing">${online ? 'Waiting for snapshot…' : 'Offline — open phone URL'}</div>`;
-  const lenses = slot.lensesAvailable || {};
-  return `
-    <article class="panel" data-slot="${slot.id}">
-      <h2>${slot.name || `Phone ${slot.id}`}</h2>
-      <div class="meta">
-        ${badge(online ? 'Online' : 'Offline', online ? 'live' : 'off')}
-        ${badge(slot.watching ? 'Watching' : 'Idle', slot.watching ? 'on' : 'off')}
-        ${badge(slot.armed ? 'ARM ON' : 'ARM OFF', slot.armed ? 'armed' : 'off')}
-        ${badge(`Lens ${slot.lens || '—'}`)}
-      </div>
-      ${preview}
-      <p class="detail">
-        ROI ${slot.roi ? 'set' : 'none'}
-        · score ${slot.personScore == null ? '—' : slot.personScore.toFixed?.(2) ?? slot.personScore}
-        ${slot.lastError ? `· ${slot.lastError}` : ''}
-      </p>
+function ensurePanels() {
+  if (panelsReady) return;
+  boards.innerHTML = ['1', '2', '3']
+    .map(
+      (id) => `
+    <article class="panel" data-slot="${id}">
+      <h2 class="slot-title">Phone ${id}</h2>
+      <div class="meta" data-meta></div>
+      <img class="preview" alt="Phone ${id} live preview" data-preview src="/api/slots/${id}/preview.mjpeg" />
+      <div class="preview missing" data-missing hidden>Offline — open phone URL</div>
+      <p class="detail" data-detail></p>
       <div class="row">
-        <button type="button" class="btn primary" data-act="watch-on" ${online ? '' : 'disabled'}>Start</button>
-        <button type="button" class="btn" data-act="watch-off" ${online ? '' : 'disabled'}>Stop</button>
-        <button type="button" class="btn danger" data-act="arm-on" ${online ? '' : 'disabled'}>ARM</button>
-        <button type="button" class="btn" data-act="arm-off" ${online ? '' : 'disabled'}>Disarm</button>
+        <button type="button" class="btn primary" data-act="watch-on">Start</button>
+        <button type="button" class="btn" data-act="watch-off">Stop</button>
+        <button type="button" class="btn danger" data-act="arm-on">ARM</button>
+        <button type="button" class="btn" data-act="arm-off">Disarm</button>
       </div>
       <div class="row" role="group" aria-label="Lens">
-        <button type="button" class="lens-btn ${slot.lens === 'wide' ? 'active' : ''}" data-act="lens-wide" ${lenses.wide && online ? '' : 'disabled'}>Wide</button>
-        <button type="button" class="lens-btn ${slot.lens === 'normal' ? 'active' : ''}" data-act="lens-normal" ${lenses.normal !== false && online ? '' : 'disabled'}>Normal</button>
-        <button type="button" class="lens-btn ${slot.lens === 'tele' ? 'active' : ''}" data-act="lens-tele" ${lenses.tele && online ? '' : 'disabled'}>Tele</button>
+        <button type="button" class="lens-btn" data-act="lens-wide">Wide</button>
+        <button type="button" class="lens-btn" data-act="lens-normal">Normal</button>
+        <button type="button" class="lens-btn" data-act="lens-tele">Tele</button>
       </div>
-    </article>
-  `;
+      <label class="sens">
+        <span>Sensitivity <strong data-sens-val>35</strong></span>
+        <input type="range" min="0" max="100" value="35" data-sens />
+      </label>
+    </article>`,
+    )
+    .join('');
+  panelsReady = true;
+}
+
+function updatePanel(slot) {
+  const panel = boards.querySelector(`[data-slot="${slot.id}"]`);
+  if (!panel) return;
+  const online = Boolean(slot.online);
+  const lenses = slot.lensesAvailable || {};
+  panel.querySelector('.slot-title').textContent = slot.name || `Phone ${slot.id}`;
+  panel.querySelector('[data-meta]').innerHTML = [
+    badge(online ? 'Online' : 'Offline', online ? 'live' : 'off'),
+    badge(slot.watching ? 'Watching' : 'Idle', slot.watching ? 'on' : 'off'),
+    badge(slot.armed ? 'ARM ON' : 'ARM OFF', slot.armed ? 'armed' : 'off'),
+    badge(`Lens ${slot.lens || '—'}`),
+    badge(`Sens ${slot.sensitivity ?? 35}`),
+  ].join('');
+
+  const img = panel.querySelector('[data-preview]');
+  const missing = panel.querySelector('[data-missing]');
+  if (online) {
+    img.hidden = false;
+    missing.hidden = true;
+    // Keep stable MJPEG URL — don't thrash src (that caused freezes).
+    if (!img.dataset.mjpeg) {
+      img.src = `/api/slots/${slot.id}/preview.mjpeg`;
+      img.dataset.mjpeg = '1';
+    }
+  } else {
+    img.hidden = true;
+    missing.hidden = false;
+  }
+
+  const dwell = typeof slot.dwellMs === 'number' ? Math.min(100, Math.round((slot.dwellMs / 1000) * 100)) : 0;
+  panel.querySelector('[data-detail]').textContent =
+    `ROI ${slot.roi ? 'set' : 'none'} · score ${
+      slot.personScore == null ? '—' : Number(slot.personScore).toFixed(2)
+    } · dwell ${dwell}%${slot.lastError ? ` · ${slot.lastError}` : ''}`;
+
+  for (const btn of panel.querySelectorAll('[data-act]')) {
+    const act = btn.getAttribute('data-act');
+    let enabled = online;
+    if (act === 'lens-wide') enabled = online && Boolean(lenses.wide);
+    if (act === 'lens-normal') enabled = online && lenses.normal !== false;
+    if (act === 'lens-tele') enabled = online && Boolean(lenses.tele);
+    btn.disabled = !enabled;
+    btn.classList.toggle('active', act === `lens-${slot.lens}`);
+  }
+
+  const sens = panel.querySelector('[data-sens]');
+  const sensVal = panel.querySelector('[data-sens-val]');
+  if (sens && document.activeElement !== sens) {
+    sens.value = String(slot.sensitivity ?? 35);
+    sens.disabled = !online;
+  }
+  if (sensVal) sensVal.textContent = String(slot.sensitivity ?? 35);
 }
 
 function render() {
-  const list = ['1', '2', '3'].map((id) => slots[id] || { id, online: false, name: `Phone ${id}` });
-  boards.innerHTML = list.map(panelHtml).join('');
+  ensurePanels();
+  for (const id of ['1', '2', '3']) {
+    updatePanel(slots[id] || { id, online: false, name: `Phone ${id}` });
+  }
 }
 
 async function sendCommand(slotId, command) {
@@ -82,6 +135,23 @@ boards.addEventListener('click', (e) => {
   void sendCommand(slotId, command);
 });
 
+boards.addEventListener('change', (e) => {
+  const input = e.target.closest('[data-sens]');
+  const panel = e.target.closest('[data-slot]');
+  if (!input || !panel) return;
+  const slotId = panel.getAttribute('data-slot');
+  const sensitivity = Number(input.value);
+  panel.querySelector('[data-sens-val]').textContent = String(sensitivity);
+  void sendCommand(slotId, { type: 'sensitivity', sensitivity });
+});
+
+boards.addEventListener('input', (e) => {
+  const input = e.target.closest('[data-sens]');
+  const panel = e.target.closest('[data-slot]');
+  if (!input || !panel) return;
+  panel.querySelector('[data-sens-val]').textContent = String(input.value);
+});
+
 async function refreshEvents() {
   try {
     const data = await (await fetch('/api/events?limit=20')).json();
@@ -101,13 +171,15 @@ async function refreshEvents() {
 }
 
 async function boot() {
+  ensurePanels();
   try {
     const health = await (await fetch('/api/health')).json();
-    const base = health.lan && health.phonePort
-      ? `https://${health.lan}:${health.phonePort}/?key=…`
-      : 'https://<LAN>:<phonePort>/?key=…';
+    const base =
+      health.lan && health.phonePort
+        ? `https://${health.lan}:${health.phonePort}/?key=…`
+        : 'https://<LAN>:<phonePort>/?key=…';
     joinHint.textContent =
-      `Phones join: ${base}&slot=1  ·  &slot=2  ·  &slot=3  (or open without slot and pick). Snapshots ~1–2s — not full live video.`;
+      `Phones: ${base}&slot=1|2|3. Mac preview is MJPEG ~4fps (small JPEGs). Person alert needs ~1s in zone. ARM default OFF.`;
     const data = await (await fetch('/api/slots')).json();
     slots = Object.fromEntries((data.slots || []).map((s) => [s.id, s]));
     render();
@@ -128,12 +200,19 @@ async function boot() {
     }
   };
 
+  // Light status poll (MJPEG handles video; this keeps badges fresh without DOM rebuild thrash)
+  setInterval(async () => {
+    try {
+      const data = await (await fetch('/api/slots')).json();
+      slots = Object.fromEntries((data.slots || []).map((s) => [s.id, s]));
+      render();
+    } catch {
+      /* ignore */
+    }
+  }, 2000);
+
   void refreshEvents();
-  setInterval(() => void refreshEvents(), 4000);
-  // Refresh preview images even if SSE meta didn't change bytes
-  setInterval(() => {
-    if (Object.values(slots).some((s) => s?.online && s?.hasPreview)) render();
-  }, 1500);
+  setInterval(() => void refreshEvents(), 5000);
 }
 
 void boot();

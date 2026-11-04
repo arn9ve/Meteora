@@ -3,11 +3,18 @@
  * Local COCO-SSD person detection; Mac console via heartbeat + JPEG snapshots.
  */
 const LENS_KEY = 'metoera-redzone-lens';
-const PERSON_MIN_SCORE = 0.45;
-const DETECT_EVERY_MS = 350;
-const CLIENT_ALERT_GAP_MS = 1500;
+const SENS_KEY = 'metoera-redzone-sens';
+/** Default sensitivity 35 → confidence ~0.65 (stricter than old 0.45). */
+const DEFAULT_SENSITIVITY = 35;
+const DETECT_EVERY_MS = 280;
+const DWELL_NEED_MS = 1000;
+const DWELL_DECAY_PER_TICK = 420;
+const MIN_BBOX_AREA = 0.035;
+const MIN_BBOX_SIDE = 0.07;
+const CLIENT_ALERT_GAP_MS = 2500;
 const HEARTBEAT_MS = 1500;
-const PREVIEW_MS = 1800;
+/** ~4 fps small JPEGs for Mac MJPEG (phone keeps live <video>). */
+const PREVIEW_MS = 250;
 
 const $ = (id) => document.getElementById(id);
 const joinGate = $('joinGate');
@@ -30,6 +37,9 @@ const flash = $('flash');
 const btnStart = $('btnStart');
 const btnClear = $('btnClear');
 const btnTest = $('btnTest');
+const sensSlider = $('sensSlider');
+const sensValue = $('sensValue');
+const dwellStatus = $('dwellStatus');
 const lensButtons = {
   wide: $('camWide'),
   normal: $('camNormal'),
@@ -68,6 +78,24 @@ let previewTimer = 0;
 let drag = null;
 let lastClientAlert = 0;
 let modelReady = false;
+let sensitivity = Number(localStorage.getItem(SENS_KEY) ?? DEFAULT_SENSITIVITY);
+if (!Number.isFinite(sensitivity)) sensitivity = DEFAULT_SENSITIVITY;
+sensitivity = Math.min(100, Math.max(0, Math.round(sensitivity)));
+let dwellMs = 0;
+let lastDetectAt = 0;
+
+/** Map sensitivity 0–100 → COCO score threshold (0.85 … 0.45). Lower sens = higher bar. */
+function scoreThreshold() {
+  return 0.85 - (sensitivity / 100) * 0.4;
+}
+
+function setSensitivityUi(value, { announce = false } = {}) {
+  sensitivity = Math.min(100, Math.max(0, Math.round(value)));
+  localStorage.setItem(SENS_KEY, String(sensitivity));
+  if (sensSlider) sensSlider.value = String(sensitivity);
+  if (sensValue) sensValue.textContent = String(sensitivity);
+  if (announce) setMessage(`Sensitivity ${sensitivity} · min score ${scoreThreshold().toFixed(2)}`);
+}
 
 function roiStorageKey() {
   const opt = lenses[activeLens];
@@ -435,10 +463,12 @@ async function loadModel() {
   }
   try {
     await tf.ready();
-    model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    // mobilenet_v2 is more accurate than lite (fewer non-person false positives).
+    model = await cocoSsd.load({ base: 'mobilenet_v2' });
     modelReady = true;
     modelBadge.textContent = 'COCO-SSD';
     modelBadge.className = 'badge ready';
+    setMessage(`Person model ready · min score ${scoreThreshold().toFixed(2)}`);
   } catch (error) {
     modelBadge.textContent = 'Fail';
     lastError = error instanceof Error ? error.message : String(error);
@@ -512,23 +542,65 @@ async function postIntrusion({ score, note, force = false } = {}) {
   setTimeout(() => setDetectUi(watching ? 'watch' : 'idle'), 1200);
 }
 
+function isPlausiblePerson(bbox, score, vw, vh) {
+  if (score < scoreThreshold()) return false;
+  const [, , bw, bh] = bbox;
+  const area = (bw / vw) * (bh / vh);
+  const minSide = Math.min(bw / vw, bh / vh);
+  // Tiny boxes are usually noise / distant clutter.
+  if (area < MIN_BBOX_AREA || minSide < MIN_BBOX_SIDE) return false;
+  // Extreme aspect ratios are rarely upright people in this demo framing.
+  const aspect = bw / Math.max(bh, 1);
+  if (aspect > 2.4 || aspect < 0.22) return false;
+  return true;
+}
+
 async function detectOnce() {
   if (!model || !modelReady || video.readyState < 2) return;
+  const now = performance.now();
+  const dt = lastDetectAt ? Math.min(500, now - lastDetectAt) : DETECT_EVERY_MS;
+  lastDetectAt = now;
   try {
-    const preds = await model.detect(video, 20, PERSON_MIN_SCORE);
-    const people = preds.filter((p) => p.class === 'person').map((p) => ({ bbox: p.bbox, score: p.score }));
+    const minScore = scoreThreshold();
+    const preds = await model.detect(video, 12, Math.max(0.4, minScore - 0.05));
+    const vw = video.videoWidth || 1;
+    const vh = video.videoHeight || 1;
+    const people = preds
+      .filter((p) => p.class === 'person' && isPlausiblePerson(p.bbox, p.score, vw, vh))
+      .map((p) => ({ bbox: p.bbox, score: p.score }));
     lastPeople = people;
     lastPersonScore = people[0]?.score ?? null;
     drawOverlay();
-    if (!watching || !roi) return;
-    const vw = video.videoWidth || 1;
-    const vh = video.videoHeight || 1;
-    for (const person of people) {
-      const [bx, by, bw, bh] = person.bbox;
-      if (boxesOverlapNorm({ x: bx / vw, y: by / vh, w: bw / vw, h: bh / vh }, roi)) {
-        void postIntrusion({ score: person.score, note: 'person-in-roi' });
-        break;
+
+    let inZone = false;
+    let best = null;
+    if (watching && roi) {
+      for (const person of people) {
+        const [bx, by, bw, bh] = person.bbox;
+        const box = { x: bx / vw, y: by / vh, w: bw / vw, h: bh / vh };
+        if (boxesOverlapNorm(box, roi)) {
+          inZone = true;
+          if (!best || person.score > best.score) best = person;
+        }
       }
+    }
+
+    if (watching && inZone) {
+      dwellMs = Math.min(DWELL_NEED_MS + 250, dwellMs + dt);
+    } else {
+      dwellMs = Math.max(0, dwellMs - DWELL_DECAY_PER_TICK * (dt / DETECT_EVERY_MS));
+    }
+
+    const pct = Math.min(100, Math.round((dwellMs / DWELL_NEED_MS) * 100));
+    if (dwellStatus) {
+      dwellStatus.textContent = watching
+        ? `Dwell ${pct}% · need ~1s in zone · score≥${minScore.toFixed(2)}`
+        : `Dwell idle · score≥${minScore.toFixed(2)}`;
+    }
+
+    if (watching && inZone && dwellMs >= DWELL_NEED_MS && best) {
+      dwellMs = 0;
+      void postIntrusion({ score: best.score, note: 'person-in-roi-1s' });
     }
   } catch (error) {
     lastError = error instanceof Error ? error.message : String(error);
@@ -557,8 +629,10 @@ function stopWatching(announce = true) {
   watching = false;
   window.clearInterval(detectTimer);
   detectTimer = 0;
+  dwellMs = 0;
   btnStart.textContent = 'Start watching';
   setDetectUi('idle');
+  if (dwellStatus) dwellStatus.textContent = `Dwell idle · score≥${scoreThreshold().toFixed(2)}`;
   if (announce) setMessage('Watching paused.');
 }
 
@@ -598,6 +672,8 @@ async function applyRemoteCommands(commands) {
       await switchLens(cmd.lens).catch((e) => {
         lastError = String(e.message || e);
       });
+    } else if (cmd.type === 'sensitivity' && typeof cmd.sensitivity === 'number') {
+      setSensitivityUi(cmd.sensitivity, { announce: true });
     } else if (cmd.type === 'roi' && cmd.roi) {
       roi = cmd.roi;
       saveRoi();
@@ -621,6 +697,8 @@ async function heartbeat() {
         watching,
         armed: armToggle.checked,
         lens: activeLens,
+        sensitivity,
+        dwellMs,
         lensesAvailable: {
           wide: Boolean(lenses.wide),
           normal: Boolean(lenses.normal),
@@ -646,18 +724,22 @@ async function heartbeat() {
 async function sendPreview() {
   if (!slotId || !slotToken || video.readyState < 2) return;
   try {
-    const w = 320;
-    const h = Math.max(180, Math.round((video.videoHeight / video.videoWidth) * w));
+    // Small + frequent for smooth Mac MJPEG (not meant as phone live view).
+    const w = 240;
+    const h = Math.max(135, Math.round((video.videoHeight / Math.max(video.videoWidth, 1)) * w));
     previewCanvas.width = w;
     previewCanvas.height = h;
     pctx.drawImage(video, 0, 0, w, h);
-    // Draw ROI hint for Mac operators
     if (roi) {
       pctx.strokeStyle = '#c23b2a';
       pctx.lineWidth = 2;
       pctx.strokeRect(roi.x * w, roi.y * h, roi.w * w, roi.h * h);
     }
-    const jpeg = previewCanvas.toDataURL('image/jpeg', 0.55);
+    if (dwellMs > 0) {
+      pctx.fillStyle = 'rgba(194,59,42,0.85)';
+      pctx.fillRect(0, 0, Math.round((dwellMs / DWELL_NEED_MS) * w), 4);
+    }
+    const jpeg = previewCanvas.toDataURL('image/jpeg', 0.42);
     await fetch(`/api/slots/${slotId}/preview`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Slot-Token': slotToken },
@@ -702,6 +784,7 @@ async function joinSlot(id) {
   slotLabel.textContent = `Phone ${id} · live preview · person only`;
   setArmedUi(false);
   setDetectUi('idle');
+  setSensitivityUi(sensitivity);
   setLink(true, `P${id}`);
 
   // Show shell first so <video> has layout, then open the live camera stream.
@@ -724,6 +807,19 @@ async function joinSlot(id) {
   }, 800);
 }
 
+sensSlider?.addEventListener('input', () => {
+  setSensitivityUi(Number(sensSlider.value));
+});
+sensSlider?.addEventListener('change', () => {
+  setSensitivityUi(Number(sensSlider.value), { announce: true });
+  if (!slotId) return;
+  void fetch(`/api/slots/${slotId}/command`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command: { type: 'sensitivity', sensitivity } }),
+  });
+});
+
 for (const btn of joinGate.querySelectorAll('[data-join]')) {
   btn.addEventListener('click', () => {
     void joinSlot(btn.getAttribute('data-join')).catch((error) => {
@@ -731,6 +827,8 @@ for (const btn of joinGate.querySelectorAll('[data-join]')) {
     });
   });
 }
+
+setSensitivityUi(sensitivity);
 
 window.addEventListener('resize', syncCanvasSize);
 window.addEventListener('orientationchange', () => setTimeout(syncCanvasSize, 250));

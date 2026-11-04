@@ -284,6 +284,34 @@ body {
 
 .btn:disabled { opacity: 0.45; }
 
+.sens {
+  display: block;
+  margin: 0 0 0.65rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.sens-label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 0.84rem;
+  color: var(--ink);
+}
+
+.sens-label small { color: var(--muted); font-size: 0.72rem; }
+
+.sens input[type='range'] {
+  width: 100%;
+  accent-color: var(--red);
+}
+
+.dwell-status {
+  margin: 0 0 0.7rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
 .arm {
   display: flex;
   gap: 0.7rem;

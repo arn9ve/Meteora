@@ -21,7 +21,7 @@ npm start
 | Phone 2 | `…&slot=2` |
 | Phone 3 | `…&slot=3` |
 
-Mac oversight uses **JPEG snapshots (~1–2s)** + status, not full live video (keeps LAN/CPU usable). Detection stays on-device.
+Mac oversight uses **MJPEG ~4 fps** (small JPEGs) + status. Phone keeps continuous live `<video>`. Detection: COCO-SSD `mobilenet_v2`, default sensitivity 35 (~0.65 score), **~1 s dwell** in zone before alert.
 
 ## Safety
 

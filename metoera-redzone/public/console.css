@@ -98,11 +98,29 @@ html, body {
   border: 1px solid var(--line);
 }
 
+.preview[hidden] { display: none !important; }
+
 .preview.missing {
   display: grid;
   place-content: center;
   color: var(--muted);
   font-size: 0.85rem;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border: 1px solid var(--line);
+  background: #0a0908;
+}
+
+.sens {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.sens input[type='range'] {
+  width: 100%;
+  accent-color: var(--red);
 }
 
 .row { display: flex; flex-wrap: wrap; gap: 0.4rem; }

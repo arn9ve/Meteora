@@ -70,12 +70,17 @@ function emptySlot(id) {
     armed: false,
     lens: 'normal',
     lensesAvailable: { wide: false, normal: true, tele: false },
+    /** 0 = least sensitive (high confidence), 100 = most sensitive. Default 35 → ~0.65 score. */
+    sensitivity: 35,
+    dwellMs: 0,
     roi: null,
     personScore: null,
     lastIntrusionAt: null,
     lastError: null,
     previewJpeg: null,
     previewAt: null,
+    /** @type {Set<(at: number) => void>} */
+    previewWaiters: new Set(),
     /** @type {object[]} */
     pendingCommands: [],
   };
@@ -97,6 +102,8 @@ function slotPublic(slot, { includePreviewMeta = true } = {}) {
     armed: slot.armed,
     lens: slot.lens,
     lensesAvailable: slot.lensesAvailable,
+    sensitivity: slot.sensitivity,
+    dwellMs: slot.dwellMs,
     roi: slot.roi,
     personScore: slot.personScore,
     lastIntrusionAt: slot.lastIntrusionAt,
@@ -105,6 +112,16 @@ function slotPublic(slot, { includePreviewMeta = true } = {}) {
     previewAt: includePreviewMeta ? slot.previewAt : null,
     joined: Boolean(slot.token),
   };
+}
+
+function notifyPreview(slot) {
+  for (const wake of slot.previewWaiters) {
+    try {
+      wake(slot.previewAt);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 function broadcast() {
@@ -398,6 +415,38 @@ async function handle(req, res, remote) {
     return;
   }
 
+  // Low-latency MJPEG for Mac console (~phone upload rate, small frames).
+  const mjpegMatch = /^\/api\/slots\/([123])\/preview\.mjpeg$/.exec(path);
+  if (req.method === 'GET' && mjpegMatch) {
+    const slot = slots[mjpegMatch[1]];
+    const boundary = 'metoeraframe';
+    res.writeHead(200, {
+      'Content-Type': `multipart/x-mixed-replace; boundary=${boundary}`,
+      'Cache-Control': 'no-store',
+      Connection: 'keep-alive',
+    });
+    let closed = false;
+    let lastSent = 0;
+    const writeFrame = () => {
+      if (closed || !slot.previewJpeg || slot.previewAt === lastSent) return;
+      lastSent = slot.previewAt;
+      const buf = slot.previewJpeg;
+      res.write(`--${boundary}\r\nContent-Type: image/jpeg\r\nContent-Length: ${buf.length}\r\n\r\n`);
+      res.write(buf);
+      res.write('\r\n');
+    };
+    const onPreview = () => writeFrame();
+    slot.previewWaiters.add(onPreview);
+    writeFrame();
+    const tick = setInterval(writeFrame, 200);
+    req.on('close', () => {
+      closed = true;
+      clearInterval(tick);
+      slot.previewWaiters.delete(onPreview);
+    });
+    return;
+  }
+
   const slotMatch = /^\/api\/slots\/([123])(?:\/([a-z]+))?$/.exec(path);
   if (slotMatch) {
     const slotId = slotMatch[1];
@@ -437,7 +486,9 @@ async function handle(req, res, remote) {
           json(res, 401, { ok: false, error: 'Unauthorized slot' });
           return;
         }
+        const waiters = slot.previewWaiters;
         Object.assign(slot, emptySlot(slotId));
+        slot.previewWaiters = waiters;
         broadcast();
         json(res, 200, { ok: true });
       } catch {
@@ -458,6 +509,10 @@ async function handle(req, res, remote) {
         if (typeof body.watching === 'boolean') slot.watching = body.watching;
         if (typeof body.armed === 'boolean') slot.armed = body.armed;
         if (typeof body.lens === 'string') slot.lens = body.lens;
+        if (typeof body.sensitivity === 'number') {
+          slot.sensitivity = Math.min(100, Math.max(0, Math.round(body.sensitivity)));
+        }
+        if (typeof body.dwellMs === 'number') slot.dwellMs = Math.max(0, body.dwellMs);
         if (body.lensesAvailable && typeof body.lensesAvailable === 'object') {
           slot.lensesAvailable = {
             wide: Boolean(body.lensesAvailable.wide),
@@ -469,7 +524,7 @@ async function handle(req, res, remote) {
         if (typeof body.personScore === 'number' || body.personScore === null) slot.personScore = body.personScore;
         if (typeof body.error === 'string') slot.lastError = body.error.slice(0, 200);
         const commands = slot.pendingCommands.splice(0, slot.pendingCommands.length);
-        broadcast();
+        // Heartbeats are frequent — don't SSE-broadcast every one (avoids Mac UI thrash).
         json(res, 200, { ok: true, commands, slot: slotPublic(slot) });
       } catch {
         json(res, 400, { ok: false, error: 'Invalid heartbeat' });
@@ -492,7 +547,8 @@ async function handle(req, res, remote) {
           slot.previewAt = Date.now();
           slot.lastSeenAt = Date.now();
           slot.online = true;
-          broadcast();
+          notifyPreview(slot);
+          // Don't broadcast SSE on every frame — MJPEG clients wake via previewWaiters.
         }
         json(res, 200, { ok: true });
       } catch {
@@ -522,7 +578,7 @@ async function handle(req, res, remote) {
         const body = await readJson(req);
         const cmd = body.command && typeof body.command === 'object' ? body.command : body;
         const type = cmd.type;
-        if (!['watch', 'arm', 'lens', 'roi', 'clearRoi'].includes(type)) {
+        if (!['watch', 'arm', 'lens', 'roi', 'clearRoi', 'sensitivity'].includes(type)) {
           json(res, 400, { ok: false, error: 'Unknown command type' });
           return;
         }
@@ -540,6 +596,9 @@ async function handle(req, res, remote) {
           });
         }
         if (type === 'lens' && typeof cmd.lens === 'string') slot.lens = cmd.lens;
+        if (type === 'sensitivity' && typeof cmd.sensitivity === 'number') {
+          slot.sensitivity = Math.min(100, Math.max(0, Math.round(cmd.sensitivity)));
+        }
         if (type === 'roi' && cmd.roi && typeof cmd.roi === 'object') slot.roi = cmd.roi;
         if (type === 'clearRoi') slot.roi = null;
         enqueueCommand(slot, cmd);

@@ -9,10 +9,10 @@
   <section id="emptyState" class="empty-state" aria-label="Suggestions to get started">
     <p class="suggestions-title">TRY ASKING</p>
     <div class="suggestions">
-      <div class="suggestion"><span aria-hidden="true">↗</span><p>Black,<br>take off</p></div>
-      <div class="suggestion"><span aria-hidden="true">⌁</span><p>Move forward<br>half a meter</p></div>
-      <div class="suggestion"><span aria-hidden="true">↻</span><p>Do a 360 and<br>count the people</p></div>
-      <div class="suggestion"><span aria-hidden="true">↘</span><p>Red,<br>land</p></div>
+      <div class="suggestion"><span aria-hidden="true">↗</span><p>Nero,<br>decolla</p></div>
+      <div class="suggestion"><span aria-hidden="true">⌁</span><p>Rosso,<br>vai a destra</p></div>
+      <div class="suggestion"><span aria-hidden="true">↻</span><p>Quante persone<br>vedi?</p></div>
+      <div class="suggestion"><span aria-hidden="true">↘</span><p>Nero,<br>fai una foto</p></div>
     </div>
   </section>
   <section class="conversation" id="conversation" aria-label="Conversation" hidden><span id="headline" class="caption">Grok</span><div id="transcript" aria-live="polite">I'm listening.</div></section>
@@ -24,6 +24,7 @@
     <button id="settingsButton" class="round" aria-label="Voice settings" title="Voice settings" aria-haspopup="dialog"><svg viewBox="0 0 24 24"><path class="solid" d="m10 1-.7 3-2 .9L4.7 3.4 2 6.1l1.5 2.6-.8 2L0 11.4v3.8l2.7.7.8 2L2 20.5l2.7 2.7 2.6-1.5 2 .8.7 2.7h3.8l.7-2.7 2-.8 2.6 1.5 2.7-2.7-1.5-2.6.8-2 2.7-.7v-3.8l-2.7-.7-.8-2 1.5-2.6-2.7-2.7-2.6 1.5-2-.9-.7-3z" transform="translate(1 -1) scale(.9)"/><circle cx="12" cy="11.5" r="4" class="hole"/></svg></button>
   </nav>
 </main>
+<div id="photoView" class="photo-view" hidden role="dialog" aria-label="Photo from the drone"><img alt="Photo from the drone"><p></p></div>
 <dialog id="dronesDialog" class="drones-dialog"><div class="dialog-head"><div><p class="dialog-kicker">MONITORING</p><h2>Your drones</h2></div><button class="dismiss" aria-label="Close drone view">×</button></div><p class="drone-intro">Drone 1 · Black and Drone 2 · Red. Every voice command moves a real drone.</p><div class="drone-grid" id="droneGrid"></div><p class="telemetry-note" id="telemetryNote">Waiting for the server.</p></dialog>
 <dialog id="settingsDialog"><div class="dialog-head"><h2>Your voice, Grok.</h2><button class="dismiss" aria-label="Close settings">×</button></div><p>Voice conversation with Grok. Commands fly the real Tello.</p><p id="voiceHint" role="status">Allow microphone access to speak with Grok.</p><div class="drone-info"><span>Drones</span><strong id="droneState">Connecting…</strong></div><div class="activity-head"><h3>Activity</h3><span id="count">00</span></div><div id="activity"><p class="empty">No actions yet.</p></div></dialog>
 <script type="module" src="/app.js"></script>

@@ -84,6 +84,22 @@ function sameKey(a: string, b: string): boolean {
   return a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
+// Voice "take a photo": saves the latest annotated camera frame of that drone in photos/.
+const photosDir = join(root, 'photos');
+async function takePhoto(id: string) {
+  try {
+    const frame = await fetch(`${visionUrl}/frame.jpg?drone=${encodeURIComponent(id)}`, {signal:AbortSignal.timeout(3000)});
+    if (!frame.ok) return {ok:false, mode:'real', error:'No camera image. Is metoera-vision running?'};
+    const name = `${id}-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
+    await mkdir(photosDir, {recursive:true});
+    await writeFile(join(photosDir, name), Buffer.from(await frame.arrayBuffer()));
+    const seen = await readVision(id);
+    const counts: Record<string, number> = {};
+    for (const o of seen?.objects ?? []) if (o.confidence >= 0.5) counts[o.label] = (counts[o.label] ?? 0) + 1;
+    return {ok:true, mode:'real', action:'photo', photo:`/photos/${name}`, seen:counts};
+  } catch { return {ok:false, mode:'real', error:'No camera image. Is metoera-vision running?'}; }
+}
+
 // Live annotated video of one drone, passed through from metoera-vision.
 async function proxyVideo(id: string, res: http.ServerResponse) {
   try {
@@ -123,6 +139,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
     }
     if (!phone || !sameKey(cookieKey(req), phone.key)) { res.writeHead(401, {'Content-Type':'text/plain; charset=utf-8'}).end('Open the full link printed by the server (it contains the access key).'); return; }
   }
+  const photo = /^\/photos\/([a-z]+-[0-9TZ-]+\.jpg)$/.exec(path);
+  if (req.method === 'GET' && photo) {
+    try { res.writeHead(200, {'Content-Type':'image/jpeg'}).end(await readFile(join(photosDir, photo[1]))); }
+    catch { res.writeHead(404).end(); }
+    return;
+  }
   const video = /^\/video\/([a-z]+)$/.exec(path);
   if (req.method === 'GET' && video && drones.has(video[1])) { await proxyVideo(video[1], res); return; }
   if (req.method === 'POST' && ['/session','/api/command','/api/emergency'].includes(path)) {
@@ -155,6 +177,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
         // stop must reach the drone while a move is still running, so it skips the queue.
         else if (body.action === 'stop' && Object.keys(body).length === 2) json(res, 200, await drone.stop());
         else if (body.action === 'emergency' && Object.keys(body).length === 2) json(res, 200, await drone.killMotors());
+        else if (body.action === 'photo' && Object.keys(body).length === 2) json(res, 200, await takePhoto(String(body.droneId)));
         // A spoken "land" is always sent to the drone, whatever the server believes about its
         // state (a lost takeoff reply must never block a landing), and it skips the queue.
         else if (body.action === 'land' && Object.keys(body).length === 2) json(res, 200, await drone.forceLand());

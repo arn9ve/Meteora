@@ -9,7 +9,7 @@ Richiede Node.js 24.12 o successivo, una chiave API xAI abilitata, Internet e un
 1. Copia `.env.example` in `.env` se il file `.env` non esiste già.
 2. Apri `.env` e inserisci la chiave dopo `XAI_API_KEY=`. Non metterla tra virgolette se non è necessario, né in chat. Il file `.env` è escluso da Git.
 3. Nella cartella del progetto esegui `npm install` e poi `npm start`.
-4. Apri http://localhost:18787, clicca su «Avvia conversazione vocale» e autorizza il microfono. Esempio: «Drone 1, decolla, avanza di 50 centimetri e atterra».
+4. Apri http://localhost:18787, clicca su «Tocca per parlare» e autorizza il microfono. Esempio: «Drone 1, decolla, avanza di 50 centimetri e atterra».
 5. Apri «Droni» per vedere lo stato dei due droni virtuali. Ferma il server con Ctrl+C.
 
 La chiave resta sul server locale. Il browser riceve solo un token temporaneo per connettersi a Grok. Se la chiave viene aggiunta a `.env` mentre il server è in esecuzione senza chiave, viene letta alla successiva richiesta di avvio della voce. Per sostituire una chiave già caricata, riavvia il server.

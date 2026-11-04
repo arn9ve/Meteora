@@ -1,6 +1,6 @@
 # Metoera Voice
 
-A Grok voice interface and local simulator for two independent drones. Voice commands still move virtual drones only.
+A Grok voice interface for two simulated drones (`drone-1`, `drone-2`) and, when configured, one real Tello EDU (`tello`).
 
 The `tools` folder holds the scripts we used to put our Tello EDU on the shared network, diagnose its UDP link and run a supervised test flight. Read [TELLO.md](TELLO.md) first: the Tello sends every reply to local UDP port 8889, and a client on any other port gets no answer.
 
@@ -21,6 +21,20 @@ The key remains on the local server. The browser receives only a temporary token
 The server starts Drone 1 and Drone 2 connected and on the ground. Their initial positions are (-1, 0, 0) and (1, 0, 0) meters. +Y is forward when a drone is facing 0°, +X is right, and +Z is up. Horizontal movements are relative to the drone's heading. Commands are instantaneous, and coordinates represent a virtual environment, not measurements from a real drone. Restart the server to reset the simulation.
 
 Grok asks which drone to use when one has not been specified. The `takeoff`, `land`, `move`, and `rotate` commands are validated on the server, sent to the specified drone, and returned to Grok with the result. The UI polls `GET /api/drones`; `POST /api/command` accepts structured commands with `droneId` and `action`. The service listens only on localhost and checks the origin of POST requests.
+
+## Real Tello
+
+Set `TELLO_IP` (for example `TELLO_IP=192.168.5.137`) and `TELLO_SETUP_SERIAL` in `.env.tello` (see `.env.tello.example`), then start the server from macOS Terminal. The server owns UDP 8889 and 8890, so stop the scripts in `tools/` first.
+
+What the server does for `droneId: "tello"` (`src/tello.ts`):
+
+- On the first command it sends `command` and checks `sn?` against `TELLO_SETUP_SERIAL`. A mismatch refuses every action.
+- `takeoff` needs at least 20% battery. `move` is capped at 100 cm. `land`, `rotate` as in the simulator.
+- While connected it sends `battery?` every 5 s, so the Tello does not land itself after 15 s of silence.
+- Ctrl+C on the server lands the Tello before exiting.
+- `GET /api/drones` returns the real drone under `real` (battery, height, heading, last error); the Drones panel shows it as "Tello · real".
+
+Grok is told that `tello` is physical: it asks you to confirm the area is clear before the first takeoff and lands at once if you say stop. Those are prompt instructions, not hard guarantees. There is no voice emergency stop: keep someone next to the drone, and stop the server with Ctrl+C to land it.
 
 ## Connecting the team's controller
 

@@ -1,6 +1,6 @@
 # Tello EDU: connection notes and tools
 
-Status on 4 November 2026: our Tello EDU (`TELLO-62A591`) is on the `hackathon` network at `192.168.5.137`. It answers the SDK over the LAN (SDK 30), its serial matches, and it completed a supervised test flight: takeoff, 5 s hover, land. The voice UI still drives the simulator only.
+Status on 4 November 2026: our Tello EDU (`TELLO-62A591`) is on the `hackathon` network at `192.168.5.137`. It answers the SDK over the LAN (SDK 30), its serial matches, and it completed a supervised test flight: takeoff, 5 s hover, land. Grok Voice can now drive it too (see README, "Real Tello"); that path is tested against a fake drone only.
 
 ## The one thing to know: the Tello replies to local port 8889
 
@@ -61,5 +61,5 @@ All scripts run from macOS Terminal with Node 24. None of them flies the drone e
 
 ## Next
 
-- Connect Grok Voice to the real drone through an adapter in `server.ts`, starting with `takeoff` and `land` only, with the UI showing clearly which drone is real and which is simulated.
+- Grok Voice → real drone is wired in (`src/tello.ts`, see README "Real Tello"). Tested against a fake drone only; first real voice flight still to do.
 - Object detection on the drone camera (YOLO) as a separate service that reads the video stream on UDP 11111.

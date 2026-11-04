@@ -181,6 +181,34 @@ async function readJson(req: http.IncomingMessage): Promise<unknown> {
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
 }
+// Pilots: several people can open the same link (each browser is a session with a name).
+// The first person who moves a drone becomes its pilot; the others can still land, stop,
+// cut its motors, read its status and take photos, but not move it. A pilot who closes the
+// page (no request for 15 s) or says "release" frees the drone.
+type PilotSession = {name: string; lastSeen: number};
+const sessions = new Map<string, PilotSession>();
+const pilots = new Map<string, string>(); // droneId -> session id
+const PILOT_TIMEOUT_MS = 15000;
+const FOR_EVERYONE = new Set(['land', 'stop', 'emergency', 'status', 'look', 'photo', 'release']);
+const DRONE_NAMES: Record<string, string> = {tello:'Black', rmtt:'Red'};
+function sessionOf(req: http.IncomingMessage, res: http.ServerResponse, secure: boolean): string {
+  let id = /(?:^|;\s*)metoera_pilot=([0-9a-f]{32})/.exec(req.headers.cookie ?? '')?.[1];
+  if (!id) {
+    id = randomBytes(16).toString('hex');
+    res.appendHeader('Set-Cookie', `metoera_pilot=${id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${secure ? '; Secure' : ''}`);
+  }
+  const session = sessions.get(id) ?? {name:'', lastSeen:0};
+  session.lastSeen = Date.now();
+  sessions.set(id, session);
+  for (const [drone, sid] of pilots) {
+    const pilot = sessions.get(sid);
+    if (!pilot || Date.now() - pilot.lastSeen > PILOT_TIMEOUT_MS) pilots.delete(drone);
+  }
+  return id;
+}
+const pilotName = (sid: string) => sessions.get(sid)?.name || 'another person';
+const activePilots = () => [...sessions.values()].filter((s) => s.name && Date.now() - s.lastSeen <= PILOT_TIMEOUT_MS).map((s) => s.name);
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse, remote: boolean) {
   res.setHeader('Cache-Control', 'no-store');
   const url = new URL(req.url ?? '/', 'http://localhost');
@@ -194,6 +222,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
     }
     if (!phone || !sameKey(cookieKey(req), phone.key)) { res.writeHead(401, {'Content-Type':'text/plain; charset=utf-8'}).end('Open the full link printed by the server (it contains the access key).'); return; }
   }
+  const sid = sessionOf(req, res, remote);
   const photo = /^\/photos\/([a-z]+-[0-9TZ-]+\.jpg)$/.exec(path);
   if (req.method === 'GET' && photo) {
     try { res.writeHead(200, {'Content-Type':'image/jpeg'}).end(await readFile(join(photosDir, photo[1]))); }
@@ -203,7 +232,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
   const video = /^\/video\/([a-z]+)$/.exec(path);
   // Only this laptop's drones stream here; another laptop's drone sends its video to that laptop.
   if (req.method === 'GET' && video && drones.has(video[1]) && refusal(video[1]) === null) { await proxyVideo(video[1], res); return; }
-  if (req.method === 'POST' && ['/session','/api/command','/api/emergency'].includes(path)) {
+  if (req.method === 'POST' && ['/session','/api/command','/api/emergency','/api/pilot'].includes(path)) {
     if (!req.headers.origin || !allowedOrigins.has(req.headers.origin)) { json(res, 403, {error:'Unauthorized origin'}); return; }
     // Emergency buttons: they skip the command queue and cancel whatever is waiting in it.
     if (path === '/api/emergency') {
@@ -226,6 +255,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
       } catch { json(res, 400, {ok:false, mode:'real', error:'Invalid request'}); }
       return;
     }
+    if (path === '/api/pilot') {
+      try {
+        const body = await readJson(req) as {name?: unknown};
+        const name = typeof body?.name === 'string' ? body.name.replace(/[^\p{L}\p{N} ._-]/gu, '').trim().slice(0, 24) : '';
+        if (!name) { json(res, 400, {ok:false, error:'Name required'}); return; }
+        sessions.get(sid)!.name = name;
+        json(res, 200, {ok:true, name});
+      } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
+      return;
+    }
     if (path === '/api/command') {
       try {
         const body = await readJson(req) as {droneId?: unknown; action?: unknown};
@@ -236,6 +275,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
         else if (!drone) json(res, 200, {ok:false, mode:'real', error:elsewhere ? `Connected to ${elsewhere.owner}` : 'Invalid droneId'});
         // Another laptop's drone (or one not yet confirmed as ours) gets nothing, emergency included.
         else if (refusal(id)) json(res, 200, {ok:false, mode:'real', error:refusal(id)});
+        // Another person on this link flies it: only safety and read-only actions are allowed.
+        else if (!FOR_EVERYONE.has(String(body.action)) && pilots.has(id) && pilots.get(id) !== sid) json(res, 200, {ok:false, mode:'real', error:`${DRONE_NAMES[id] ?? id} is flown by ${pilotName(pilots.get(id)!)}. Only they can move it; anyone can land or stop it.`});
+        else if (body.action === 'release' && Object.keys(body).length === 2) {
+          if (pilots.get(id) === sid) pilots.delete(id);
+          json(res, 200, {ok:true, mode:'real', action:'release', drone:drone.snapshot()});
+        }
         // stop must reach the drone while a move is still running, so it skips the queue.
         else if (body.action === 'stop' && Object.keys(body).length === 2) json(res, 200, await drone.stop());
         else if (body.action === 'emergency' && Object.keys(body).length === 2) json(res, 200, await drone.killMotors());
@@ -243,7 +288,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
         // A spoken "land" is always sent to the drone, whatever the server believes about its
         // state (a lost takeoff reply must never block a landing), and it skips the queue.
         else if (body.action === 'land' && Object.keys(body).length === 2) json(res, 200, await drone.forceLand());
-        else json(res, 200, await drone.execute(body));
+        else {
+          // The first person who moves a free drone becomes its pilot.
+          if (!pilots.has(id) && !FOR_EVERYONE.has(String(body.action))) pilots.set(id, sid);
+          json(res, 200, await drone.execute(body));
+        }
       }
       catch { json(res, 400, {ok:false, mode:'real', error:'Invalid request'}); }
       return;
@@ -262,7 +311,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
     } catch { json(res, 502, {error:'Unable to connect to xAI.'}); }
     return;
   }
-  if (req.method === 'GET' && path === '/api/drones') { json(res, 200, {drones:droneViews(), me:claims?.name ?? null, clients:claims?.clients() ?? [], claimsError}); return; }
+  if (req.method === 'GET' && path === '/api/drones') { json(res, 200, {drones:droneViews().map((v) => {
+    const pilot = pilots.get(String(v.id));
+    return {...v, pilot:pilot ? {name:pilotName(pilot), me:pilot === sid} : null};
+  }), me:claims?.name ?? null, clients:claims?.clients() ?? [], claimsError, pilot:{name:sessions.get(sid)?.name ?? '', online:activePilots()}}); return; }
   if (req.method !== 'GET' || !files[path]) { res.writeHead(404).end(); return; }
   try { const file = files[path]; res.writeHead(200, {'Content-Type':types[extname(file)]}).end(await readFile(join(root,'public',file))); }
   catch { res.writeHead(500).end(); }

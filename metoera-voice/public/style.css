@@ -70,3 +70,6 @@
 .drone-black.drone-other .drone-availability{color:#fff}
 .link-status .dot[data-state=other]{background:#bbb;box-shadow:none}
 .link-status[data-state=other]{color:#777}
+
+.pilot-line{border:0;background:transparent;font-size:11px;color:#666;padding:6px 4px;text-decoration:underline dotted;text-underline-offset:3px}
+.name-dialog input{width:100%;border:1px solid #ddd;border-radius:12px;padding:14px;font-size:17px;margin-top:6px}

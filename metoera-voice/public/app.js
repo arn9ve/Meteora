@@ -118,7 +118,7 @@ const seeOnly=d=>['other','lost'].includes(d?.owner?.state);
 const ownedIds=()=>drones.filter(d=>d.owner?.state==='mine').map(d=>d.id);
 const ownedColours=()=>Object.keys(FLEET).filter(c=>ownedIds().includes(FLEET[c].id));
 // Every voice action goes to a real drone through the local server.
-const actionLabels={photo:'Photo',emergency:'Motors cut',takeoff:'Takeoff',land:'Landing',move:'Move',rotate:'Rotation',flip:'Flip',speed:'Speed',stop:'Stop',status:'Status',test_flight:'Test flight',scan:'360° scan',look:'Look'};
+const actionLabels={release:'Released',photo:'Photo',emergency:'Motors cut',takeoff:'Takeoff',land:'Landing',move:'Move',rotate:'Rotation',flip:'Flip',speed:'Speed',stop:'Stop',status:'Status',test_flight:'Test flight',scan:'360° scan',look:'Look'};
 // Each drone has its own queue: commands for Black and Red run at the same time, and a
 // sequence for one drone keeps its order. Tools answer Grok at once ("started"); when the
 // drone finishes, Grok gets an automatic update. land, stop and emergency skip the queue.
@@ -216,9 +216,15 @@ function ownershipNote(){
   const others=Object.entries(FLEET).map(([c,f])=>[c,drones.find(d=>d.id===f.id)]).filter(([,d])=>seeOnly(d)).map(([c,d])=>`${c} is flown by another laptop (${d.owner.name})`);
   return ` This laptop flies: ${own.length?own.join(' and '):'no drone right now'}.${others.length?` ${others.join('; ')}: you cannot command it at all, not even land or emergency; if asked, say which laptop flies it.`:''}`;
 }
-const ownershipKey=()=>JSON.stringify([ownedColours(),drones.filter(seeOnly).map(d=>[d.id,d.owner.name])]);
+const ownershipKey=()=>JSON.stringify([ownedColours(),drones.filter(seeOnly).map(d=>[d.id,d.owner.name]),drones.map(d=>[d.id,d.pilot?.name??'',d.pilot?.me??false]),myName]);
 let sessionKey='';
-function sessionConfig(){ return {instructions:INSTRUCTIONS+ownershipNote(),tools:buildTools()} }
+// Other people on this same link: Grok must not try to move the drone they fly.
+function pilotNote(){
+  const busy=Object.entries(FLEET).map(([c,f])=>[c,drones.find(d=>d.id===f.id)]).filter(([,d])=>d?.pilot&&!d.pilot.me).map(([c,d])=>`${c} is flown by ${d.pilot.name}, another person on this link`);
+  const yours=Object.entries(FLEET).filter(([,f])=>drones.find(d=>d.id===f.id)?.pilot?.me).map(([c])=>c);
+  return `${myName?` You are talking to ${myName}.`:''}${yours.length?` ${myName||'This person'} flies ${yours.join(' and ')}.`:''}${busy.length?` ${busy.join('; ')}: only land, stop, emergency, status, look and photo work on it; for anything else say who flies it.`:''} The first person who moves a free drone becomes its pilot; release gives it back.`;
+}
+function sessionConfig(){ return {instructions:INSTRUCTIONS+ownershipNote()+pilotNote(),tools:buildTools()} }
 // Every drone tool gets the drone parameter; mute is about the microphone, not a drone.
 const droneTool=(name,description,properties={},required=[])=>tool(name,description,{drone:droneParam(),...properties},['emergency','land','stop'].includes(name)?required:['drone',...required]);
 const buildTools=()=>[
@@ -227,6 +233,7 @@ const buildTools=()=>[
   droneTool('stop','Hover in place immediately, interrupting a move in progress'),
   droneTool('move','Move in a straight line: forward/back, left/right, up/down (avanti, indietro, sinistra, destra, su, giù). Without a distance it moves 50 cm',{direction:dir(['forward','back','left','right','up','down']),centimeters:{type:'integer',minimum:20,maximum:500,description:'Optional, default 50'}},['direction']),
   droneTool('rotate','Turn in place (ruota, gira). Right = clockwise, left = counterclockwise. Without an angle it turns 90 degrees; turn around = 180',{direction:dir(['clockwise','counterclockwise']),degrees:{type:'integer',minimum:1,maximum:360,description:'Optional, default 90'}},[]),
+  droneTool('release','Give this drone back so another person on the link can fly it (lascia il drone, rilascia)'),
   droneTool('photo','Take a photo with the camera of this drone (with the object boxes) and show it on the page (fai una foto, scatta)'),
   droneTool('flip','Flip in a direction; needs at least 50% battery',{direction:dir(['left','right','forward','back'])},['direction']),
   droneTool('speed','Set the speed used by later moves',{cmPerSecond:{type:'integer',minimum:10,maximum:100}},['cmPerSecond']),
@@ -260,7 +267,7 @@ function availability(d) {
   const o = d.owner;
   if (o?.state === 'other') return `Connected to ${o.name}`;
   if (o?.state === 'lost') return `${o.name} stopped answering · it lands by itself`;
-  if (o?.state === 'mine') return `${d.connected ? 'Connected' : (d.linkError || 'Connecting…')}${o.conflict ? ` · also claimed by ${o.conflict}` : ''}`;
+  if (o?.state === 'mine') return `${d.connected ? 'Connected' : (d.linkError || 'Connecting…')}${d.pilot ? (d.pilot.me ? ' · you fly it' : ` · flown by ${d.pilot.name}`) : ''}${o.conflict ? ` · also claimed by ${o.conflict}` : ''}`;
   return o?.reason && o.reason !== CHECKING ? o.reason : 'Checking other laptops…';
 }
 const coordinates = d => d?.connected ? `Battery ${d.battery ?? '–'}% · Height ${d.heightCm ?? '–'} cm` : 'Unavailable';
@@ -353,5 +360,15 @@ async function refreshDrone() {
   }
   if (droneDialog.open) updateCards();
 }
+// Each person on the link has a name, so the others see who flies each drone.
+let myName='';
+try { myName=localStorage.getItem('metoera_name')||''; } catch {}
+async function sendName(name){
+  try { const r=await fetch('/api/pilot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}); const j=await r.json(); if(j.ok){myName=j.name; try{localStorage.setItem('metoera_name',myName)}catch{} $('#pilotLine').textContent=`You are ${myName}`;} } catch {}
+}
+const nameDialog=$('#nameDialog');
+nameDialog.addEventListener('close',()=>{ const v=$('#pilotName').value.trim(); if(v) void sendName(v); else if(!myName) setTimeout(()=>nameDialog.showModal?.(),0); });
+if(myName) void sendName(myName); else nameDialog.showModal?.();
+$('#pilotLine').addEventListener('click',()=>{ $('#pilotName').value=myName; nameDialog.showModal(); });
 refreshDrone();
 setInterval(refreshDrone, 1500);

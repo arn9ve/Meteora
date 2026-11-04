@@ -173,6 +173,14 @@ export class RealTello {
     return this.#busy;
   }
 
+  /** Puts a landed drone at a spot of the room plan (cm, degrees). Refused while it flies. */
+  placeAt(start: { x: number; y: number; heading: number }): string | null {
+    if (this.#flight === 'flying' || this.#busy) return 'Land the drone before moving it on the plan';
+    this.#world.relocate(start);
+    this.#world.record('placed', `(${Math.round(start.x)},${Math.round(start.y)}) ${Math.round(start.heading)}°`);
+    return null;
+  }
+
   /** What the top-down map draws for this drone. */
   map() {
     return this.#world.map();

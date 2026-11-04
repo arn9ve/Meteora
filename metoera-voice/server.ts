@@ -9,6 +9,7 @@ import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { RealTello, type Detections, type DepthView } from './src/tello.ts';
+import { loadPlan, loadConfig, saveConfig, homography, calibrationError, project, inside, feet, type Point, type RoomConfig } from './src/room.ts';
 import { Claims, CLAIMS_PORT, describeElsewhere, parsePeers, udpTransport } from './src/claims.ts';
 import { Pilots, TAKEOFF } from './src/pilots.ts';
 
@@ -39,7 +40,16 @@ async function readVision(id: string): Promise<Detections | null> {
 // Where each drone stands before its first takeoff, in one room frame shared by both drones:
 // TELLO_START / RMTT_START = "x,y,heading" in cm and degrees (x = toward the wall both face,
 // y = left). Defaults: Black at 0,0 and Red 150 cm to its right, both facing the same way.
+// The room (src/room.ts): floor plan from ROOM_PLAN (default room/capannone-gragnani.json) and
+// where drones, phones and red zones are, in .room.json (git-ignored, set on the Room panel).
+// When a drone is placed on the plan, that spot is its start; otherwise TELLO_START / RMTT_START.
+const planPath = process.env.ROOM_PLAN ?? join(dirname(fileURLToPath(import.meta.url)), 'room', 'capannone-gragnani.json');
+const roomPath = join(dirname(fileURLToPath(import.meta.url)), '.room.json');
+const plan = await loadPlan(planPath);
+const room: RoomConfig = await loadConfig(roomPath);
 function startOf(prefix: string): {x: number; y: number; heading: number} {
+  const placed = room.drones[prefix === 'RMTT' ? 'rmtt' : 'tello'];
+  if (placed) return {x:placed.x * 100, y:placed.y * 100, heading:placed.heading};
   const raw = process.env[`${prefix}_START`] ?? (prefix === 'RMTT' ? '0,-150,0' : '0,0,0');
   const [x, y, heading] = raw.split(',').map((v) => Number(v.trim()));
   return [x, y, heading].every(Number.isFinite) ? {x, y, heading} : {x:0, y:0, heading:0};
@@ -269,19 +279,19 @@ async function proxyStream(source: string, res: http.ServerResponse) {
     res.end();
   } catch { if (!res.headersSent) res.writeHead(503); res.end(); }
 }
-// ---- Red-zone phone cameras (metoera-redzone, Masoud) ----
-// Up to three phones watch a zone each and report when a person enters it. This server reads
-// their state every second, keeps where each zone is on the room map (set on the Cameras page),
-// turns a new intrusion into an event for the pages, and proxies the phone previews.
+// ---- Phone cameras (metoera-redzone, Masoud) on the room plan ----
+// The server reads the phones every second. A calibrated phone (4 clicks on the Room panel)
+// turns the feet of every person it sees into a spot on the plan; a person inside a red zone drawn
+// on the plan becomes an event (once on entering, then not again for 30 s), which the pages tell
+// Grok about and, with auto-send on, use to send the nearest drone to that person.
 const redzoneUrl = (process.env.REDZONE_URL ?? 'http://127.0.0.1:18791').replace(/\/$/, '');
 const redzonePhonePort = Number(process.env.REDZONE_PHONE_PORT ?? 18792);
-const zonesPath = join(root, '.redzone-zones.json');
-type ZonePoint = {x: number; y: number};
-const zones: Record<string, ZonePoint> = JSON.parse(await readFile(zonesPath, 'utf8').catch(() => '{}')) as Record<string, ZonePoint>;
-type RedzoneSlot = {id: string; name?: string; online: boolean; watching: boolean; armed: boolean; personScore?: number | null; lastIntrusionAt: number | null; hasPreview: boolean; joined: boolean};
-type RedzoneEvent = {id: string; slot: string; at: number; claimedBy: string | null};
-const redzone = {available:false, slots:[] as RedzoneSlot[], events:[] as RedzoneEvent[]};
-const intrusionSeen = new Map<string, number | null>();
+type RedzoneSlot = {id: string; name?: string; online: boolean; watching: boolean; armed: boolean; personScore?: number | null; lastIntrusionAt: number | null; hasPreview: boolean; joined: boolean; people?: {x: number; y: number; w: number; h: number; score: number | null}[]};
+type Person = {slot: string; x: number; y: number; score: number | null};
+type ZoneEvent = {id: string; zone: string; name: string; at: number; x: number; y: number; claimedBy: string | null};
+const redzone = {available:false, slots:[] as RedzoneSlot[], people:[] as Person[], events:[] as ZoneEvent[]};
+const zoneState = new Map<string, {occupied: boolean; lastEventAt: number}>();
+const ZONE_REPEAT_MS = 30_000;
 async function pollRedzone() {
   try {
     const response = await fetch(`${redzoneUrl}/api/slots`, {signal:AbortSignal.timeout(1500)});
@@ -289,16 +299,33 @@ async function pollRedzone() {
     if (!Array.isArray(data.slots)) throw new Error('bad slots');
     redzone.available = true;
     redzone.slots = data.slots;
-    for (const slot of data.slots) {
-      // The first poll only learns the current state: old intrusions do not fire.
-      if (intrusionSeen.has(slot.id) && slot.lastIntrusionAt && slot.lastIntrusionAt !== intrusionSeen.get(slot.id)) {
-        redzone.events.push({id:`${slot.id}-${slot.lastIntrusionAt}`, slot:slot.id, at:slot.lastIntrusionAt, claimedBy:null});
-        if (redzone.events.length > 20) redzone.events.shift();
-        console.log(`${new Date().toLocaleTimeString()} Red zone ${slot.id}: person entered${zones[slot.id] ? ` (zone at ${zones[slot.id].x},${zones[slot.id].y})` : ' (zone position not set)'}`);
+  } catch { redzone.available = false; redzone.slots = []; }
+  // People on the plan, from every calibrated phone that is connected.
+  const people: Person[] = [];
+  for (const slot of redzone.slots) {
+    const h = room.cameras[slot.id]?.h;
+    if (!h || !slot.online) continue;
+    for (const box of slot.people ?? []) {
+      const [u, v] = feet(box);
+      const p = project(h, u, v);
+      if (p && plan && p[0] > plan.bounds.min[0] - 2 && p[0] < plan.bounds.max[0] + 2 && p[1] > plan.bounds.min[1] - 2 && p[1] < plan.bounds.max[1] + 2) {
+        people.push({slot:slot.id, x:Math.round(p[0] * 100) / 100, y:Math.round(p[1] * 100) / 100, score:box.score});
       }
-      intrusionSeen.set(slot.id, slot.lastIntrusionAt);
     }
-  } catch { redzone.available = false; }
+  }
+  redzone.people = people;
+  for (const zone of room.zones) {
+    const who = people.find((p) => inside([p.x, p.y], zone.points));
+    const state = zoneState.get(zone.id) ?? {occupied:false, lastEventAt:0};
+    if (who && !state.occupied && Date.now() - state.lastEventAt > ZONE_REPEAT_MS) {
+      state.lastEventAt = Date.now();
+      redzone.events.push({id:`${zone.id}-${state.lastEventAt}`, zone:zone.id, name:zone.name, at:state.lastEventAt, x:who.x, y:who.y, claimedBy:null});
+      if (redzone.events.length > 20) redzone.events.shift();
+      console.log(`${new Date().toLocaleTimeString()} ${zone.name}: person at (${who.x.toFixed(2)}, ${who.y.toFixed(2)}) m, seen by phone ${who.slot}`);
+    }
+    state.occupied = Boolean(who);
+    zoneState.set(zone.id, state);
+  }
 }
 void pollRedzone();
 setInterval(() => { void pollRedzone(); }, 1000).unref();
@@ -307,12 +334,23 @@ async function redzonePhoneLink(slot: string): Promise<string | null> {
   return key && lanAddress ? `https://${lanAddress}:${redzonePhonePort}/?key=${key}&slot=${slot}` : null;
 }
 async function redzoneView() {
-  const slotIds = redzone.slots.length ? redzone.slots.map((s) => s.id) : ['1', '2', '3'];
+  const slotIds = ['1', '2', '3'];
   return {
     available:redzone.available, console:`${redzoneUrl}/console`,
-    slots:await Promise.all(slotIds.map(async (id) => ({...(redzone.slots.find((s) => s.id === id) ?? {id, online:false}), zone:zones[id] ?? null, link:await redzonePhoneLink(id)}))),
-    events:redzone.events.slice(-10).map((e) => ({...e, zone:zones[e.slot] ?? null, claimed:e.claimedBy !== null})),
+    slots:await Promise.all(slotIds.map(async (id) => {
+      const s = redzone.slots.find((x) => x.id === id);
+      return {...(s ?? {id, online:false}), people:undefined, peopleCount:s?.people?.length ?? 0, calibrated:Boolean(room.cameras[id]?.h), link:await redzonePhoneLink(id)};
+    })),
+    people:redzone.people,
+    events:redzone.events.slice(-10).map((e) => ({...e, claimed:e.claimedBy !== null})),
   };
+}
+// Camera commands from the Mac (watch on/off, lens, sensitivity, ARM), passed to the phone.
+async function redzoneCommand(slot: string, command: unknown) {
+  try {
+    const response = await fetch(`${redzoneUrl}/api/slots/${slot}/command`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({command}), signal:AbortSignal.timeout(3000)});
+    return await response.json() as unknown;
+  } catch { return {ok:false, error:'Camera service unreachable'}; }
 }
 
 function json(res: http.ServerResponse, status: number, value: unknown) {
@@ -381,7 +419,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
   const video = /^\/video\/([a-z]+)$/.exec(path);
   // Only this laptop's drones stream here; another laptop's drone sends its video to that laptop.
   if (req.method === 'GET' && video && drones.has(video[1]) && refusal(video[1]) === null) { await proxyVideo(video[1], res); return; }
-  if (req.method === 'POST' && ['/session','/api/command','/api/emergency','/api/pilot','/api/nearest','/api/zones','/api/redzone/claim'].includes(path)) {
+  if (req.method === 'POST' && ['/session','/api/command','/api/emergency','/api/pilot','/api/nearest','/api/room/drone','/api/room/camera','/api/room/zones','/api/cameras/command','/api/redzone/claim'].includes(path)) {
     if (!req.headers.origin || !allowedOrigins.has(req.headers.origin)) { json(res, 403, {error:'Unauthorized origin'}); return; }
     // Emergency buttons: they skip the command queue and cancel whatever is waiting in it.
     if (path === '/api/emergency') {
@@ -423,20 +461,69 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
     // "Send the nearest drone there": picks the drone that can get to room point x,y soonest
     // (connected, this person may fly it, battery ≥ 25%), counting a takeoff as 100 cm extra,
     // and the spot 100 cm short of the target on the way in.
-    // Where a camera's red zone is on the room map: x,y in cm, or "from" a drone's current spot.
-    if (path === '/api/zones') {
+    // ---- Room panel: place drones and phones, calibrate phones, draw zones ----
+    if (path === '/api/room/drone') {
       try {
-        const body = await readJson(req) as {slot?: unknown; x?: unknown; y?: unknown; from?: unknown};
+        const body = await readJson(req) as {id?: unknown; x?: unknown; y?: unknown; heading?: unknown};
+        const id = String(body?.id ?? '');
+        const drone = drones.get(id);
+        if (!drone || typeof body.x !== 'number' || typeof body.y !== 'number') { json(res, 400, {ok:false, error:'id, x, y (m) required'}); return; }
+        const heading = typeof body.heading === 'number' ? body.heading : room.drones[id]?.heading ?? 90;
+        const refused = drone.placeAt({x:body.x * 100, y:body.y * 100, heading});
+        if (refused) { json(res, 200, {ok:false, error:refused}); return; }
+        room.drones[id] = {x:Math.round(body.x * 100) / 100, y:Math.round(body.y * 100) / 100, heading:Math.round(heading)};
+        await saveConfig(roomPath, room);
+        json(res, 200, {ok:true, drone:room.drones[id]});
+      } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
+      return;
+    }
+    if (path === '/api/room/camera') {
+      try {
+        const body = await readJson(req) as {slot?: unknown; x?: unknown; y?: unknown; heading?: unknown; img?: unknown; plan?: unknown; clear?: unknown};
         const slot = String(body?.slot ?? '');
         if (!/^[123]$/.test(slot)) { json(res, 400, {ok:false, error:'slot must be 1, 2 or 3'}); return; }
-        let point: ZonePoint | null = null;
-        if (typeof body.from === 'string' && drones.has(body.from)) { const p = drones.get(body.from)!.map().pose; point = {x:p.x, y:p.y}; }
-        else if (typeof body.x === 'number' && typeof body.y === 'number' && Math.abs(body.x) < 5000 && Math.abs(body.y) < 5000) point = {x:Math.round(body.x), y:Math.round(body.y)};
-        if (body.x === null) { delete zones[slot]; }
-        else if (!point) { json(res, 400, {ok:false, error:'x and y, or from: tello | rmtt'}); return; }
-        else zones[slot] = point;
-        await writeFile(zonesPath, JSON.stringify(zones, null, 2));
-        json(res, 200, {ok:true, slot, zone:zones[slot] ?? null});
+        const cam = room.cameras[slot] ?? {};
+        if (typeof body.x === 'number' && typeof body.y === 'number') { cam.x = body.x; cam.y = body.y; }
+        if (typeof body.heading === 'number') cam.heading = body.heading;
+        if (body.clear === true) { delete cam.img; delete cam.plan; cam.h = null; }
+        const pts = (v: unknown) => Array.isArray(v) && v.every((p) => Array.isArray(p) && p.length === 2 && p.every((n) => typeof n === 'number' && Number.isFinite(n))) ? v as Point[] : null;
+        const img = pts(body.img), planPts = pts(body.plan);
+        let error: number | null = null;
+        if (img && planPts) {
+          const h = homography(img, planPts);
+          if (!h) { json(res, 200, {ok:false, error:'Those points do not work: use 4 points spread out, not in a line'}); return; }
+          error = calibrationError(h, img, planPts);
+          cam.img = img; cam.plan = planPts; cam.h = h;
+        }
+        room.cameras[slot] = cam;
+        await saveConfig(roomPath, room);
+        json(res, 200, {ok:true, camera:{...cam, h:undefined, calibrated:Boolean(cam.h)}, errorM:error});
+      } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
+      return;
+    }
+    if (path === '/api/room/zones') {
+      try {
+        const body = await readJson(req) as {zones?: unknown};
+        const zones = Array.isArray(body?.zones) ? body.zones.slice(0, 12).flatMap((z: unknown, i: number) => {
+          const zone = z as {id?: unknown; name?: unknown; points?: unknown};
+          const points = Array.isArray(zone?.points) ? zone.points.filter((p): p is Point => Array.isArray(p) && p.length === 2 && p.every((n) => typeof n === 'number' && Number.isFinite(n))) : [];
+          return points.length >= 3 ? [{id:typeof zone.id === 'string' ? zone.id.slice(0, 20) : `z${i + 1}`, name:typeof zone.name === 'string' && zone.name.trim() ? zone.name.trim().slice(0, 40) : `Zone ${i + 1}`, points:points.slice(0, 40)}] : [];
+        }) : null;
+        if (!zones) { json(res, 400, {ok:false, error:'zones required'}); return; }
+        room.zones = zones;
+        await saveConfig(roomPath, room);
+        json(res, 200, {ok:true, zones});
+      } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
+      return;
+    }
+    if (path === '/api/cameras/command') {
+      try {
+        const body = await readJson(req) as {slot?: unknown; command?: unknown};
+        const slot = String(body?.slot ?? '');
+        const command = body?.command as {type?: unknown} | undefined;
+        const allowed = ['watch', 'lens', 'sensitivity', 'arm'];
+        if (!/^[123]$/.test(slot) || !command || typeof command.type !== 'string' || !allowed.includes(command.type)) { json(res, 400, {ok:false, error:'slot and command (watch, lens, sensitivity, arm) required'}); return; }
+        json(res, 200, await redzoneCommand(slot, command));
       } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
       return;
     }
@@ -448,7 +535,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
         if (!event) { json(res, 404, {ok:false, error:'No such event'}); return; }
         if (event.claimedBy && event.claimedBy !== sid) { json(res, 200, {ok:false, error:'Another page is already sending a drone'}); return; }
         event.claimedBy = sid;
-        json(res, 200, {ok:true, zone:zones[event.slot] ?? null});
+        json(res, 200, {ok:true, x:event.x, y:event.y});
       } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
       return;
     }
@@ -550,9 +637,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
     } catch { json(res, 502, {error:'Unable to connect to xAI.'}); }
     return;
   }
+  // The floor plan and the room setup (drones, phones, zones), for the Room panel.
+  if (req.method === 'GET' && path === '/api/room') {
+    json(res, 200, {plan, room:{...room, cameras:Object.fromEntries(Object.entries(room.cameras).map(([k, c]) => [k, {...c, h:undefined, calibrated:Boolean(c.h)}]))}});
+    return;
+  }
   // Top-down room map: every drone flown here, in the shared room frame.
   if (req.method === 'GET' && path === '/api/map') {
-    json(res, 200, {frame:'cm; x = toward the wall both drones faced at the start, y = left', drones:[...drones].filter(([id]) => refusal(id) === null).map(([id, drone]) => ({id, ...drone.map()})), zones:Object.entries(zones).map(([slot, p]) => ({slot, ...p, alert:redzone.events.some((e) => e.slot === slot && Date.now() - e.at < 30000)}))});
+    json(res, 200, {frame:'cm; x = toward the wall both drones faced at the start, y = left', drones:[...drones].filter(([id]) => refusal(id) === null).map(([id, drone]) => ({id, ...drone.map()})), zones:room.zones.map((z) => ({...z, occupied:zoneState.get(z.id)?.occupied ?? false})), people:redzone.people, cameras:Object.fromEntries(Object.entries(room.cameras).map(([k, c]) => [k, {x:c.x, y:c.y, heading:c.heading, calibrated:Boolean(c.h)}]))});
     return;
   }
   if (req.method === 'GET' && path === '/api/drones') { json(res, 200, {drones:droneViews().map((v) => {

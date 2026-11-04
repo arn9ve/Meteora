@@ -41,6 +41,17 @@ export class World {
 
   get pose(): Pose { return round(this.#pose); }
 
+  /**
+   * The drone is on the ground at this spot of the room (placed on the plan): moves the pose there
+   * without drawing a path, and fixes the yaw reference again at the next takeoff.
+   */
+  relocate(start: { x: number; y: number; heading: number }): void {
+    this.#pose = { x: start.x, y: start.y, z: 0, heading: normalize(start.heading) };
+    this.#path = [{ x: Math.round(start.x), y: Math.round(start.y) }];
+    this.#places.delete('home');
+    this.#yawAtStart = null;
+  }
+
   /** Applies a Tello SDK move that the drone confirmed with "ok". */
   applySdk(sdk: string): void {
     const p = this.#pose;

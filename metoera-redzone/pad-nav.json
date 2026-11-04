@@ -1,0 +1,52 @@
+{
+  "version": 2,
+  "pads": [
+    { "id": "pad-01", "position": "P1", "label": "Home (Black start)" },
+    { "id": "pad-02", "position": "P2", "label": "Target (cam1 hop)" },
+    { "id": "pad-03", "position": "P3", "label": "Reserved" },
+    { "id": "pad-04", "position": "P4", "label": "Reserved" },
+    { "id": "pad-05", "position": "P5", "label": "Reserved" },
+    { "id": "pad-06", "position": "P6", "label": "Reserved" }
+  ],
+  "missions": {
+    "cam1": {
+      "slotId": "1",
+      "drone": "Black",
+      "droneId": "tello",
+      "homePad": "pad-01",
+      "targetPad": "pad-02",
+      "distanceCm": 200,
+      "headingNote": "Pads 2.0 m apart, straight; Black faces pad-02 at takeoff (forward = toward target).",
+      "summary": "Black: pad-01 (home) → pad-02 (2.0 m) → Grok describe → wait for voice command",
+      "executePath": false,
+      "describeQuestion": "Briefly describe the scene from this indoor drone: people (clothes, colours), notable objects, and left/centre/right. Two short sentences.",
+      "path": [
+        { "action": "takeoff" },
+        { "action": "move", "direction": "forward", "centimeters": 200, "note": "pad-01 → pad-02 straight 2.0 m" },
+        { "action": "describe" },
+        { "action": "wait", "note": "Hover at pad-02; wait for return-home-land or go-home-wait" }
+      ],
+      "commands": {
+        "return-home-land": {
+          "summary": "pad-02 → pad-01 → land",
+          "steps": [
+            { "action": "go_to", "place": "home" },
+            { "action": "land" }
+          ]
+        },
+        "go-home-wait": {
+          "summary": "pad-02 → pad-01 → hover and wait",
+          "steps": [
+            { "action": "go_to", "place": "home" },
+            { "action": "wait", "note": "Hover at pad-01; wait for next voice command" }
+          ]
+        }
+      }
+    }
+  },
+  "safety": {
+    "armRequired": true,
+    "executePathDefault": false,
+    "note": "No takeoff unless the triggering slot is ARM ON. Path (move/describe) stays off until executePath or PAD_NAV_EXECUTE_PATH=1. Restart disarms all slots. Voice UI (named pilot) claims and flies so return commands work."
+  }
+}

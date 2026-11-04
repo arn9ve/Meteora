@@ -28,13 +28,27 @@ Mac oversight uses **MJPEG ~4 fps** (small JPEGs) + status. Phone keeps continuo
 | Control | Default | Behavior |
 | --- | --- | --- |
 | ARM | **OFF** | Log + phone alert only |
-| ARM ON | explicit (console or phone) | Takeoff hook to voice/webhook |
+| ARM ON | explicit (console or phone) | Mission / takeoff hook to voice/webhook |
 | Restart | — | All slots disarm |
+
+## Pad nav (cam1 → Black)
+
+No LiDAR. Six physical space pads = room positions (`pads/refs/`, config `pad-nav.json`).
+
+**Supervised test (MET-10):** Phone **slot 1** person+dwell with **ARM ON** triggers  
+`Black: pad-01 (home) → pad-02 (2.0 m forward) → Grok describe → wait` (no auto-land).  
+Voice commands after wait: **return to home and land** or **go to first point and wait**.
+
+- Takeoff still requires ARM.
+- Redzone only **triggers**; **metoera-voice** (named pilot, page open) **claims and flies** so return commands work.
+- Path (move + describe) stays **off** until `pad-nav.json` `missions.cam1.executePath` is true or `PAD_NAV_EXECUTE_PATH=1` (distance configured: **200 cm**).
+- Offline pad ID demo: `python tools/pad_recognize.py --self-test` (venv with opencv-python + numpy).
 
 ## APIs (summary)
 
-- `GET /api/slots`, `GET /api/stream` (SSE)
+- `GET /api/slots`, `GET /api/stream` (SSE), `GET /api/pad-nav` (config + live `state`)
+- `POST /api/pad-nav/claim`, `POST /api/pad-nav/phase`, `POST /api/pad-nav/command`
 - `POST /api/slots/:id/join|heartbeat|preview|intrusion|command`
 - `GET /api/slots/:id/preview.jpg`
 
-Optional env: `REDZONE_PORT`, `REDZONE_PHONE_PORT`, `METOERA_VOICE_URL`, `REDZONE_WEBHOOK_URL`, `REDZONE_DEBOUNCE_MS`, `PHONE_ACCESS=off`.
+Optional env: `REDZONE_PORT`, `REDZONE_PHONE_PORT`, `METOERA_VOICE_URL`, `REDZONE_WEBHOOK_URL`, `REDZONE_DEBOUNCE_MS`, `PAD_NAV_EXECUTE_PATH`, `PAD_NAV_DIRECT=1` (skip voice-UI claim; tests only), `PHONE_ACCESS=off`.

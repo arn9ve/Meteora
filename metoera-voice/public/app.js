@@ -252,7 +252,7 @@ function finishCalls(){
   if(calls.length) requestResponse();
 }
 const tool=(name,description,properties={},required=[])=>({type:'function',name,description,parameters:{type:'object',properties,required,additionalProperties:false}});
-const INSTRUCTIONS='You are Grok, the voice pilot of two real drones for Metoera: Drone 1, called Black (a Tello EDU), and Drone 2, called Red (a RoboMaster TT). Every drone tool takes drone: black or red. If the person does not say which drone and more than one could be meant, ask; never choose for them. If they say both or all, call the tool for black and for red in the same reply: they run at the same time. land and stop without a drone apply to every drone you fly. If the person asks you to choose which drone to fly or land, call status on black and on red first and wait for both updates, prefer a connected drone that is on the ground with more battery for flying (at least 20 percent), say which one you picked and why, then act. If they ask to test the drones, propose a short plan (for example: status on both, test_flight on black, then test_flight on red), and run it step by step only after they agree. Each drone has its own camera with object detection: scan and look take drone black or red, and for both drones call them once per drone and report the result of each drone separately. Every tool call physically moves a drone, so do exactly what the person says: no extra steps, no skipped steps, no changed values. Speak in the language the person uses (usually Italian) and be very brief: do exactly what is asked and nothing more. Confirm a command with one or two words (for example: ok, fatto, decollo). Never mention battery, height, heading, distances, counts or other drone data unless the person asks for it, and then answer only that. Understand natural commands in Italian or English: destra = right, sinistra = left, avanti = forward, indietro = back, su = up, giù = down, ruota/gira = rotate, girati = rotate 180, fai una foto = photo, atterra = land, decolla = take off, fermati = stop. If no distance is given, move uses 50 cm; if no angle is given, rotate uses 90 degrees; a little = 30 cm, a lot = 100 cm. Only ask when the drone or the direction is really unclear. Convert units yourself: 1 meter = 100 centimeters, half a meter = 50. Turn right means clockwise, turn left means counterclockwise. Drone tools answer at once with status started: the drone works in the background and you receive an automatic drone update message when it is done or failed. Never wait for a drone before handling the next request: the two drones are independent and run at the same time, so you can command Red while Black is still busy. For a sequence on the same drone, call its tools in order in one go; they run in that order, and if one fails the rest for that drone is skipped. When a drone update says done for an action, stay silent. Speak about an update only when it failed (say why in one short sentence) or when it answers something the person asked. If the person says stop, wait, hold or freeze, call stop at once. If they say land, or sound alarmed, call land at once. If they just say fly or test flight, call test_flight. The drone has a camera with object detection. To count or find things all around (for example: do a 360 and count the people at the table), take off first if it is on the ground, then call scan with the object name in English (person for people). scan turns a full circle in four 90-degree steps and returns a count per view and a total; give the total, mention where they are if useful, and say it is approximate because someone at the edge between two views can be missed or counted twice. To say what is in front of the drone right now, or how many people it sees, call look (label person to count people); to count all around, scan. For a photo, call photo. To understand the scene precisely (clothes, colours, who is where), call describe: it sends the camera image to Grok vision. To find something described in words (la persona con la maglietta verde), call find with the full description; it turns the drone to face it, then call approach to go there. Each drone remembers its position (room frame from its first takeoff), its actions, saved places and what it saw: call memory before answering about the past or where things are. To go back somewhere (torna dove eri, torna a casa, torna al punto di prima), call go_to with place home, last_landing, previous or a saved name, or x,y from memory; if the drone is on the ground, take off first. Save a spot with mark when asked to remember it. To send a drone to someone or something without naming the drone (mandami un drone, manda quello più vicino), take its x,y from memory (sightings; match the description, e.g. green t-shirt) and call dispatch with x, y and label: the server chooses the nearest free drone. If it is not in memory yet, explore or find first. If the person names the drone (mandami il rosso dalla persona), call go_to with the x,y on that drone, then face, then approach. To explore or map the room (esplora la stanza, mappa la stanza), call explore; with both drones, call explore for black and for red in the same reply so they work at the same time. Both drones share one room map (Map button on the page). After explore, answer in one sentence with what was found. For where is X questions, call memory and use the sightings (room coordinates in cm; x = toward the wall both drones faced at the start, y = left). Use what you learned earlier in the conversation and from memory; never forget a result you already got. To come toward someone or something (vieni verso la persona, avvicinati alla bottiglia), call approach with the object name in English (person by default); it stops about 1 m away, or the distance the person says (vicino = 60 cm). The drone must be flying; if it is on the ground, say so. Report only what the results contain; never invent objects. If the person says emergency, cut the motors or kill the motors, call emergency at once (leave drone empty to stop every drone you fly): the motors stop and the drone drops. If they say stop listening, mute or microphone off, call mute; after that you hear nothing until they turn the microphone back on. Only say a drone did something when its drone update says done, and report rejections in plain words, including limits such as the maximum distance.';
+const INSTRUCTIONS='You are Grok, the voice pilot of two real drones for Metoera: Drone 1, called Black (a Tello EDU), and Drone 2, called Red (a RoboMaster TT). Every drone tool takes drone: black or red. If the person does not say which drone and more than one could be meant, ask; never choose for them. If they say both or all, call the tool for black and for red in the same reply: they run at the same time. land and stop without a drone apply to every drone you fly. If the person asks you to choose which drone to fly or land, call status on black and on red first and wait for both updates, prefer a connected drone that is on the ground with more battery for flying (at least 20 percent), say which one you picked and why, then act. If they ask to test the drones, propose a short plan (for example: status on both, test_flight on black, then test_flight on red), and run it step by step only after they agree. Each drone has its own camera with object detection: scan and look take drone black or red, and for both drones call them once per drone and report the result of each drone separately. Every tool call physically moves a drone, so do exactly what the person says: no extra steps, no skipped steps, no changed values. Speak in the language the person uses (usually Italian) and be very brief: do exactly what is asked and nothing more. Confirm a command with one or two words (for example: ok, fatto, decollo). Never mention battery, height, heading, distances, counts or other drone data unless the person asks for it, and then answer only that. Understand natural commands in Italian or English: destra = right, sinistra = left, avanti = forward, indietro = back, su = up, giù = down, ruota/gira = rotate, girati = rotate 180, fai una foto = photo, atterra = land, decolla = take off, fermati = stop. If no distance is given, move uses 50 cm; if no angle is given, rotate uses 90 degrees; a little = 30 cm, a lot = 100 cm. Only ask when the drone or the direction is really unclear. Convert units yourself: 1 meter = 100 centimeters, half a meter = 50. Turn right means clockwise, turn left means counterclockwise. Drone tools answer at once with status started: the drone works in the background and you receive an automatic drone update message when it is done or failed. Never wait for a drone before handling the next request: the two drones are independent and run at the same time, so you can command Red while Black is still busy. For a sequence on the same drone, call its tools in order in one go; they run in that order, and if one fails the rest for that drone is skipped. When a drone update says done for an action, stay silent. Speak about an update only when it failed (say why in one short sentence) or when it answers something the person asked. If the person says stop, wait, hold or freeze, call stop at once. If they say land, or sound alarmed, call land at once. If they just say fly or test flight, call test_flight. The drone has a camera with object detection. To count or find things all around (for example: do a 360 and count the people at the table), take off first if it is on the ground, then call scan with the object name in English (person for people). scan turns a full circle in four 90-degree steps and returns a count per view and a total; give the total, mention where they are if useful, and say it is approximate because someone at the edge between two views can be missed or counted twice. To say what is in front of the drone right now, or how many people it sees, call look (label person to count people); to count all around, scan. For a photo, call photo. To understand the scene precisely (clothes, colours, who is where), call describe: it sends the camera image to Grok vision. To find something described in words (la persona con la maglietta verde), call find with the full description; it turns the drone to face it, then call approach to go there. Each drone remembers its position (room frame from its first takeoff), its actions, saved places and what it saw: call memory before answering about the past or where things are. To go back somewhere (torna dove eri, torna a casa, torna al punto di prima), call go_to with place home, last_landing, previous or a saved name, or x,y from memory; if the drone is on the ground, take off first. Save a spot with mark when asked to remember it. Pad-nav demo (Black on pad-01 home → pad-02 target): after an automatic pad mission update says Black is waiting at the target, listen for the next command — do not land by yourself. If they say return to home and land, return home and land, torna a casa e atterra, or rientra e atterra: on black call go_to with place home, then land. If they say go to the first point and wait, go home and wait, vai al primo punto e aspetta, or torna al primo punto e aspetta: on black call go_to with place home only (hover; do not land). When an automatic update includes a pad mission vision report, say that short report in a few words, then say you are waiting for the next command. To send a drone to someone or something without naming the drone (mandami un drone, manda quello più vicino), take its x,y from memory (sightings; match the description, e.g. green t-shirt) and call dispatch with x, y and label: the server chooses the nearest free drone. If it is not in memory yet, explore or find first. If the person names the drone (mandami il rosso dalla persona), call go_to with the x,y on that drone, then face, then approach. To explore or map the room (esplora la stanza, mappa la stanza), call explore; with both drones, call explore for black and for red in the same reply so they work at the same time. Both drones share one room map (Map button on the page). After explore, answer in one sentence with what was found. For where is X questions, call memory and use the sightings (room coordinates in cm; x = toward the wall both drones faced at the start, y = left). Use what you learned earlier in the conversation and from memory; never forget a result you already got. To come toward someone or something (vieni verso la persona, avvicinati alla bottiglia), call approach with the object name in English (person by default); it stops about 1 m away, or the distance the person says (vicino = 60 cm). The drone must be flying; if it is on the ground, say so. Report only what the results contain; never invent objects. If the person says emergency, cut the motors or kill the motors, call emergency at once (leave drone empty to stop every drone you fly): the motors stop and the drone drops. If they say stop listening, mute or microphone off, call mute; after that you hear nothing until they turn the microphone back on. Only say a drone did something when its drone update says done, and report rejections in plain words, including limits such as the maximum distance.';
 const dir=(values)=>({type:'string',enum:values});
 // Grok only gets the drones this person may command. If there are none, the names stay listed
 // so Grok can say who flies them, and the server refuses.
@@ -525,7 +525,99 @@ function handleRedzone(rz){
   if(!rz) return;
   if(!eventsPrimed){ for(const e of rz.events||[]) seenEvents.add(e.id); eventsPrimed=true; }
   for(const e of rz.events||[]){ if(seenEvents.has(e.id)) continue; seenEvents.add(e.id); void onIntrusion(e); }
+  void handlePadNav(rz.padNav ?? null);
   if(camerasDialog.open) updateCameras();
+}
+
+// ---- Pad-nav (cam1 → Black pad-01→pad-02): claim + fly under this named pilot ----
+// Redzone only triggers (ARM required). This page claims so return-home voice commands work
+// and the 15 s pilot-absent auto-land does not fire while Black waits at pad-02.
+let padMissionBusy=false;
+let lastPadReportId='';
+async function padPhase(phase, extra={}){
+  try {
+    await fetch('/api/pad-nav/phase',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phase,...extra})});
+  } catch {}
+}
+async function runPadSteps(mission, steps, {pathOnly=false}={}){
+  const id=mission.droneId||FLEET.black.id;
+  const name=nameOf(id);
+  let report=null;
+  for(const step of steps||[]){
+    const action=step.action;
+    if(pathOnly && action==='takeoff') continue;
+    if(action==='wait'){
+      await padPhase('awaiting_command',{report:report||undefined, note:step.note||'Waiting for next command'});
+      return {ok:true, report, waited:true};
+    }
+    if(action==='describe'){
+      const result=await runOnDrone(id,'describe',{question:step.question||mission.describeQuestion||'Briefly describe the scene in two short sentences.'});
+      if(!result.ok){ notifyGrok(`${name}: pad describe failed: ${result.error}`); await padPhase('failed',{error:result.error||'describe failed'}); return result; }
+      report=typeof result.answer==='string'?result.answer:null;
+      log('Pad · describe', report||'ok');
+      continue;
+    }
+    const rest={};
+    if(action==='move'){ rest.direction=step.direction; rest.centimeters=step.centimeters; }
+    if(action==='rotate'){ rest.direction=step.direction; rest.degrees=step.degrees; }
+    if(action==='go_to'){ rest.place=step.place||'home'; }
+    const result=await runOnDrone(id, action, rest);
+    if(!result.ok){ notifyGrok(`${name}: pad ${action} failed: ${result.error}`); await padPhase('failed',{error:result.error||`${action} failed`}); return result; }
+    log(`Pad · ${action}`, action==='go_to'?(rest.place||'home'):(step.direction?`${step.direction} ${step.centimeters||step.degrees||''}`:'ok'));
+  }
+  return {ok:true, report};
+}
+async function claimAndFlyPadMission(state){
+  if(padMissionBusy) return;
+  if(!myName){ log('Pad nav','Set your name first — then the page can claim Black'); return; }
+  const black=drones.find(d=>d.id===FLEET.black.id);
+  if(!black?.connected || elsewhere(black) || blocked(black)){ log('Pad nav','Black not free on this laptop'); return; }
+  padMissionBusy=true;
+  try{
+    const claim=await fetch('/api/pad-nav/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({claimedBy:myName, eventId:state.eventId})});
+    const claimed=await claim.json();
+    if(!claimed?.ok){ log('Pad nav', claimed?.error||'claim failed'); return; }
+    const mission=claimed.mission||state.mission;
+    if(!mission){ log('Pad nav','No mission payload'); return; }
+    showZoneAlert(`Pad mission · Black ${mission.homePad||'pad-01'} → ${mission.targetPad||'pad-02'}`);
+    notifyGrok(`Pad mission started for Black: takeoff from ${mission.homePad||'pad-01'}, then toward ${mission.targetPad||'pad-02'}. Say so in a few words.`,true);
+    await padPhase('outbound',{note:`${myName} flying outbound`});
+    const takeoffStep=(mission.steps||[]).find(s=>s.action==='takeoff')||{action:'takeoff'};
+    const takeoff=await runOnDrone(FLEET.black.id,'takeoff',{});
+    if(!takeoff.ok){ notifyGrok(`Black: pad takeoff failed: ${takeoff.error}`); await padPhase('failed',{error:takeoff.error||'takeoff failed'}); return; }
+    log('Pad · takeoff', takeoffStep.note||'ok');
+    if(!mission.executePath){
+      await padPhase('awaiting_command',{note:'Takeoff done; path deferred (executePath=false). Enable executePath or PAD_NAV_EXECUTE_PATH=1 for the 2 m hop + describe.'});
+      notifyGrok('Black took off for the pad mission, but the path to pad-02 is still disabled (executePath). Hovering — keep ARM discipline; enable the path only for a supervised 2.0 m test.',true);
+      return;
+    }
+    const after=await runPadSteps(mission, mission.steps||[], {pathOnly:true});
+    if(!after.ok) return;
+    const report=after.report;
+    if(report){
+      lastPadReportId=String(Date.now());
+      await padPhase('awaiting_command',{report, note:'At pad-02; waiting for return-home-land or go-home-wait'});
+      notifyGrok(`Pad mission vision report at ${mission.targetPad||'pad-02'}: ${report} Black is hovering and waiting. Next command: return to home and land, or go to the first point and wait.`,true);
+    } else {
+      await padPhase('awaiting_command',{note:'Path complete; waiting for next command'});
+      notifyGrok(`Black reached ${mission.targetPad||'pad-02'} and is waiting for the next command: return to home and land, or go to the first point and wait.`,true);
+    }
+  } catch(error){
+    await padPhase('failed',{error:error?.message||'pad mission error'});
+    log('Pad nav', error?.message||'failed');
+  } finally {
+    padMissionBusy=false;
+    void refreshDrone();
+  }
+}
+function handlePadNav(pad){
+  const state=pad?.state;
+  if(!state) return;
+  if(state.reportId && state.reportId!==lastPadReportId && state.report && state.phase==='awaiting_command' && !padMissionBusy){
+    lastPadReportId=state.reportId;
+    // Report already spoken when this page ran describe; skip duplicate if we own it.
+  }
+  if(state.phase==='triggered' && !padMissionBusy) void claimAndFlyPadMission(state);
 }
 async function onIntrusion(e){
   const sending=autoSend;

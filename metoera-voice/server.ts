@@ -336,8 +336,21 @@ async function redzonePhoneLink(slot: string): Promise<string | null> {
   const key = (await readFile(join(root, '..', 'metoera-redzone', '.phone', 'key.txt'), 'utf8').catch(() => '')).trim();
   return key && lanAddress ? `https://${lanAddress}:${redzonePhonePort}/?key=${key}&slot=${slot}` : null;
 }
+/** Latest pad-nav mission state from metoera-redzone (cam1 → Black hop). */
+let padNavState: unknown = null;
+async function pollPadNav() {
+  try {
+    const response = await fetch(`${redzoneUrl}/api/pad-nav`, {signal:AbortSignal.timeout(1500)});
+    if (!response.ok) { padNavState = null; return; }
+    padNavState = await response.json();
+  } catch { padNavState = null; }
+}
+void pollPadNav();
+setInterval(() => { void pollPadNav(); }, 1000).unref();
+
 async function redzoneView() {
   const slotIds = ['1', '2', '3'];
+  const pad = padNavState as {state?: unknown; missions?: {cam1?: unknown}} | null;
   return {
     available:redzone.available, console:`${redzoneUrl}/console`,
     slots:await Promise.all(slotIds.map(async (id) => {
@@ -346,7 +359,20 @@ async function redzoneView() {
     })),
     people:redzone.people,
     events:redzone.events.slice(-10).map((e) => ({...e, claimed:e.claimedBy !== null})),
+    padNav: pad ? {missions:pad.missions ?? null, state:pad.state ?? null} : null,
   };
+}
+
+async function redzonePadNav(path: string, body: unknown) {
+  try {
+    const response = await fetch(`${redzoneUrl}${path}`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body ?? {}),
+      signal:AbortSignal.timeout(5000),
+    });
+    return await response.json() as unknown;
+  } catch { return {ok:false, error:'Camera service unreachable'}; }
 }
 // Camera commands from the Mac (watch on/off, lens, sensitivity, ARM), passed to the phone.
 async function redzoneCommand(slot: string, command: unknown) {
@@ -432,7 +458,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
   const video = /^\/video\/([a-z]+)$/.exec(path);
   // Only this laptop's drones stream here; another laptop's drone sends its video to that laptop.
   if (req.method === 'GET' && video && drones.has(video[1]) && refusal(video[1]) === null) { await proxyVideo(video[1], res); return; }
-  if (req.method === 'POST' && ['/session','/api/command','/api/emergency','/api/pilot','/api/nearest','/api/room/drone','/api/room/camera','/api/room/zones','/api/cameras/command','/api/redzone/claim'].includes(path)) {
+  if (req.method === 'POST' && ['/session','/api/command','/api/emergency','/api/pilot','/api/nearest','/api/room/drone','/api/room/camera','/api/room/zones','/api/cameras/command','/api/redzone/claim','/api/pad-nav/claim','/api/pad-nav/phase'].includes(path)) {
     if (!req.headers.origin || !allowedOrigins.has(req.headers.origin)) { json(res, 403, {error:'Unauthorized origin'}); return; }
     // Emergency buttons: they skip the command queue and cancel whatever is waiting in it.
     if (path === '/api/emergency') {
@@ -537,6 +563,24 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
         const allowed = ['watch', 'lens', 'sensitivity', 'arm'];
         if (!/^[123]$/.test(slot) || !command || typeof command.type !== 'string' || !allowed.includes(command.type)) { json(res, 400, {ok:false, error:'slot and command (watch, lens, sensitivity, arm) required'}); return; }
         json(res, 200, await redzoneCommand(slot, command));
+      } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
+      return;
+    }
+    // Pad-nav: voice UI claims cam1→Black mission and reports Grok describe / phase.
+    if (path === '/api/pad-nav/claim') {
+      try {
+        const body = await readJson(req) as {claimedBy?: unknown; eventId?: unknown};
+        const claimedBy = typeof body?.claimedBy === 'string' && body.claimedBy.trim()
+          ? body.claimedBy.trim()
+          : (pilots.nameOf(sid) || 'voice-ui');
+        json(res, 200, await redzonePadNav('/api/pad-nav/claim', {claimedBy, eventId:body?.eventId}));
+      } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
+      return;
+    }
+    if (path === '/api/pad-nav/phase') {
+      try {
+        const body = await readJson(req);
+        json(res, 200, await redzonePadNav('/api/pad-nav/phase', body));
       } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
       return;
     }

@@ -12,7 +12,17 @@ import { readFile, writeFile, mkdir, appendFile, chmod, access } from 'node:fs/p
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
-import { buildMissionEvent, loadPadNav, runPadMission } from './pad-nav.mjs';
+import {
+  buildMissionEvent,
+  claimMission,
+  commandSteps,
+  getMissionState,
+  loadPadNav,
+  runPadCommand,
+  runPadMission,
+  triggerMission,
+  updateMissionPhase,
+} from './pad-nav.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.REDZONE_PORT ?? 18791);
@@ -221,24 +231,34 @@ function enqueueCommand(slot, command) {
 
 async function tryTakeoff(eventId, slotId) {
   const padNav = await loadPadNav().catch(() => null);
-  const mission = padNav ? buildMissionEvent(padNav, slotId) : {
-    kind: 'takeoff-only',
-    summary: `Slot ${slotId}: takeoff`,
-    drone: 'Black',
-    droneId: 'tello',
-    homePad: null,
-    targetPad: null,
-    steps: [{ action: 'takeoff' }],
-    executePath: false,
-  };
+  const mission = padNav
+    ? buildMissionEvent(padNav, slotId)
+    : {
+        kind: 'takeoff-only',
+        summary: `Slot ${slotId}: takeoff`,
+        drone: 'Black',
+        droneId: 'tello',
+        homePad: null,
+        targetPad: null,
+        steps: [{ action: 'takeoff' }],
+        executePath: false,
+        commands: null,
+      };
+
+  // Prefer voice-UI claim: the named pilot on metoera-voice must fly Black so
+  // return-home commands work and the 15 s pilot-absent auto-land does not fire.
+  const direct = process.env.PAD_NAV_DIRECT === '1';
+  const state = triggerMission(eventId, mission);
 
   const result = {
     attempted: true,
+    deferred: !direct,
     voice: null,
     webhook: null,
     note: null,
     slotId,
     mission,
+    missionState: state,
   };
 
   if (webhookUrl) {
@@ -254,6 +274,7 @@ async function tryTakeoff(eventId, slotId) {
           source: 'metoera-redzone',
           actionRequested: mission.kind === 'pad-to-pad' ? 'pad-mission' : 'takeoff',
           mission,
+          missionState: state,
         }),
         signal: AbortSignal.timeout(4000),
       });
@@ -263,19 +284,29 @@ async function tryTakeoff(eventId, slotId) {
     }
   }
 
+  if (!direct) {
+    result.note =
+      'Mission triggered for voice UI claim (no direct takeoff). Open http://localhost:18787, set your name, keep the page open; it will claim and fly Black when ARM+cam1 fires.';
+    return result;
+  }
+
   try {
     const flight = await runPadMission(voiceUrl, mission);
     result.voice = flight.voice;
     result.steps = flight.steps;
+    result.report = flight.report ?? null;
+    result.missionState = flight.state;
     result.note = flight.note;
     if (!result.voice?.ok) {
       result.note =
         (result.note ? result.note + ' ' : '') +
-        'Voice takeoff did not succeed. Is metoera-voice running with TELLO_IP set?';
+        'Voice takeoff did not succeed. Is metoera-voice running with TELLO_IP set and a pilot name?';
     }
   } catch (error) {
     result.voice = { ok: false, error: error instanceof Error ? error.message : String(error) };
     result.note = 'Could not reach metoera-voice. Event logged; keep ARM OFF until ready.';
+    updateMissionPhase('failed', { error: result.voice.error });
+    result.missionState = getMissionState();
   }
   if (!webhookUrl && !result.voice?.ok) {
     result.note = (result.note ? result.note + ' ' : '') + 'Stub: would run mission / takeoff.';
@@ -390,6 +421,7 @@ async function handle(req, res, remote) {
   if (req.method === 'GET' && path === '/api/health') {
     const padNav = await loadPadNav().catch(() => null);
     const cam1 = padNav?.missions?.cam1 ?? null;
+    const state = getMissionState();
     json(res, 200, {
       ok: true,
       service: 'metoera-redzone',
@@ -404,8 +436,11 @@ async function handle(req, res, remote) {
             homePad: cam1.homePad,
             targetPad: cam1.targetPad,
             drone: cam1.drone,
+            distanceCm: cam1.distanceCm ?? 200,
             executePath: Boolean(cam1.executePath) || process.env.PAD_NAV_EXECUTE_PATH === '1',
             summary: cam1.summary,
+            phase: state.phase,
+            reportId: state.reportId,
           }
         : null,
     });
@@ -414,7 +449,65 @@ async function handle(req, res, remote) {
 
   if (req.method === 'GET' && path === '/api/pad-nav') {
     const padNav = await loadPadNav().catch((error) => ({ error: String(error) }));
-    json(res, 200, padNav);
+    json(res, 200, { ...padNav, state: getMissionState() });
+    return;
+  }
+
+  // Voice UI claims a triggered cam1 mission and flies under the named pilot.
+  if (req.method === 'POST' && path === '/api/pad-nav/claim') {
+    try {
+      const body = await readJson(req);
+      const claimedBy = typeof body?.claimedBy === 'string' ? body.claimedBy : 'voice-ui';
+      const eventId = typeof body?.eventId === 'string' ? body.eventId : undefined;
+      json(res, 200, claimMission(claimedBy, eventId));
+    } catch (error) {
+      json(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Voice UI reports phase + optional Grok describe report after arrival.
+  if (req.method === 'POST' && path === '/api/pad-nav/phase') {
+    try {
+      const body = await readJson(req);
+      const phase = typeof body?.phase === 'string' ? body.phase : '';
+      json(
+        res,
+        200,
+        updateMissionPhase(phase, {
+          report: body?.report,
+          note: body?.note,
+          error: body?.error,
+        }),
+      );
+    } catch (error) {
+      json(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Optional direct return commands (tests / PAD_NAV_DIRECT). Prefer voice UI tools.
+  if (req.method === 'POST' && path === '/api/pad-nav/command') {
+    try {
+      const body = await readJson(req);
+      const command = typeof body?.command === 'string' ? body.command : '';
+      const state = getMissionState();
+      const mission = state.mission || (await loadPadNav().then((c) => buildMissionEvent(c, '1')).catch(() => null));
+      if (!commandSteps(mission, command)) {
+        json(res, 400, { ok: false, error: 'command must be return-home-land or go-home-wait' });
+        return;
+      }
+      if (process.env.PAD_NAV_DIRECT === '1') {
+        json(res, 200, await runPadCommand(voiceUrl, command, mission));
+        return;
+      }
+      // Hand the step list to the voice UI; do not fly from redzone (pilot timeout).
+      const plan = commandSteps(mission, command);
+      updateMissionPhase('returning', { note: `Voice UI should run ${command}` });
+      json(res, 200, { ok: true, deferred: true, command, plan, state: getMissionState() });
+    } catch (error) {
+      json(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 

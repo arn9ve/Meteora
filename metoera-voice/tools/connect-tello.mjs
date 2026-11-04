@@ -21,7 +21,8 @@ async function configuration() {
     const match = /^(TELLO_SETUP_SSID|TELLO_SETUP_PASSWORD|TELLO_SETUP_SERIAL)=(.*)$/.exec(line);
     if (match) values[match[1]] = match[2];
   }
-  return {ssid:values.TELLO_SETUP_SSID, password:values.TELLO_SETUP_PASSWORD, serial:values.TELLO_SETUP_SERIAL};
+  // TELLO_EXPECT_SERIAL=... joins another drone (e.g. the RoboMaster TT) without editing .env.tello.
+  return {ssid:values.TELLO_SETUP_SSID, password:values.TELLO_SETUP_PASSWORD, serial:process.env.TELLO_EXPECT_SERIAL?.trim() || values.TELLO_SETUP_SERIAL};
 }
 // The Tello always replies to local port 8889. A late "ok" from an earlier command can
 // arrive after the next query is sent, so each query only accepts a reply of its own shape.

@@ -12,7 +12,8 @@ const port = Number(process.env.TELLO_PORT ?? 8889); // override only for local 
 const HOVER_MS = 5000;
 const MIN_BATTERY = 30;
 
-const expectedSerial = (await readFile(new URL('../.env.tello', import.meta.url), 'utf8').catch(() => ''))
+// TELLO_EXPECT_SERIAL=... flies another drone (e.g. the RoboMaster TT) without editing .env.tello.
+const expectedSerial = process.env.TELLO_EXPECT_SERIAL?.trim() || (await readFile(new URL('../.env.tello', import.meta.url), 'utf8').catch(() => ''))
   .match(/^TELLO_SETUP_SERIAL=(.*)$/m)?.[1]?.trim();
 
 const socket = dgram.createSocket('udp4');

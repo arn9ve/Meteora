@@ -16,13 +16,52 @@ You need Node.js 24.12 or later, an xAI API key, a microphone, and the Tello on 
 
 The xAI key stays on the server; the browser gets a temporary token.
 
+## Two drones: Black and Red
+
+| Name | Model | `.env.tello` | droneId |
+| --- | --- | --- | --- |
+| Drone 1 · Black | Tello EDU | `TELLO_IP`, `TELLO_SETUP_SERIAL` | `tello` |
+| Drone 2 · Red | RoboMaster TT | `RMTT_IP`, `RMTT_SETUP_SERIAL` | `rmtt` |
+
+Set only the IP of a drone you have; the other one stays off the page. Use the serial the drone reports with `sn?` (`tools/check-tello-lan.mjs` prints it), not the label on the box: our RoboMaster's box says `42YF…`, the drone says `0TQZ…`.
+
+Every drone tool takes `drone: black | red`. Grok asks which one when you don't say. "Both" runs the command on Black, then Red. `land` and `stop` with no drone go to both; so does `emergency`. Switch off and Cut motors act on both drones.
+
+Both drones reply to the computer's UDP port 8889, so the server opens 8889 and 8890 once and routes each datagram by sender IP (`src/udp-port.ts`). The two drones need different IPs.
+
+To check, join or fly a second drone with the tools, pass its serial on the command line; `.env.tello` is not changed:
+
+```bash
+TELLO_EXPECT_SERIAL=<serial> node tools/check-tello-lan.mjs <ip>
+TELLO_EXPECT_SERIAL=<serial> node tools/connect-tello.mjs
+TELLO_EXPECT_SERIAL=<serial> node tools/test-flight.mjs <ip>
+```
+
+## Phone
+
+On start the server also listens with HTTPS on the local network (port 18788) and prints a link like `https://192.168.5.16:18788/?key=…`. Open it on a phone on the same Wi-Fi.
+
+- The key in the link is required for every request, so other people on the shared Wi-Fi cannot fly the drones. Do not share it. It is kept in `.phone/key.txt` (git-ignored); delete the folder to get a new one.
+- The certificate is self-signed (also in `.phone/`): accept the browser warning once. HTTPS is needed because phones only allow the microphone on secure pages. Android Chrome works with this; iOS Safari may refuse the microphone with a self-signed certificate.
+- `PHONE_ACCESS=off` disables it; `PHONE_PORT` changes the port.
+
+## Cameras (YOLO on both drones)
+
+Both drones stream video to UDP 11111 on this computer once the server has sent `streamon`. Start the vision service with both drones so it separates the two streams by sender IP:
+
+```bash
+cd ../metoera-vision && .venv/bin/python -m metoera_vision --drones tello=192.168.5.137,rmtt=192.168.5.68
+```
+
+The Drones panel shows each drone's live video with YOLO boxes (`/video/tello`, `/video/rmtt`, passed through from the vision service). `scan` and `look` read the detections of the drone they are called for.
+
 ## Voice commands
 
 Grok calls one tool per action, in the order you say them, and waits for each result. If you leave out a value it asks instead of guessing.
 
 | Say | Tool | Tello SDK |
 | --- | --- | --- |
-| "Take off" | `takeoff` | `takeoff` (needs ≥ 20% battery) |
+| "Black, take off" | `takeoff` | `takeoff` (needs ≥ 20% battery) |
 | "Land" | `land` | `land` |
 | "Stop" / "wait" / "hold" | `stop` | `stop`: hover now, interrupting a running move |
 | "Move forward half a meter" | `move` | `forward 50` (also back, left, right, up, down; 20 to 100 cm by default) |

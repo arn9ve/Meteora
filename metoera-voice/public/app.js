@@ -109,62 +109,98 @@ $('#killMotors').addEventListener('click',()=>{
 });
 $('#muteButton').addEventListener('click',()=>setMuted(!muted));
 
-// Every voice action goes to the real Tello through the local server.
+// Two real drones. Grok names them by colour; the server knows them as tello and rmtt.
+const FLEET={black:{id:'tello',name:'Drone 1 · Black',model:'Tello EDU'},red:{id:'rmtt',name:'Drone 2 · Red',model:'RoboMaster TT'}};
+const nameOf=id=>Object.values(FLEET).find(d=>d.id===id)?.name||id;
+let drones=[]; // snapshots from /api/drones, one per configured drone
+// Every voice action goes to a real drone through the local server.
 const actionLabels={emergency:'Motors cut',takeoff:'Takeoff',land:'Landing',move:'Move',rotate:'Rotation',flip:'Flip',speed:'Speed',stop:'Stop',status:'Status',test_flight:'Test flight',scan:'360° scan',look:'Look'};
-async function command(name,args){
-  // Grok can still finish a reply after the microphone went off; only safety commands run then.
-  if(muted&&!['stop','land','emergency'].includes(name)) return {ok:false,mode:'real',error:'Microphone is off; command ignored'};
-  if(name==='mute'){setMuted(true);log('Grok · Microphone off','Done');return {ok:true,action:'mute'}}
+// Each drone has its own queue: commands for Black and Red run at the same time, and a
+// sequence for one drone keeps its order. Tools answer Grok at once ("started"); when the
+// drone finishes, Grok gets an automatic update. land, stop and emergency skip the queue.
+const URGENT=['land','stop','emergency'];
+const droneQueues={};
+let responding=false, wantResponse=false;
+function requestResponse(){ if(muted) return; if(responding){wantResponse=true;return} wantResponse=false; send({type:'response.create'}) }
+function notifyGrok(text){
+  send({type:'conversation.item.create',item:{type:'message',role:'user',content:[{type:'input_text',text:`(automatic drone update, not said by the person) ${text}`}]}});
+  requestResponse();
+}
+async function runOnDrone(id,name,rest){
   try {
     // droneId and action go last so the model's arguments cannot override them.
-    const response=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...args,droneId:'tello',action:name})});
+    const response=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...rest,droneId:id,action:name})});
     const result=await response.json();
-    if(!response.ok) return {ok:false,mode:'real',error:serverMessage(result.error)||'Server unavailable'};
-    log(`Tello · ${actionLabels[name] || name}`,result.ok?'Done':`Rejected · ${serverMessage(result.error)}`);
-    await refreshDrone();
-    return result;
+    return response.ok?result:{ok:false,mode:'real',error:serverMessage(result.error)||'Server unavailable'};
   } catch { return {ok:false,mode:'real',error:'Server unreachable'}; }
 }
+function dispatch(name,args,failed,run){
+  // Grok can still finish a reply after the microphone went off; only safety commands run then.
+  if(muted&&!URGENT.includes(name)) return {ok:false,mode:'real',error:'Microphone is off; command ignored'};
+  if(name==='mute'){setMuted(true);log('Grok · Microphone off','Done');return {ok:true,action:'mute'}}
+  const {drone:colour,...rest}=args;
+  // Emergency without a named drone cuts the motors of every drone.
+  if(name==='emergency'&&!colour){void emergency('motors');return {ok:true,action:'emergency',drones:'all'}}
+  let ids;
+  if(FLEET[colour]) ids=[FLEET[colour].id];
+  else if(URGENT.includes(name)) ids=drones.length?drones.map(d=>d.id):Object.values(FLEET).map(f=>f.id); // in a hurry nobody names the drone
+  else if(drones.length===1) ids=[drones[0].id];
+  else return {ok:false,mode:'real',error:'Say which drone: black (Drone 1) or red (Drone 2)'};
+  for(const id of ids){
+    const label=`${nameOf(id)} · ${actionLabels[name]||name}`;
+    const task=async()=>{
+      if(run!==generation) return;
+      if(failed.has(id)&&!URGENT.includes(name)){notifyGrok(`${label}: skipped because an earlier step for this drone failed`);return}
+      const result=await runOnDrone(id,name,rest);
+      if(!result.ok) failed.add(id);
+      log(label,result.ok?'Done':`Rejected · ${serverMessage(result.error)}`);
+      void refreshDrone();
+      if(run!==generation) return;
+      const {drone:snapshot,mode,...details}=result;
+      notifyGrok(`${label}: ${result.ok?'done':'failed'} ${JSON.stringify(details).slice(0,700)}${snapshot?` battery ${snapshot.battery ?? '?'}% height ${snapshot.heightCm ?? '?'} cm ${snapshot.flight}`:''}`);
+    };
+    if(URGENT.includes(name)) void task();
+    else droneQueues[id]=(droneQueues[id]??Promise.resolve()).then(task,task);
+  }
+  return {ok:true,status:'started',drones:ids.map(nameOf),note:'Running now; an automatic drone update will follow. Do not wait for it.'};
+}
 
-async function finishCalls(){
+function finishCalls(){
   const run=generation;
   const calls=pending;
   pending=[];
-  let stopped=false;
+  const failed=new Set(); // a failed step skips the later steps of the same drone in this batch
   for(const event of calls){
     if(run!==generation) return;
-    let result;
-    // After a failure the rest of the sequence is skipped, except stop and land.
-    if(stopped && !['stop','land'].includes(event.name)) result={ok:false,mode:'real',error:'Skipped because an earlier command failed'};
-    else {
-      try {result=await command(event.name,JSON.parse(event.arguments||'{}'));}
-      catch {result={ok:false,mode:'real',error:'Invalid arguments'};}
-    }
-    if(run!==generation) return;
-    if(!result.ok) stopped=true;
-    send({type:'conversation.item.create',item:{type:'function_call_output',call_id:event.call_id,output:JSON.stringify(result)}});
+    let args=null;
+    try {args=JSON.parse(event.arguments||'{}')} catch {}
+    const output=args?dispatch(event.name,args,failed,run):{ok:false,mode:'real',error:'Invalid arguments'};
+    send({type:'conversation.item.create',item:{type:'function_call_output',call_id:event.call_id,output:JSON.stringify(output)}});
   }
-  if(calls.length)send({type:'response.create'});
+  if(calls.length) requestResponse();
 }
 const tool=(name,description,properties={},required=[])=>({type:'function',name,description,parameters:{type:'object',properties,required,additionalProperties:false}});
-const INSTRUCTIONS='You are Grok, the voice pilot of one real Tello EDU drone for Metoera. Every tool call physically moves the drone, so do exactly what the person says: no extra steps, no skipped steps, no changed values. Speak concisely. If a value you need is missing or unclear (distance, angle, direction), ask for it; never guess. Convert units yourself: 1 meter = 100 centimeters, half a meter = 50. Turn right means clockwise, turn left means counterclockwise. For a sequence, call one tool at a time in the order given and wait for each result; if one fails, stop and say why. If the person says stop, wait, hold or freeze, call stop at once. If they say land, or sound alarmed, call land at once. If they just say fly or test flight, call test_flight. The drone has a camera with object detection. To count or find things all around (for example: do a 360 and count the people at the table), take off first if it is on the ground, then call scan with the object name in English (person for people). scan turns a full circle in four 90-degree steps and returns a count per view and a total; give the total, mention where they are if useful, and say it is approximate because someone at the edge between two views can be missed or counted twice. To say what is in front of the drone right now, call look. Report only what the results contain; never invent objects. If the person says emergency, cut the motors or kill the motors, call emergency at once: the motors stop and the drone drops. If they say stop listening, mute or microphone off, call mute; after that you hear nothing until they turn the microphone back on. Only say the drone did something when the result is ok, and report rejections in plain words, including limits such as the maximum distance.';
+const INSTRUCTIONS='You are Grok, the voice pilot of two real drones for Metoera: Drone 1, called Black (a Tello EDU), and Drone 2, called Red (a RoboMaster TT). Every drone tool takes drone: black or red. If the person does not say which drone and more than one could be meant, ask; never choose for them. If they say both or all, call the tool for black and for red in the same reply: they run at the same time. land and stop without a drone apply to both. If the person asks you to choose which drone to fly or land, call status on black and on red first and wait for both updates, prefer a connected drone that is on the ground with more battery for flying (at least 20 percent), say which one you picked and why, then act. If they ask to test the drones, propose a short plan (for example: status on both, test_flight on black, then test_flight on red), and run it step by step only after they agree. Each drone has its own camera with object detection: scan and look take drone black or red, and for both drones call them once per drone and report the result of each drone separately. Every tool call physically moves a drone, so do exactly what the person says: no extra steps, no skipped steps, no changed values. Speak concisely. If a value you need is missing or unclear (distance, angle, direction), ask for it; never guess. Convert units yourself: 1 meter = 100 centimeters, half a meter = 50. Turn right means clockwise, turn left means counterclockwise. Drone tools answer at once with status started: the drone works in the background and you receive an automatic drone update message when it is done or failed. Never wait for a drone before handling the next request: the two drones are independent and run at the same time, so you can command Red while Black is still busy. For a sequence on the same drone, call its tools in order in one go; they run in that order, and if one fails the rest for that drone is skipped. When a drone update arrives, tell the person in a few words. If the person says stop, wait, hold or freeze, call stop at once. If they say land, or sound alarmed, call land at once. If they just say fly or test flight, call test_flight. The drone has a camera with object detection. To count or find things all around (for example: do a 360 and count the people at the table), take off first if it is on the ground, then call scan with the object name in English (person for people). scan turns a full circle in four 90-degree steps and returns a count per view and a total; give the total, mention where they are if useful, and say it is approximate because someone at the edge between two views can be missed or counted twice. To say what is in front of the drone right now, call look. Report only what the results contain; never invent objects. If the person says emergency, cut the motors or kill the motors, call emergency at once (leave drone empty to stop both): the motors stop and the drone drops. If they say stop listening, mute or microphone off, call mute; after that you hear nothing until they turn the microphone back on. Only say a drone did something when its drone update says done, and report rejections in plain words, including limits such as the maximum distance.';
 const dir=(values)=>({type:'string',enum:values});
+const DRONE={type:'string',enum:['black','red'],description:'black = Drone 1 (Tello EDU), red = Drone 2 (RoboMaster TT)'};
+// Every drone tool gets the drone parameter; mute is about the microphone, not a drone.
+const droneTool=(name,description,properties={},required=[])=>tool(name,description,{drone:DRONE,...properties},['emergency','land','stop'].includes(name)?required:['drone',...required]);
 const TOOLS=[
-  tool('takeoff','Take off and hover at about 80 cm'),
-  tool('land','Land now'),
-  tool('stop','Hover in place immediately, interrupting a move in progress'),
-  tool('move','Move in a straight line',{direction:dir(['forward','back','left','right','up','down']),centimeters:{type:'integer',minimum:20,maximum:500}},['direction','centimeters']),
-  tool('rotate','Turn in place',{direction:dir(['clockwise','counterclockwise']),degrees:{type:'integer',minimum:1,maximum:360}},['direction','degrees']),
-  tool('flip','Flip in a direction; needs at least 50% battery',{direction:dir(['left','right','forward','back'])},['direction']),
-  tool('speed','Set the speed used by later moves',{cmPerSecond:{type:'integer',minimum:10,maximum:100}},['cmPerSecond']),
-  tool('emergency','EMERGENCY: stop the motors immediately; the drone drops. Only when the person asks for an emergency or to cut the motors'),
+  droneTool('takeoff','Take off and hover at about 80 cm'),
+  droneTool('land','Land now'),
+  droneTool('stop','Hover in place immediately, interrupting a move in progress'),
+  droneTool('move','Move in a straight line',{direction:dir(['forward','back','left','right','up','down']),centimeters:{type:'integer',minimum:20,maximum:500}},['direction','centimeters']),
+  droneTool('rotate','Turn in place',{direction:dir(['clockwise','counterclockwise']),degrees:{type:'integer',minimum:1,maximum:360}},['direction','degrees']),
+  droneTool('flip','Flip in a direction; needs at least 50% battery',{direction:dir(['left','right','forward','back'])},['direction']),
+  droneTool('speed','Set the speed used by later moves',{cmPerSecond:{type:'integer',minimum:10,maximum:100}},['cmPerSecond']),
+  droneTool('emergency','EMERGENCY: stop the motors immediately; the drone drops. Only when the person asks for an emergency or to cut the motors'),
   tool('mute','Turn the microphone off so you stop hearing the person'),
-  tool('status','Read battery, height, heading and whether the drone is flying'),
-  tool('test_flight','Take off, hover 5 seconds, then land'),
-  tool('scan','Turn 360 degrees in four 90-degree steps and count one kind of object in the camera; drone must be flying',{label:{type:'string',description:'Object class in English, e.g. person, chair, bottle, cup, laptop'}},[]),
-  tool('look','Describe what the camera sees right now (object counts and left/center/right)',{label:{type:'string',description:'Optional object class to filter on'}},[]),
+  droneTool('status','Read battery, height, heading and whether the drone is flying'),
+  droneTool('test_flight','Take off, hover 5 seconds, then land'),
+  droneTool('scan','Turn 360 degrees in four 90-degree steps and count one kind of object in the camera; drone must be flying',{label:{type:'string',description:'Object class in English, e.g. person, chair, bottle, cup, laptop'}},[]),
+  droneTool('look','Describe what the camera sees right now (object counts and left/center/right)',{label:{type:'string',description:'Optional object class to filter on'}},[]),
 ];
-async function start(){const run=++generation;state('CONNECTING…','Connecting voice session.');$('#startVoice').disabled=true;stopping=false;try{const acquired=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true},video:false});if(run!==generation){acquired.getTracks().forEach(t=>t.stop());return}stream=acquired;context=new AudioContext({sampleRate:24000});await context.resume();if(run!==generation)return;const tokenResponse=await fetch('/session',{method:'POST'});const token=await tokenResponse.json();if(run!==generation)return;if(!tokenResponse.ok)throw Error(serverMessage(token.error)||'Token unavailable');if(!token.value)throw Error('Invalid token response');socket=new WebSocket('wss://api.x.ai/v1/realtime?model=grok-voice-latest',[`xai-client-secret.${token.value}`]);socket.onopen=()=>{if(run!==generation)return;send({type:'session.update',session:{voice:'eve',instructions:INSTRUCTIONS,turn_detection:{type:'server_vad'},audio:{input:{format:{type:'audio/pcm',rate:context.sampleRate},transcription:{language_hint:'en'}},output:{format:{type:'audio/pcm',rate:24000}}},tools:TOOLS}});source=context.createMediaStreamSource(stream);analyser=context.createAnalyser();analyser.fftSize=256;source.connect(analyser);animatePattern();processor=context.createScriptProcessor(4096,1,1);processor.onaudioprocess=e=>{if(socket?.readyState!==WebSocket.OPEN||muted)return;const input=e.inputBuffer.getChannelData(0);const pcm=new Int16Array(input.length);for(let i=0;i<input.length;i++)pcm[i]=Math.max(-1,Math.min(1,input[i]))*32767;let str='';const bytes=new Uint8Array(pcm.buffer);for(let i=0;i<bytes.length;i++)str+=String.fromCharCode(bytes[i]);send({type:'input_audio_buffer.append',audio:btoa(str)})};source.connect(processor);processor.connect(context.destination);state('LISTENING','Speak to Grok',true);$('#headline').textContent='Grok';$('#transcript').textContent="I am listening.";if ($('#settingsDialog').open) $('#settingsDialog').close();$('#startVoice').disabled=false};socket.onmessage=async message=>{if(run!==generation)return;const e=JSON.parse(message.data);if(e.type==='input_audio_buffer.speech_started')stopAudio();if(e.type==='response.output_audio.delta'||e.type==='response.audio.delta')playback(e.delta);if(e.type==='conversation.item.input_audio_transcription.completed'){$('#transcript').textContent=`“${e.transcript}”`;$('#headline').textContent='You'}if(e.type==='response.output_audio_transcript.delta'||e.type==='response.audio_transcript.delta'){if($('#headline').textContent!=='Grok'){$('#headline').textContent='Grok';$('#transcript').textContent=''}$('#transcript').textContent+=e.delta}if(e.type==='response.function_call_arguments.done')pending.push(e);if(e.type==='response.done'&&pending.length)await finishCalls();if(e.type==='error'){$('#hint').textContent=e.error?.message||'Session error'}};socket.onerror=()=>{if(run===generation)$('#hint').textContent='Voice connection failed.'};socket.onclose=()=>{if(run===generation&&!stopping){disconnect();state('CONNECTION LOST','Try starting the session again')}}}catch(error){if(run!==generation)return;disconnect();state('NOT CONNECTED',error.message||'Could not start the session')}}
+async function start(){const run=++generation;state('CONNECTING…','Connecting voice session.');$('#startVoice').disabled=true;stopping=false;try{const acquired=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true},video:false});if(run!==generation){acquired.getTracks().forEach(t=>t.stop());return}stream=acquired;context=new AudioContext({sampleRate:24000});await context.resume();if(run!==generation)return;const tokenResponse=await fetch('/session',{method:'POST'});const token=await tokenResponse.json();if(run!==generation)return;if(!tokenResponse.ok)throw Error(serverMessage(token.error)||'Token unavailable');if(!token.value)throw Error('Invalid token response');socket=new WebSocket('wss://api.x.ai/v1/realtime?model=grok-voice-latest',[`xai-client-secret.${token.value}`]);socket.onopen=()=>{if(run!==generation)return;send({type:'session.update',session:{voice:'eve',instructions:INSTRUCTIONS,turn_detection:{type:'server_vad'},audio:{input:{format:{type:'audio/pcm',rate:context.sampleRate},transcription:{language_hint:'en'}},output:{format:{type:'audio/pcm',rate:24000}}},tools:TOOLS}});source=context.createMediaStreamSource(stream);analyser=context.createAnalyser();analyser.fftSize=256;source.connect(analyser);animatePattern();processor=context.createScriptProcessor(4096,1,1);processor.onaudioprocess=e=>{if(socket?.readyState!==WebSocket.OPEN||muted)return;const input=e.inputBuffer.getChannelData(0);const pcm=new Int16Array(input.length);for(let i=0;i<input.length;i++)pcm[i]=Math.max(-1,Math.min(1,input[i]))*32767;let str='';const bytes=new Uint8Array(pcm.buffer);for(let i=0;i<bytes.length;i++)str+=String.fromCharCode(bytes[i]);send({type:'input_audio_buffer.append',audio:btoa(str)})};source.connect(processor);processor.connect(context.destination);state('LISTENING','Speak to Grok',true);$('#headline').textContent='Grok';$('#transcript').textContent="I am listening.";if ($('#settingsDialog').open) $('#settingsDialog').close();$('#startVoice').disabled=false};socket.onmessage=async message=>{if(run!==generation)return;const e=JSON.parse(message.data);if(e.type==='input_audio_buffer.speech_started')stopAudio();if(e.type==='response.output_audio.delta'||e.type==='response.audio.delta')playback(e.delta);if(e.type==='conversation.item.input_audio_transcription.completed'){$('#transcript').textContent=`“${e.transcript}”`;$('#headline').textContent='You'}if(e.type==='response.output_audio_transcript.delta'||e.type==='response.audio_transcript.delta'){if($('#headline').textContent!=='Grok'){$('#headline').textContent='Grok';$('#transcript').textContent=''}$('#transcript').textContent+=e.delta}if(e.type==='response.created')responding=true;if(e.type==='response.function_call_arguments.done')pending.push(e);if(e.type==='response.done'){responding=false;if(pending.length)finishCalls();else if(wantResponse)requestResponse()}if(e.type==='error'){$('#hint').textContent=e.error?.message||'Session error'}};socket.onerror=()=>{if(run===generation)$('#hint').textContent='Voice connection failed.'};socket.onclose=()=>{if(run===generation&&!stopping){disconnect();state('CONNECTION LOST','Try starting the session again')}}}catch(error){if(run!==generation)return;disconnect();state('NOT CONNECTED',error.message||'Could not start the session')}}
 $('#startVoice').addEventListener('click',()=>{ if (!socket && !$('#startVoice').disabled) start(); });
 const settings = $('#settingsDialog');
 $('#settingsButton').addEventListener('click', () => settings.showModal());
@@ -176,36 +212,78 @@ settings.addEventListener('click', event => { if(event.target === settings) {
 }});
 window.addEventListener('pagehide', disconnect);
 
-// The real Tello as reported by the server; null when it is not configured or unreachable.
-let drone = null;
+// The real drones as reported by the server: Drone 1 · Black and Drone 2 · Red.
 const droneDialog = $('#dronesDialog');
+const linkOf = d => !d ? 'none' : d.connected ? 'connected' : d.verified ? 'waiting' : 'offline';
 function renderDrone() {
   const grid = $('#droneGrid');
   grid.replaceChildren();
-  const card = document.createElement('article');
-  card.className = 'drone-card';
-  card.innerHTML = '<div class="drone-card-head"><h3>Tello EDU</h3><span class="drone-availability"></span></div><p class="drone-position">TELEMETRY</p><div class="drone-coordinates"></div><div class="drone-motion"><span>State</span><strong></strong></div>';
-  card.querySelector('.drone-availability').textContent = !drone ? 'Not configured' : drone.connected ? (drone.verified ? 'Connected · serial verified' : 'Telemetry received') : 'Waiting for first command';
-  card.querySelector('.drone-coordinates').textContent = drone?.connected ? `Battery ${drone.battery ?? '–'}% · Height ${drone.heightCm ?? '–'} cm` : 'Unavailable';
-  card.querySelector('.drone-motion strong').textContent = drone ? `${drone.flight === 'flying' ? 'Flying' : 'On the ground'}${Number.isFinite(drone.heading) ? ` · ${drone.heading}°` : ''}${drone.lastError ? ` · ${drone.lastError}` : ''}` : 'Unavailable';
-  grid.append(card);
-  $('#telemetryNote').textContent = !drone ? 'Set TELLO_IP in .env.tello and restart the server.' : drone.connected ? 'Live telemetry from the drone.' : 'Telemetry starts after the first command.';
+  for (const [colour, info] of Object.entries(FLEET)) {
+    const d = drones.find(x => x.id === info.id);
+    const card = document.createElement('article');
+    card.className = `drone-card drone-${colour}`;
+    card.innerHTML = '<div class="drone-card-head"><h3></h3><span class="drone-availability"></span></div><div class="drone-video"><img alt=""><span>Camera off: start metoera-vision</span></div><p class="drone-position"></p><div class="drone-coordinates"></div><div class="drone-motion"><span>State</span><strong></strong></div>';
+    // Live YOLO video, only while the panel is open (the stream stops when the image goes away).
+    const img = card.querySelector('.drone-video img');
+    if (d?.connected) { img.src = `/video/${info.id}`; img.alt = `${info.name} camera`; img.onerror = () => card.querySelector('.drone-video').classList.add('off'); }
+    else card.querySelector('.drone-video').classList.add('off');
+    card.querySelector('h3').textContent = info.name;
+    card.querySelector('.drone-position').textContent = info.model.toUpperCase();
+    card.querySelector('.drone-availability').textContent = !d ? 'Not configured' : d.connected ? 'Connected' : (d.linkError || 'Connecting…');
+    card.querySelector('.drone-coordinates').textContent = d?.connected ? `Battery ${d.battery ?? '–'}% · Height ${d.heightCm ?? '–'} cm` : 'Unavailable';
+    card.querySelector('.drone-motion strong').textContent = d ? `${d.flight === 'flying' ? 'Flying' : 'On the ground'}${Number.isFinite(d.heading) ? ` · ${d.heading}°` : ''}${d.lastError ? ` · ${d.lastError}` : ''}` : 'Set its IP in .env.tello';
+    grid.append(card);
+  }
+  $('#telemetryNote').textContent = 'The server checks each drone every 5 seconds. Drone 1 uses TELLO_IP, Drone 2 uses RMTT_IP.';
 }
 $('#dronesButton').addEventListener('click', () => { renderDrone(); droneDialog.showModal(); });
 droneDialog.querySelector('.dismiss').addEventListener('click', () => droneDialog.close());
+// Closing the panel drops the video streams.
+droneDialog.addEventListener('close', () => $('#droneGrid').replaceChildren());
+
+// While the panel is open, refresh the text only, so the video and buttons are not rebuilt.
+function updateCards() {
+  for (const [colour, info] of Object.entries(FLEET)) {
+    const card = $('#droneGrid').querySelector?.(`.drone-${colour}`);
+    if (!card) continue;
+    const d = drones.find(x => x.id === info.id);
+    card.querySelector('.drone-availability').textContent = !d ? 'Not configured' : d.connected ? 'Connected' : (d.linkError || 'Connecting…');
+    card.querySelector('.drone-coordinates').textContent = d?.connected ? `Battery ${d.battery ?? '–'}% · Height ${d.heightCm ?? '–'} cm` : 'Unavailable';
+    card.querySelector('.drone-motion strong').textContent = d ? `${d.flight === 'flying' ? 'Flying' : 'On the ground'}${Number.isFinite(d.heading) ? ` · ${d.heading}°` : ''}${d.lastError ? ` · ${d.lastError}` : ''}` : 'Set its IP in .env.tello';
+  }
+}
+
+// Always-visible link indicator, one dot per drone: green connected, amber linked without telemetry, red offline.
+function showLink(text, state, detail) {
+  const pill=$('#linkStatus');
+  pill.setAttribute('data-state',state);
+  pill.title=`${detail}. Click for details`;
+  $('#linkText').textContent=text;
+}
+$('#linkStatus').addEventListener('click', () => { renderDrone(); droneDialog.showModal(); });
 
 async function refreshDrone() {
   try {
     const response = await fetch('/api/drones', {cache:'no-store'});
     const data = await response.json();
-    if (!response.ok || !('drone' in data)) throw new Error('Invalid status');
-    drone = data.drone && data.drone.id === 'tello' ? data.drone : null;
-    $('#droneState').textContent = !drone ? 'Not configured' : drone.connected ? `Connected · ${drone.battery ?? '–'}%` : 'Waiting for first command';
+    if (!response.ok || !Array.isArray(data.drones)) throw new Error('Invalid status');
+    drones = data.drones.filter(d => Object.values(FLEET).some(f => f.id === d.id));
+    const parts = Object.entries(FLEET).map(([colour, info]) => {
+      const d = drones.find(x => x.id === info.id);
+      const label = colour === 'black' ? 'Black' : 'Red';
+      return {state:linkOf(d), text:!d ? `${label} –` : d.connected ? `${label} ${d.battery ?? '–'}%${d.flight==='flying'?' ✈':''}` : `${label} off`, detail:`${info.name}: ${!d ? 'not configured' : d.connected ? 'connected' : (d.linkError || 'no answer')}`};
+    });
+    const configured = parts.filter(p => p.state !== 'none');
+    const overall = !configured.length ? 'none' : configured.every(p => p.state === 'connected') ? 'connected' : configured.some(p => p.state === 'connected') ? 'waiting' : 'offline';
+    showLink(parts.map(p => p.text).join(' · '), overall, parts.map(p => p.detail).join('. '));
+    $('#droneState').textContent = parts.map(p => p.text).join(' · ');
+    for (const [i, p] of parts.entries()) $(`#dot${i}`).setAttribute('data-state', p.state);
   } catch {
-    drone = null;
+    drones = [];
     $('#droneState').textContent = 'Server unreachable';
+    showLink('Server offline', 'offline', 'Start the server with npm start');
   }
-  if (droneDialog.open) renderDrone();
+  if (droneDialog.open) updateCards();
 }
 refreshDrone();
 setInterval(refreshDrone, 1500);

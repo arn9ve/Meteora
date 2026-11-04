@@ -40,7 +40,7 @@ test('full voice sequence maps to the right SDK commands', async (t) => {
   assert.equal((await drone.execute({ droneId: 'tello', action: 'rotate', direction: 'counterclockwise', degrees: 90 })).ok, true);
   assert.equal((await drone.execute({ droneId: 'tello', action: 'land' })).ok, true);
   assert.equal(drone.snapshot().flight, 'landed');
-  assert.deepEqual(fake.received.filter((c) => !['command', 'sn?', 'battery?'].includes(c)), ['takeoff', 'forward 50', 'ccw 90', 'land']);
+  assert.deepEqual(fake.received.filter((c) => !['command', 'sn?', 'battery?', 'streamon'].includes(c)), ['takeoff', 'forward 50', 'ccw 90', 'land']);
   assert.equal(drone.snapshot().verified, true);
 });
 
@@ -170,4 +170,50 @@ test('move limit is configurable', async (t) => {
   await drone.execute({ droneId: 'tello', action: 'takeoff' });
   assert.equal((await drone.execute({ droneId: 'tello', action: 'move', direction: 'up', centimeters: 150 })).ok, true);
   assert.match((await drone.execute({ droneId: 'tello', action: 'move', direction: 'up', centimeters: 250 })).error, /20 to 200/);
+});
+
+// Fake camera: how many people are visible depends on how many 90-degree turns the drone made.
+function fakeVision(fake, peoplePerView) {
+  return async () => {
+    const turns = fake.received.filter((c) => c === 'cw 90').length;
+    const people = peoplePerView[turns % peoplePerView.length];
+    const objects = Array.from({ length: people }, (_, i) => ({ label: 'person', confidence: 0.9, center: { x: (i + 0.5) / people, y: 0.5 } }));
+    objects.push({ label: 'person', confidence: 0.2, center: { x: 0.5, y: 0.5 } }); // below threshold, ignored
+    objects.push({ label: 'cup', confidence: 0.8, center: { x: 0.1, y: 0.9 } });
+    return { timestamp: Date.now() / 1000, objects };
+  };
+}
+
+test('scan turns 360 degrees in four steps and counts people per view', async (t) => {
+  const fake = await fakeDrone();
+  const withVision = tello(fake, { settleMs: 20, vision: fakeVision(fake, [2, 0, 3, 1]) });
+  t.after(() => { withVision.close(); fake.close(); });
+  assert.match((await withVision.execute({ droneId: 'tello', action: 'scan' })).error, /flying/);
+  await withVision.execute({ droneId: 'tello', action: 'takeoff' });
+  const result = await withVision.execute({ droneId: 'tello', action: 'scan' });
+  assert.equal(result.ok, true);
+  assert.equal(result.scan.label, 'person');
+  assert.equal(result.scan.total, 6);
+  assert.deepEqual(result.scan.views.map((v) => v.count), [2, 0, 3, 1]);
+  assert.equal(fake.received.filter((c) => c === 'cw 90').length, 4);
+});
+
+test('scan fails before turning when the camera has no detections', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake, { settleMs: 20, vision: async () => null });
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const result = await drone.execute({ droneId: 'tello', action: 'scan' });
+  assert.equal(result.ok, false);
+  assert.equal(fake.received.includes('cw 90'), false);
+});
+
+test('look summarises what the camera sees now', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake, { vision: fakeVision(fake, [2]) });
+  t.after(() => { drone.close(); fake.close(); });
+  const result = await drone.execute({ droneId: 'tello', action: 'look' });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.seen.counts, { person: 2, cup: 1 });
+  assert.deepEqual(result.seen.objects.filter((o) => o.label === 'person').map((o) => o.side), ['left', 'right']);
 });

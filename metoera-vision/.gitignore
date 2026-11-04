@@ -1,0 +1,25 @@
+# Python env / caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ultralytics/
+runs/
+
+# Model weights (downloaded on first run)
+weights/
+*.pt
+*.onnx
+*.mlpackage/
+
+# Captured / generated media
+samples/
+captures/
+*.mp4
+*.h264
+*.mjpeg
+*.avi
+*.mov
+*.jpg
+*.png
+.DS_Store

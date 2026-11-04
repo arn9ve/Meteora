@@ -62,4 +62,4 @@ All scripts run from macOS Terminal with Node 24. None of them flies the drone e
 ## Next
 
 - Voice commands beyond the test flight (move, rotate, flip, speed, stop) are tested against a fake drone only; try them on the real drone one at a time.
-- Object detection on the drone camera (YOLO) as a separate service that reads the video stream on UDP 11111.
+- Camera: `scan` (360° count) and `look` use `metoera-vision` (YOLO). Not yet tried with the real drone video.

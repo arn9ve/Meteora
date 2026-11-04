@@ -9,6 +9,7 @@ export type TelloSnapshot = {
   mode: 'real';
   connected: boolean;
   verified: boolean;
+  video: boolean;
   flight: 'landed' | 'flying';
   battery: number | null;
   heightCm: number | null;
@@ -31,7 +32,19 @@ export type TelloOptions = {
   minTakeoffBattery?: number;
   hoverMs?: number;
   maxMoveCm?: number;
+  /** Latest object detections from the camera (metoera-vision), or null when unavailable. */
+  vision?: () => Promise<Detections | null>;
+  /** Pause after each scan rotation before a frame counts, so the image is steady. */
+  settleMs?: number;
 };
+
+export type Detection = { label: string; confidence: number; center: { x: number; y: number } };
+export type Detections = { timestamp: number | null; objects: Detection[] };
+
+const MIN_CONFIDENCE = 0.5;
+const SCAN_VIEWS = 4; // 4 x 90 degrees; the Tello camera sees about 82 degrees across
+const side = (x: number) => (x < 1 / 3 ? 'left' : x > 2 / 3 ? 'right' : 'center');
+
 
 const MOVE_DIRECTIONS = ['forward', 'back', 'left', 'right', 'up', 'down'] as const;
 const ROTATE_DIRECTIONS = ['clockwise', 'counterclockwise'] as const;
@@ -55,6 +68,9 @@ export class RealTello {
   readonly #minTakeoffBattery: number;
   readonly #hoverMs: number;
   readonly #maxMoveCm: number;
+  readonly #vision: (() => Promise<Detections | null>) | null;
+  readonly #settleMs: number;
+  #video = false;
   #interrupted = false;
   #stopDone: Promise<unknown> = Promise.resolve(); // queued work waits for a running stop
   #command: dgram.Socket | null = null;
@@ -82,6 +98,8 @@ export class RealTello {
     this.#hoverMs = options.hoverMs ?? 5000;
     // Indoor cap for voice control; the SDK itself allows 500.
     this.#maxMoveCm = Math.min(500, Math.max(20, options.maxMoveCm ?? 100));
+    this.#vision = options.vision ?? null;
+    this.#settleMs = options.settleMs ?? 700;
   }
 
   snapshot(): TelloSnapshot {
@@ -90,6 +108,7 @@ export class RealTello {
       mode: 'real',
       connected: Date.now() - this.#lastStateAt < 3000,
       verified: this.#verified,
+      video: this.#video,
       flight: this.#flight,
       battery: this.#battery,
       heightCm: this.#heightCm,
@@ -224,6 +243,45 @@ export class RealTello {
       return this.#motion('speed', `speed ${cmPerSecond}`, 3000);
     }
 
+    if (value.action === 'look') {
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'label'].includes(k))) return this.#fail('Unknown argument for look');
+      const label = typeof value.label === 'string' && value.label.trim() ? value.label.trim().toLowerCase() : null;
+      const view = await this.#freshView(Date.now() - 1500, 3000);
+      if (!view) return this.#fail(this.#visionError());
+      const objects = view.objects.filter((o) => o.confidence >= MIN_CONFIDENCE && (!label || o.label.toLowerCase() === label));
+      const counts: Record<string, number> = {};
+      for (const o of objects) counts[o.label] = (counts[o.label] ?? 0) + 1;
+      return {
+        ok: true, mode: 'real', action: 'look', drone: this.snapshot(),
+        seen: { counts, objects: objects.map((o) => ({ label: o.label, confidence: Math.round(o.confidence * 100) / 100, side: side(o.center.x) })) },
+      } as TelloResult;
+    }
+
+    // Turn 360 degrees in four 90-degree steps and count one kind of object in each view.
+    if (value.action === 'scan') {
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'label'].includes(k))) return this.#fail('Unknown argument for scan');
+      const label = typeof value.label === 'string' && value.label.trim() ? value.label.trim().toLowerCase() : 'person';
+      if (this.#flight !== 'flying') return this.#fail('scan requires a flying drone');
+      const views: { view: number; degreesFromStart: number; count: number | null; sides: string[] }[] = [];
+      for (let i = 0; i < SCAN_VIEWS; i += 1) {
+        const frame = await this.#freshView(Date.now() + this.#settleMs, 4000);
+        if (!frame && i === 0) return this.#fail(this.#visionError());
+        const matches = frame ? frame.objects.filter((o) => o.confidence >= MIN_CONFIDENCE && o.label.toLowerCase() === label) : [];
+        views.push({ view: i + 1, degreesFromStart: i * 90, count: frame ? matches.length : null, sides: matches.map((o) => side(o.center.x)) });
+        const turn = await this.#motion('rotate', 'cw 90', 15000);
+        if (!turn.ok) return { ok: false, mode: 'real', error: `scan stopped after view ${i + 1}: ${'error' in turn ? turn.error : ''}`, views } as TelloResult;
+      }
+      const counted = views.filter((v) => v.count !== null);
+      const total = counted.reduce((sum, v) => sum + (v.count ?? 0), 0);
+      return {
+        ok: true, mode: 'real', action: 'scan', drone: this.snapshot(),
+        scan: {
+          label, total, views,
+          note: `Sum of ${counted.length} views 90 degrees apart, back at the starting heading. Approximate: something at the edge between two views can be missed or counted twice.`,
+        },
+      } as TelloResult;
+    }
+
     if (value.action === 'status') {
       if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for status');
       const level = await this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 3000);
@@ -241,6 +299,26 @@ export class RealTello {
     onOk?.();
     this.#lastError = null;
     return { ok: true, mode: 'real', action, drone: this.snapshot() };
+  }
+
+  /** Waits for a detection result computed from a frame newer than `after` (ms since epoch). */
+  async #freshView(after: number, timeoutMs: number): Promise<Detections | null> {
+    if (!this.#vision) return null;
+    const deadline = Math.max(after, Date.now()) + timeoutMs;
+    while (Date.now() < deadline) {
+      if (Date.now() >= after) {
+        const result = await this.#vision().catch(() => null);
+        if (result?.timestamp && result.timestamp * 1000 >= after) return result;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return null;
+  }
+
+  #visionError(): string {
+    if (!this.#vision) return 'Vision is not configured on the server';
+    if (!this.#video) return 'No camera stream: the drone did not accept streamon';
+    return 'No fresh camera detections. Is metoera-vision running on port 18790?';
   }
 
   #fail(error: string): TelloResult {
@@ -261,6 +339,8 @@ export class RealTello {
     const serial = await this.#request('sn?', (t) => /^[A-Z0-9]{8,}$/i.test(t) && !isOk(t), 3000);
     if (serial?.toUpperCase() !== this.#expectedSerial.toUpperCase()) return 'Serial number does not match the configured Tello';
     this.#verified = true;
+    // Start the camera stream for metoera-vision (UDP 11111). Flying does not depend on it.
+    this.#video = isOk((await this.#request('streamon', isOk, 3000)) ?? '');
     this.#keepalive = setInterval(() => this.#keepaliveTick(), this.#keepaliveMs);
     this.#keepalive.unref();
     return null;

@@ -1,0 +1,4 @@
+# Tested on macOS arm64, Python 3.13. All from PyPI.
+ultralytics==8.4.202   # AGPL-3.0 - pulls torch, torchvision, opencv-python, numpy
+av==19.0.2             # PyAV (BSD) - bundles FFmpeg libs for H.264 decode
+pytest==9.2.0

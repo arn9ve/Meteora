@@ -31,8 +31,20 @@ Grok calls one tool per action, in the order you say them, and waits for each re
 | "Set speed to 30" | `speed` | `speed 30` (10 to 100 cm/s) |
 | "What's the battery?" | `status` | `battery?` plus telemetry |
 | "Fly" | `test_flight` | takeoff, hover 5 s, land |
+| "Do a 360 and count the people" | `scan` | `cw 90` four times, counting people from the camera at each stop |
+| "What do you see?" | `look` | none: reads the latest camera detections |
 
 A sequence such as "take off, go up 50 centimeters, turn left 180, land" runs step by step. If a step fails, the rest is skipped and Grok says why; `stop` and `land` still go through.
+
+## Camera: counting and looking
+
+`scan` and `look` need the object-detection service [`../metoera-vision`](../metoera-vision) running on the same computer:
+
+1. After it verifies the serial, the server sends `streamon`, so the Tello streams H.264 video to this computer on UDP 11111.
+2. Start the vision service from macOS Terminal (setup in its README): `.venv/bin/python -m metoera_vision`. It runs YOLO on the stream and serves results on http://127.0.0.1:18790 (`/stream` shows the annotated video).
+3. Say "take off, do a 360 and count the people at the table".
+
+`scan` turns clockwise in four 90-degree steps (the Tello camera sees about 82 degrees across). At each stop it waits for a detection made after the drone settled, counts that object class with confidence at least 0.5, and turns again; after the fourth turn it faces where it started. Grok gets the count per view and the total. The total is approximate: someone at the edge between two views can be missed or counted twice, and people outside the camera's vertical view (too close, too low) are not seen. `VISION_URL` changes the service address.
 
 ## How the server talks to the drone (`src/tello.ts`)
 
@@ -47,4 +59,4 @@ Safety: these limits are enforced on the server, but what Grok decides to call i
 
 ## Verification
 
-`npm run typecheck` and `npm test` (voice UI states, and the Tello adapter against a fake drone: command mapping, serial check, battery limits, move limit, late replies, keepalive, stop interrupting a move). A live session needs the real drone, a key and the microphone, and is not covered by the tests.
+`npm run typecheck` and `npm test` (voice UI states, and the Tello adapter against a fake drone: command mapping, serial check, battery limits, move limit, late replies, keepalive, stop interrupting a move, scan and look with a fake camera). The scan was also run end to end against the real YOLO service on a sample image. A live session needs the real drone, a key and the microphone, and is not covered by the tests.

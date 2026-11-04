@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
-import { RealTello } from './src/tello.ts';
+import { RealTello, type Detections } from './src/tello.ts';
 
 const port = 18787;
 const root = dirname(fileURLToPath(import.meta.url));
@@ -13,10 +13,20 @@ try { loadEnvFile(join(root, '.env')); } catch (error) {
 try { loadEnvFile(join(root, '.env.tello')); } catch (error) {
   if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
 }
+// Object detections from the camera, served by metoera-vision (YOLO on the Tello video).
+const visionUrl = process.env.VISION_URL ?? 'http://127.0.0.1:18790';
+async function readVision(): Promise<Detections | null> {
+  try {
+    const response = await fetch(`${visionUrl}/detections`, {signal:AbortSignal.timeout(1000)});
+    if (!response.ok) return null;
+    const data = await response.json() as Detections;
+    return Array.isArray(data.objects) ? data : null;
+  } catch { return null; }
+}
 // The real Tello is enabled only when TELLO_IP is set (in .env or .env.tello).
 // TELLO_PORT, TELLO_LOCAL_PORT and TELLO_STATE_PORT are only for local tests against a fake drone.
 const tello = process.env.TELLO_IP
-  ? new RealTello({host:process.env.TELLO_IP, expectedSerial:process.env.TELLO_SETUP_SERIAL, port:Number(process.env.TELLO_PORT ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined})
+  ? new RealTello({host:process.env.TELLO_IP, expectedSerial:process.env.TELLO_SETUP_SERIAL, port:Number(process.env.TELLO_PORT ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:readVision})
   : null;
 const files: Record<string, string> = {'/':'index.html','/app.js':'app.js','/style.css':'style.css'};
 const types: Record<string, string> = {'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8'};

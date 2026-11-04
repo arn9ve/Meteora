@@ -36,8 +36,9 @@
 
     <main class="layout">
       <section class="stage" aria-label="Camera">
-        <video id="video" playsinline muted autoplay></video>
-        <canvas id="overlay" aria-hidden="true"></canvas>
+        <!-- Live local preview (always on). Mac console still gets JPEG snapshots separately. -->
+        <video id="video" class="live-video" playsinline webkit-playsinline muted autoplay></video>
+        <canvas id="overlay" class="live-overlay" aria-hidden="true"></canvas>
         <canvas id="previewCanvas" hidden></canvas>
         <div id="flash" class="flash" hidden></div>
         <p id="camStatus" class="cam-status">Starting…</p>
@@ -51,7 +52,7 @@
           <span id="linkBadge" class="badge idle">Link…</span>
         </div>
 
-        <p class="hint">Portrait or landscape. Drag a red zone. Alerts when a <strong>person</strong> enters it. Mac console can Start/Stop/ARM/lens remotely.</p>
+        <p class="hint">Live camera preview below — drag a red zone on it. Alerts when a <strong>person</strong> enters. Mac console can Start/Stop/ARM/lens remotely.</p>
 
         <div class="row actions">
           <button type="button" id="btnStart" class="btn primary">Start watching</button>

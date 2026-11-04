@@ -335,6 +335,33 @@ async function applyZoom(track, zoom) {
   }
 }
 
+async function ensureLiveVideoPlaying() {
+  // Keep a continuous local live preview on the phone (Mac still uses JPEG snapshots).
+  video.setAttribute('playsinline', '');
+  video.setAttribute('webkit-playsinline', '');
+  video.muted = true;
+  video.autoplay = true;
+  video.style.opacity = '1';
+  video.style.visibility = 'visible';
+  video.style.display = 'block';
+  try {
+    await video.play();
+  } catch {
+    // iOS sometimes needs a second attempt after metadata.
+    await new Promise((resolve) => {
+      const done = () => {
+        video.removeEventListener('loadedmetadata', done);
+        resolve();
+      };
+      video.addEventListener('loadedmetadata', done);
+      setTimeout(resolve, 400);
+    });
+    await video.play().catch(() => undefined);
+  }
+  syncCanvasSize();
+  drawOverlay();
+}
+
 async function startLens(lensId) {
   const opt = lenses[lensId] || lenses.normal;
   camStatus.textContent = 'Opening back camera…';
@@ -370,7 +397,7 @@ async function startLens(lensId) {
   }
   if (opt?.zoom != null) await applyZoom(track, opt.zoom);
   video.srcObject = stream;
-  await video.play();
+  await ensureLiveVideoPlaying();
   activeLens = lenses[lensId] ? lensId : 'normal';
   activeDeviceId = settings.deviceId || opt?.deviceId || null;
   localStorage.setItem(LENS_KEY, activeLens);
@@ -379,8 +406,9 @@ async function startLens(lensId) {
   if (finalOpt?.zoom != null) await applyZoom(track, finalOpt.zoom);
   loadRoi();
   syncCanvasSize();
+  drawOverlay();
   renderLensButtons();
-  camStatus.textContent = `${finalOpt?.label || 'Back'} · ${activeLens}`;
+  camStatus.textContent = `Live · ${finalOpt?.label || 'Back'} · ${activeLens}`;
 }
 
 async function switchLens(lensId) {
@@ -671,10 +699,14 @@ async function joinSlot(id) {
   localStorage.setItem('metoera-redzone-slot', id);
   joinGate.hidden = true;
   appShell.hidden = false;
-  slotLabel.textContent = `Phone ${id} · person only · back lenses`;
+  slotLabel.textContent = `Phone ${id} · live preview · person only`;
   setArmedUi(false);
   setDetectUi('idle');
   setLink(true, `P${id}`);
+
+  // Show shell first so <video> has layout, then open the live camera stream.
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  syncCanvasSize();
 
   const preferred = localStorage.getItem(LENS_KEY);
   await startLens(preferred === 'wide' || preferred === 'tele' ? preferred : 'normal');
@@ -683,6 +715,7 @@ async function joinSlot(id) {
   window.clearInterval(heartbeatTimer);
   window.clearInterval(previewTimer);
   heartbeatTimer = window.setInterval(() => void heartbeat(), HEARTBEAT_MS);
+  // Snapshots are for the Mac console only — phone keeps continuous <video>.
   previewTimer = window.setInterval(() => void sendPreview(), PREVIEW_MS);
   void heartbeat();
   void sendPreview();

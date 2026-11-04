@@ -33,6 +33,8 @@ body {
     env(safe-area-inset-left);
 }
 
+[hidden] { display: none !important; }
+
 .join-gate {
   min-height: 100dvh;
   display: grid;
@@ -143,33 +145,55 @@ body {
   position: relative;
   width: 100%;
   aspect-ratio: 3 / 4;
-  max-height: 58vh;
+  min-height: 42vh;
+  max-height: 62vh;
   overflow: hidden;
   background: #0d0b09;
   border: 1px solid var(--line);
+  isolation: isolate;
 }
 
 @media (orientation: landscape) {
-  .stage { aspect-ratio: 16 / 9; max-height: none; }
+  .stage {
+    aspect-ratio: 16 / 9;
+    min-height: 0;
+    max-height: none;
+  }
 }
 
-#video, #overlay {
+/* Live camera must stay visible under a transparent ROI canvas. */
+.live-video,
+#video {
   position: absolute;
   inset: 0;
+  z-index: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  background: #000;
+  opacity: 1 !important;
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
 }
 
+.live-overlay,
 #overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
   touch-action: none;
   cursor: crosshair;
+  background: transparent;
+  pointer-events: auto;
 }
 
 .cam-status {
   position: absolute;
   left: 0.65rem;
   bottom: 0.55rem;
+  z-index: 3;
   margin: 0;
   padding: 0.3rem 0.5rem;
   background: rgba(0, 0, 0, 0.55);
@@ -182,6 +206,7 @@ body {
 .flash {
   position: absolute;
   inset: 0;
+  z-index: 2;
   background: var(--red-glow);
   pointer-events: none;
   animation: pulse 0.9s ease-out;

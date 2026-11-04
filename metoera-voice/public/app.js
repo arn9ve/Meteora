@@ -363,10 +363,6 @@ function renderDrone() {
   $('#telemetryNote').textContent = 'The server checks each of its drones every 5 seconds. Drone 1 uses TELLO_IP, Drone 2 uses RMTT_IP. The person who takes off a drone flies it until it lands; a landed drone on another laptop moves here when someone takes off with it.';
   $('#clientsLine').textContent = clientsText;
 }
-$('#dronesButton').addEventListener('click', () => { renderDrone(); droneDialog.showModal(); });
-droneDialog.querySelector('.dismiss').addEventListener('click', () => droneDialog.close());
-// Closing the panel drops the video streams.
-droneDialog.addEventListener('close', () => $('#droneGrid').replaceChildren());
 
 // While the panel is open, refresh the text only, so the video is not rebuilt. When a drone
 // changes hands (ours ↔ another laptop's) the cards are rebuilt to start or drop its video.
@@ -391,7 +387,6 @@ function showLink(text, state, detail) {
   pill.title=`${detail}. Click for details`;
   $('#linkText').textContent=text;
 }
-$('#linkStatus').addEventListener('click', () => { renderDrone(); droneDialog.showModal(); });
 
 async function refreshDrone() {
   try {
@@ -476,10 +471,34 @@ $('#pilotLine').addEventListener('click',()=>{
   warning.textContent=flying.length?`You fly ${flying.join(' and ')}. With another name you can't command it, and the server lands it after 15 s.`:'';
   nameDialog.showModal();
 });
-// ---- Red-zone phone cameras (Masoud's metoera-redzone) ----
-// The server reads the phones; this page shows them, tells Grok about intrusions and, when
-// "send the nearest drone" is on, claims the event (only one page may) and dispatches a drone.
+// ---- Dashboard panels: Room, Drones, Phones (always on screen, no pop-ups) ----
 const camerasDialog=$('#camerasDialog');
+const mapDialog=$('#mapDialog');
+const PANELS=['mapDialog','dronesDialog','camerasDialog'];
+function showPanel(id){
+  for(const pid of PANELS){
+    const panel=$(`#${pid}`);
+    const on=pid===id;
+    panel.hidden=!on;
+    panel.open=on;
+  }
+  for(const tab of document.querySelectorAll?.('.tab')??[]) tab.setAttribute('aria-selected',String(tab.dataset.panel===id));
+  // Video streams only run on the panel that shows them.
+  if(id!=='dronesDialog') $('#droneGrid').replaceChildren();
+  if(id!=='camerasDialog') for(const img of $('#cameraGrid').querySelectorAll?.('img')??[]) img.removeAttribute('src');
+  if(id==='dronesDialog') renderDrone();
+  if(id==='camerasDialog') updateCameras();
+  if(id==='mapDialog') void renderMap();
+}
+$('#dronesButton').addEventListener('click', () => showPanel('dronesDialog'));
+$('#linkStatus').addEventListener('click', () => showPanel('dronesDialog'));
+$('#camerasButton').addEventListener('click', () => showPanel('camerasDialog'));
+$('#mapButton').addEventListener('click', () => showPanel('mapDialog'));
+
+// ---- Phone cameras (Masoud's metoera-redzone) ----
+// The server reads the phones and places the people they see on the plan. A person entering a red
+// zone drawn on the plan is an event: Grok is told and, with auto-send on, this page claims it
+// (only one page may) and sends the nearest drone to that person.
 let redzone=null, eventsPrimed=false, autoSend=false;
 const seenEvents=new Set();
 try { autoSend=localStorage.getItem('metoera_autosend')==='1'; } catch {}
@@ -487,128 +506,230 @@ $('#autoSend').checked=autoSend;
 $('#autoSend').addEventListener('change',()=>{ autoSend=$('#autoSend').checked; try{localStorage.setItem('metoera_autosend',autoSend?'1':'0')}catch{} });
 let alertTimer=0;
 function showZoneAlert(text){ const el=$('#zoneAlert'); el.textContent=text; el.hidden=false; clearTimeout(alertTimer); alertTimer=setTimeout(()=>{el.hidden=true},12000); }
+let roomData=null; // {plan, room:{drones, cameras, zones}}
 function zoneNote(){
-  const set=(redzone?.slots||[]).filter(s=>s.zone).map(s=>`zone ${s.id} at (${s.zone.x},${s.zone.y})`);
-  return set.length?` Red-zone phone cameras watch these spots of the room map: ${set.join(', ')}. When a person enters one you get an automatic update; to send a drone there, call dispatch with that x,y and label person.`:'';
+  const zones=roomData?.room?.zones||[];
+  return zones.length?` Red zones drawn on the room plan (metres): ${zones.map(z=>`${z.name} around (${(z.points.reduce((s,p)=>s+p[0],0)/z.points.length).toFixed(1)}, ${(z.points.reduce((s,p)=>s+p[1],0)/z.points.length).toFixed(1)})`).join(', ')}. Phones watch them; when a person enters one you get an automatic update with where the person is.`:'';
 }
 function handleRedzone(rz){
   redzone=rz;
   if(!rz) return;
-  if(!eventsPrimed){ for(const e of rz.events) seenEvents.add(e.id); eventsPrimed=true; }
-  for(const e of rz.events){ if(seenEvents.has(e.id)) continue; seenEvents.add(e.id); void onIntrusion(e); }
+  if(!eventsPrimed){ for(const e of rz.events||[]) seenEvents.add(e.id); eventsPrimed=true; }
+  for(const e of rz.events||[]){ if(seenEvents.has(e.id)) continue; seenEvents.add(e.id); void onIntrusion(e); }
   if(camerasDialog.open) updateCameras();
 }
 async function onIntrusion(e){
-  const where=e.zone?`at (${e.zone.x},${e.zone.y}) on the room map`:'(its position on the map is not set yet)';
-  showZoneAlert(`Person in red zone ${e.slot}${autoSend&&e.zone?' · sending the nearest drone':''}`);
-  log(`Red zone ${e.slot}`,'Person entered');
-  const sending=autoSend&&e.zone;
-  notifyGrok(`Red zone ${e.slot}: a person entered ${where}. ${sending?'The nearest drone is being sent automatically; say so in a few words.':'Tell the person in one short sentence and offer to send a drone.'}`);
+  const sending=autoSend;
+  showZoneAlert(`Person in ${e.name}${sending?' · sending the nearest drone':''}`);
+  log(e.name,`Person at ${e.x.toFixed(1)}, ${e.y.toFixed(1)} m`);
+  notifyGrok(`${e.name}: a person entered, standing at (${e.x.toFixed(2)}, ${e.y.toFixed(2)}) m on the room plan, which is (${Math.round(e.x*100)}, ${Math.round(e.y*100)}) cm in drone coordinates. ${sending?'The nearest drone is being sent automatically; say so in a few words.':'Tell the person in one short sentence and offer to send a drone (dispatch with those cm coordinates).'}`);
   if(!sending) return;
   try {
     const r=await fetch('/api/redzone/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:e.id})});
     const j=await r.json();
-    if(j.ok) void runDispatch({x:e.zone.x,y:e.zone.y,label:'person'},generation);
+    if(j.ok) void runDispatch({x:Math.round(j.x*100),y:Math.round(j.y*100),label:'person'},generation);
   } catch {}
+}
+async function cameraCommand(slot,command){
+  try { const r=await fetch('/api/cameras/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slot,command})}); return await r.json(); }
+  catch { return {ok:false,error:'Server unreachable'}; }
 }
 function cameraCard(slot){
   const card=document.createElement('article');
   card.className='camera-card';
   card.dataset.slot=slot.id;
-  card.innerHTML=`<div class="drone-card-head"><h3>Camera ${slot.id}</h3><span class="camera-state"></span></div><div class="camera-video"><img alt=""><span>No picture yet</span></div><div class="camera-link"><input readonly aria-label="Link for phone ${slot.id}"><button class="copy">Copy</button></div><div class="camera-zone"><span>Zone x, y</span><input class="zx" type="number" placeholder="x cm" aria-label="Zone ${slot.id} x"><input class="zy" type="number" placeholder="y cm" aria-label="Zone ${slot.id} y"><button class="save">Save</button></div><div class="camera-zone-actions"><button class="from" data-from="tello">Here is Black</button><button class="from" data-from="rmtt">Here is Red</button><button class="clear">Clear</button></div><p class="camera-result" role="status"></p>`;
+  card.innerHTML=`<div class="drone-card-head"><h3>Phone ${slot.id}</h3><span class="camera-state"></span></div><div class="camera-video"><img alt=""><span>No picture yet</span></div><div class="camera-controls"><button class="watch"></button><div class="lens"><button data-lens="wide">Wide</button><button data-lens="normal">Normal</button><button data-lens="tele">Tele</button></div></div><label class="camera-sens">Sensitivity <input type="range" min="0" max="100" step="5" class="sens"></label><label class="camera-arm"><input type="checkbox" class="arm"> ARM: phone may take off a drone by itself (keep off)</label><div class="camera-link"><input readonly aria-label="Link for phone ${slot.id}"><button class="copy">Copy</button></div><p class="camera-result" role="status"></p>`;
   const out=card.querySelector('.camera-result');
-  const save=async body=>{ try{ const r=await fetch('/api/zones',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slot:slot.id,...body})}); const j=await r.json(); out.textContent=j.ok?(j.zone?`Zone ${slot.id} saved at (${j.zone.x}, ${j.zone.y})`:`Zone ${slot.id} cleared`):j.error; await refreshDrone(); }catch{ out.textContent='Server unreachable'; } };
-  card.querySelector('.save').addEventListener('click',()=>{ const x=Number(card.querySelector('.zx').value), y=Number(card.querySelector('.zy').value); if(Number.isFinite(x)&&Number.isFinite(y)&&card.querySelector('.zx').value!==''&&card.querySelector('.zy').value!=='') void save({x,y}); else out.textContent='Type both x and y (cm), or use a drone position.'; });
-  for(const b of card.querySelectorAll('.from')) b.addEventListener('click',()=>void save({from:b.dataset.from}));
-  card.querySelector('.clear').addEventListener('click',()=>void save({x:null}));
+  const run=async(command,done)=>{ const j=await cameraCommand(slot.id,command); out.textContent=j.ok===false?(j.error||'Failed'):done; };
+  card.querySelector('.watch').addEventListener('click',()=>{ const s=redzone?.slots?.find(x=>x.id===slot.id); void run({type:'watch',watching:!s?.watching},s?.watching?'Stopped watching':'Watching'); });
+  for(const b of card.querySelectorAll('.lens button')) b.addEventListener('click',()=>void run({type:'lens',lens:b.dataset.lens},`Lens: ${b.textContent}`));
+  card.querySelector('.sens').addEventListener('change',e=>void run({type:'sensitivity',sensitivity:Number(e.target.value)},`Sensitivity ${e.target.value}`));
+  card.querySelector('.arm').addEventListener('change',e=>{ if(e.target.checked&&!confirm('With ARM on the phone itself can make a drone take off. Only with someone next to the drone. Turn ARM on?')){ e.target.checked=false; return; } void run({type:'arm',armed:e.target.checked},e.target.checked?'ARM on':'ARM off'); });
   card.querySelector('.copy').addEventListener('click',async()=>{ const v=card.querySelector('.camera-link input').value; try{ await navigator.clipboard.writeText(v); out.textContent='Link copied'; }catch{ card.querySelector('.camera-link input').select(); out.textContent='Select and copy the link'; } });
   return card;
 }
 function updateCameras(){
   const grid=$('#cameraGrid');
   if(!redzone){ $('#camerasNote').textContent='Server unreachable.'; return; }
-  $('#camerasNote').textContent=redzone.available?`Camera service running · Mac console: ${redzone.console}`:'Camera service not running: start it with npm start in metoera-redzone.';
-  for(const slot of redzone.slots){
+  $('#camerasNote').textContent=redzone.available?`Camera service running · its own console: ${redzone.console}`:'Camera service not running: start it with npm start in metoera-redzone.';
+  for(const slot of redzone.slots||[]){
     let card=grid.querySelector?.(`[data-slot="${slot.id}"]`);
     if(!card){ card=cameraCard(slot); grid.append(card); }
-    const state=!slot.online?'Phone not connected':`${slot.watching?'Watching':'Connected, not watching'}${typeof slot.personScore==='number'&&slot.personScore>0?` · person ${Math.round(slot.personScore*100)}%`:''}${slot.armed?' · ARM on':''}`;
+    const state=!slot.online?'Phone not connected':`${slot.watching?'Watching':'Not watching'} · ${slot.peopleCount||0} people · ${slot.calibrated?'calibrated':'not calibrated'}${slot.armed?' · ARM on':''}`;
     card.querySelector('.camera-state').textContent=state;
-    card.classList.toggle('alert',(redzone.events||[]).some(e=>e.slot===slot.id&&Date.now()-e.at<15000));
+    card.querySelector('.watch').textContent=slot.watching?'Stop watching':'Start watching';
+    card.querySelector('.watch').disabled=!slot.online;
+    for(const b of card.querySelectorAll('.lens button')){ b.disabled=!slot.online||slot.lensesAvailable?.[b.dataset.lens]===false; b.classList.toggle('active',slot.lens===b.dataset.lens); }
+    const sens=card.querySelector('.sens'); if(document.activeElement!==sens&&typeof slot.sensitivity==='number') sens.value=slot.sensitivity;
+    card.querySelector('.arm').checked=Boolean(slot.armed);
     const link=card.querySelector('.camera-link input');
-    if(link.value!==(slot.link||'')) link.value=slot.link||'Start metoera-redzone to get the phone link';
-    const zx=card.querySelector('.zx'), zy=card.querySelector('.zy');
-    if(document.activeElement!==zx&&document.activeElement!==zy){ zx.value=slot.zone?slot.zone.x:''; zy.value=slot.zone?slot.zone.y:''; }
+    const want=slot.link||'Start metoera-redzone to get the phone link';
+    if(link.value!==want) link.value=want;
     const img=card.querySelector('.camera-video img'), box=card.querySelector('.camera-video');
     if(slot.online&&slot.hasPreview){ if(!img.getAttribute('src')) img.src=`/cameras/${slot.id}.mjpeg`; box.classList.remove('off'); }
     else { img.removeAttribute('src'); box.classList.add('off'); }
   }
 }
-$('#camerasButton').addEventListener('click',()=>{ updateCameras(); camerasDialog.showModal(); });
-camerasDialog.querySelector('.dismiss').addEventListener('click',()=>camerasDialog.close());
-camerasDialog.addEventListener('close',()=>{ for(const img of $('#cameraGrid').querySelectorAll?.('img')??[]) img.removeAttribute('src'); });
 
-// Top-down room map: both drones, their paths, saved places and what they saw.
-const mapDialog=$('#mapDialog');
+// ---- Room panel: the plan, live, and the setup tools ----
+// Plan frame: metres, x to the right, y up. The drones use the same frame in cm.
 const SVGNS='http://www.w3.org/2000/svg';
 function svgEl(tag,attrs,text){const e=document.createElementNS(SVGNS,tag);for(const[k,v]of Object.entries(attrs))e.setAttribute(k,String(v));if(text!==undefined)e.textContent=text;return e}
+let roomTool='view', placeStart=null, draftZone=[], calib=null, lastMap=null;
+async function loadRoom(){
+  try { const r=await fetch('/api/room',{cache:'no-store'}); if(r.ok) roomData=await r.json(); } catch {}
+}
+const HINTS={
+  view:'The plan of the room, live: drones, phones, people and red zones. Pick a tool to set it up.',
+  place:'Click where it stands on the plan, then click again in the direction it faces.',
+  zone:'Click the corners of the red zone on the plan, then Finish zone.',
+};
+function setTool(t){
+  roomTool=t; placeStart=null; draftZone=[];
+  for(const b of document.querySelectorAll?.('.room-tools .tool')??[]) b.classList.toggle('active',b.dataset.tool===t);
+  $('#zoneFinish').hidden=t!=='zone'; $('#zoneCancel').hidden=t!=='zone';
+  const cal=t.startsWith('calibrate:');
+  $('#calibration').hidden=!cal;
+  $('#roomHint').textContent=cal?'Click a floor point in the phone picture, then the same point on the plan. Four times, spread out (corners, pillars, tape marks).':t.startsWith('place:')?HINTS.place:HINTS[t]||HINTS.view;
+  if(cal) startCalibration(t.split(':')[1]); else calib=null;
+  void renderMap();
+}
+for(const b of document.querySelectorAll?.('.room-tools .tool')??[]) b.addEventListener('click',()=>setTool(b.dataset.tool));
+async function post(url,body){ try{ const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); return await r.json(); }catch{ return {ok:false,error:'Server unreachable'}; } }
+function planPoint(evt){
+  const svg=$('#mapSvg'); const pt=svg.createSVGPoint(); pt.x=evt.clientX; pt.y=evt.clientY;
+  const p=pt.matrixTransform(svg.getScreenCTM().inverse());
+  return [Math.round(p.x)/100, Math.round(-p.y)/100]; // screen y is down, plan y is up
+}
+$('#mapSvg').addEventListener?.('click',async evt=>{
+  if(roomTool==='view') return;
+  const p=planPoint(evt);
+  if(roomTool.startsWith('place:')){
+    if(!placeStart){ placeStart=p; $('#roomHint').textContent='Now click in the direction it faces.'; void renderMap(); return; }
+    const at=placeStart; placeStart=null;
+    const heading=Math.round(Math.atan2(p[1]-at[1],p[0]-at[0])*180/Math.PI);
+    const what=roomTool.split(':')[1];
+    const j=what.startsWith('cam')?await post('/api/room/camera',{slot:what.slice(3),x:at[0],y:at[1],heading}):await post('/api/room/drone',{id:what,x:at[0],y:at[1],heading});
+    $('#roomHint').textContent=j.ok?`Saved: ${what.startsWith('cam')?`phone ${what.slice(3)}`:what==='tello'?'Black':'Red'} at (${at[0].toFixed(2)}, ${at[1].toFixed(2)}) m, facing ${heading}°.`:j.error;
+    await loadRoom(); void renderMap(); return;
+  }
+  if(roomTool==='zone'){ draftZone.push(p); void renderMap(); return; }
+  if(calib&&calib.img.length>calib.plan.length){ calib.plan.push(p); updateCalibration(); void renderMap(); }
+});
+$('#zoneFinish').addEventListener('click',async()=>{
+  if(draftZone.length<3){ $('#roomHint').textContent='A zone needs at least 3 corners.'; return; }
+  const zones=[...(roomData?.room?.zones||[]),{id:`z${Date.now()}`,name:`Zone ${(roomData?.room?.zones?.length||0)+1}`,points:draftZone}];
+  const j=await post('/api/room/zones',{zones});
+  $('#roomHint').textContent=j.ok?`Saved ${zones[zones.length-1].name}.`:j.error;
+  draftZone=[]; await loadRoom(); void renderMap();
+});
+$('#zoneCancel').addEventListener('click',()=>{ draftZone=[]; void renderMap(); });
+$('#zonesClear').addEventListener('click',async()=>{ if(!confirm('Delete all red zones?')) return; await post('/api/room/zones',{zones:[]}); await loadRoom(); void renderMap(); });
+// Calibration: four pairs of (point in the phone picture, same point on the plan).
+function startCalibration(slot){
+  calib={slot,img:[],plan:[]};
+  $('#calTitle').textContent=`Calibrate phone ${slot}`;
+  $('#calImage').src=`/cameras/${slot}.jpg?t=${Date.now()}`;
+  updateCalibration();
+}
+function updateCalibration(){
+  if(!calib) return;
+  const n=calib.plan.length, waitingPlan=calib.img.length>calib.plan.length;
+  $('#calStep').textContent=n>=4?'Four points done. Save, or add more points for a better fit.':waitingPlan?`Point ${n+1}: now click the same spot on the plan.`:`Point ${n+1} of 4: click a floor spot in the picture.`;
+  $('#calSave').disabled=n<4||waitingPlan;
+  const marks=$('#calMarks'); marks.replaceChildren();
+  calib.img.forEach(([u,v],i)=>{ marks.append(svgEl('circle',{cx:u,cy:v,r:.022,fill:'#ff1744',stroke:'#fff','stroke-width':.006})); marks.append(svgEl('text',{x:u+.015,y:v-.01,'font-size':.06,fill:'#ff1744'},String(i+1))); });
+}
+$('#calImage').addEventListener?.('click',evt=>{
+  if(!calib||calib.img.length>calib.plan.length) return;
+  const r=evt.target.getBoundingClientRect();
+  calib.img.push([(evt.clientX-r.left)/r.width,(evt.clientY-r.top)/r.height]);
+  updateCalibration();
+});
+$('#calRefresh').addEventListener('click',()=>{ if(calib) $('#calImage').src=`/cameras/${calib.slot}.jpg?t=${Date.now()}`; });
+$('#calUndo').addEventListener('click',()=>{ if(!calib) return; if(calib.img.length>calib.plan.length) calib.img.pop(); else { calib.img.pop(); calib.plan.pop(); } updateCalibration(); void renderMap(); });
+$('#calSave').addEventListener('click',async()=>{
+  if(!calib) return;
+  const j=await post('/api/room/camera',{slot:calib.slot,img:calib.img,plan:calib.plan});
+  $('#calStep').textContent=j.ok?`Saved. Fit error ${j.errorM!=null?`${Math.round(j.errorM*100)} cm`:'n/a'}${j.errorM>0.3?': click the points more carefully, or use points farther apart':''}.`:j.error;
+  await loadRoom(); void renderMap();
+});
+
 async function renderMap(){
+  if(!roomData) await loadRoom();
   let data;
-  try { const r=await fetch('/api/map',{cache:'no-store'}); data=await r.json(); if(!r.ok||!Array.isArray(data.drones)) throw 0; }
-  catch { $('#mapNote').textContent='Map unavailable.'; return; }
+  try { const r=await fetch('/api/map',{cache:'no-store'}); data=await r.json(); if(!r.ok||!Array.isArray(data.drones)) throw 0; lastMap=data; }
+  catch { data=lastMap; if(!data){ $('#mapNote').textContent='Map unavailable.'; return; } }
   const svg=$('#mapSvg');
   svg.replaceChildren();
-  // Room frame: x forward (drawn up), y left (drawn left). Screen: X = -y, Y = -x.
-  const pts=[];
-  for(const d of data.drones){pts.push(d.pose,...d.path,...Object.values(d.places||{}),...d.sightings,...(d.obstacles||[]))}
-  pts.push(...(data.zones||[]));
-  const xs=pts.map(p=>-p.y), ys=pts.map(p=>-p.x);
-  let minX=Math.min(-150,...xs)-80, maxX=Math.max(150,...xs)+80, minY=Math.min(-150,...ys)-80, maxY=Math.max(150,...ys)+80;
-  const span=Math.max(400,maxX-minX,maxY-minY), cx=(minX+maxX)/2, cy=(minY+maxY)/2;
-  minX=cx-span/2; minY=cy-span/2;
-  svg.setAttribute('viewBox',`${minX} ${minY} ${span} ${span}`);
-  const unit=span/400; // keeps strokes and text readable at any zoom
-  for(let g=Math.ceil(minX/100)*100;g<=minX+span;g+=100) svg.append(svgEl('line',{x1:g,y1:minY,x2:g,y2:minY+span,class:'map-grid','stroke-width':unit}));
-  for(let g=Math.ceil(minY/100)*100;g<=minY+span;g+=100) svg.append(svgEl('line',{x1:minX,y1:g,x2:minX+span,y2:g,class:'map-grid','stroke-width':unit}));
+  const plan=roomData?.plan;
+  // cm, x right, y up -> screen X = x, screen Y = -y.
+  const b=plan?{x0:plan.bounds.min[0]*100-80,x1:plan.bounds.max[0]*100+80,y0:plan.bounds.min[1]*100-80,y1:plan.bounds.max[1]*100+80}:{x0:-500,x1:500,y0:-400,y1:400};
+  const W=b.x1-b.x0, H=b.y1-b.y0;
+  svg.setAttribute('viewBox',`${b.x0} ${-b.y1} ${W} ${H}`);
+  const unit=Math.max(W,H)/600;
+  for(let g=Math.ceil(b.x0/100)*100;g<=b.x1;g+=100) svg.append(svgEl('line',{x1:g,y1:-b.y1,x2:g,y2:-b.y0,class:'map-grid','stroke-width':unit}));
+  for(let g=Math.ceil(b.y0/100)*100;g<=b.y1;g+=100) svg.append(svgEl('line',{x1:b.x0,y1:-g,x2:b.x1,y2:-g,class:'map-grid','stroke-width':unit}));
+  for(const a of plan?.above||[]){
+    if(['Corpo4','Corpo16','Corpo17'].includes(a.solid)) continue; // roof
+    svg.append(svgEl('rect',{x:a.min[0]*100,y:-a.max[1]*100,width:(a.max[0]-a.min[0])*100,height:(a.max[1]-a.min[1])*100,fill:'#1e88e5','fill-opacity':.05,stroke:'#1e88e5','stroke-dasharray':`${8*unit} ${6*unit}`,'stroke-width':unit}));
+  }
+  for(const w of plan?.walls||[]) svg.append(svgEl('line',{x1:w.a[0]*100,y1:-w.a[1]*100,x2:w.b[0]*100,y2:-w.b[1]*100,stroke:'#222','stroke-width':3*unit,'stroke-linecap':'round'}));
+  // Red zones
+  for(const z of data.zones||[]){
+    svg.append(svgEl('polygon',{points:z.points.map(p=>`${p[0]*100},${-p[1]*100}`).join(' '),fill:'#e53935','fill-opacity':z.occupied?.35:.12,stroke:'#e53935','stroke-width':(z.occupied?4:2)*unit}));
+    const cx=z.points.reduce((s,p)=>s+p[0],0)/z.points.length*100, cy=z.points.reduce((s,p)=>s+p[1],0)/z.points.length*100;
+    svg.append(svgEl('text',{x:cx,y:-cy,'font-size':14*unit,'font-weight':600,fill:'#c62828','text-anchor':'middle'},`${z.name}${z.occupied?' · person!':''}`));
+  }
+  if(draftZone.length){
+    svg.append(svgEl('polyline',{points:draftZone.map(p=>`${p[0]*100},${-p[1]*100}`).join(' '),fill:'none',stroke:'#e53935','stroke-width':2*unit,'stroke-dasharray':`${6*unit} ${4*unit}`}));
+    for(const p of draftZone) svg.append(svgEl('circle',{cx:p[0]*100,cy:-p[1]*100,r:5*unit,fill:'#e53935'}));
+  }
+  // Phones: position and view direction
+  for(const [slot,c] of Object.entries(data.cameras||{})){
+    if(typeof c.x!=='number') continue;
+    const h=(c.heading||0)*Math.PI/180, x=c.x*100, y=-c.y*100, L=120*unit;
+    const a1=h-0.6,a2=h+0.6;
+    svg.append(svgEl('path',{d:`M${x},${y} L${x+Math.cos(a1)*L},${y-Math.sin(a1)*L} L${x+Math.cos(a2)*L},${y-Math.sin(a2)*L} Z`,fill:'#7e57c2','fill-opacity':.15,stroke:'#7e57c2','stroke-width':unit}));
+    svg.append(svgEl('rect',{x:x-8*unit,y:y-8*unit,width:16*unit,height:16*unit,rx:3*unit,fill:'#7e57c2'}));
+    svg.append(svgEl('text',{x:x+11*unit,y:y-10*unit,'font-size':12*unit,fill:'#5e35b1'},`Phone ${slot}${c.calibrated?'':' · not calibrated'}`));
+  }
+  // People seen by the phones (feet on the floor)
+  for(const p of data.people||[]){
+    svg.append(svgEl('circle',{cx:p.x*100,cy:-p.y*100,r:10*unit,fill:'#fb8c00',stroke:'#fff','stroke-width':2*unit}));
+    svg.append(svgEl('text',{x:p.x*100+13*unit,y:-p.y*100+4*unit,'font-size':11*unit,fill:'#e65100'},`person (phone ${p.slot})`));
+  }
+  // Calibration points on the plan
+  if(calib) calib.plan.forEach((p,i)=>{ svg.append(svgEl('circle',{cx:p[0]*100,cy:-p[1]*100,r:7*unit,fill:'#e53935'})); svg.append(svgEl('text',{x:p[0]*100+9*unit,y:-p[1]*100-6*unit,'font-size':13*unit,fill:'#e53935'},String(i+1))); });
+  if(placeStart) svg.append(svgEl('circle',{cx:placeStart[0]*100,cy:-placeStart[1]*100,r:8*unit,fill:'none',stroke:'#111','stroke-width':2*unit}));
+  // Drones, what they saw, depth hits
   const colours={tello:'#1c1c1c',rmtt:'#d32f2f'};
   let things=0;
-  // Red zones watched by the phone cameras.
-  for(const z of data.zones||[]){
-    svg.append(svgEl('circle',{cx:-z.y,cy:-z.x,r:45*unit,fill:'#e53935',opacity:z.alert?.35:.12,stroke:'#e53935','stroke-width':(z.alert?3:1.5)*unit}));
-    svg.append(svgEl('text',{x:-z.y,y:-z.x+4*unit,'font-size':11*unit,'font-weight':600,fill:'#c62828','text-anchor':'middle'},`Zone ${z.slot}${z.alert?' · person!':''}`));
-  }
   for(const d of data.drones){
     const c=colours[d.id]||'#555';
-    // Depth hits (walls, furniture), like a LiDAR sweep.
-    for(const o of d.obstacles||[]) svg.append(svgEl('rect',{x:-o.y-4*unit,y:-o.x-4*unit,width:8*unit,height:8*unit,fill:'#9e9e9e',opacity:.55}));
-    if(d.path.length>1) svg.append(svgEl('polyline',{points:d.path.map(p=>`${-p.y},${-p.x}`).join(' '),fill:'none',stroke:c,'stroke-width':2*unit,'stroke-dasharray':`${6*unit} ${4*unit}`,opacity:.6}));
+    for(const o of d.obstacles||[]) svg.append(svgEl('rect',{x:o.x-4*unit,y:-o.y-4*unit,width:8*unit,height:8*unit,fill:'#9e9e9e',opacity:.5}));
+    if(d.path.length>1) svg.append(svgEl('polyline',{points:d.path.map(p=>`${p.x},${-p.y}`).join(' '),fill:'none',stroke:c,'stroke-width':2*unit,'stroke-dasharray':`${6*unit} ${4*unit}`,opacity:.6}));
     for(const[name,p]of Object.entries(d.places||{})){
-      svg.append(svgEl('rect',{x:-p.y-5*unit,y:-p.x-5*unit,width:10*unit,height:10*unit,fill:'none',stroke:c,'stroke-width':1.5*unit}));
-      svg.append(svgEl('text',{x:-p.y-8*unit,y:-p.x+14*unit,'font-size':10*unit,fill:c,'text-anchor':'end'},name.replace('_',' ')));
+      svg.append(svgEl('rect',{x:p.x-5*unit,y:-p.y-5*unit,width:10*unit,height:10*unit,fill:'none',stroke:c,'stroke-width':1.5*unit}));
+      svg.append(svgEl('text',{x:p.x-8*unit,y:-p.y+14*unit,'font-size':10*unit,fill:c,'text-anchor':'end'},name.replace('_',' ')));
     }
     for(const s of d.sightings){
       things++;
       const person=s.label==='person', col=person?'#1e88e5':'#43a047';
-      if(s.approx){
-        // Distance unknown: a dotted direction from where the drone saw it.
-        svg.append(svgEl('line',{x1:-s.fromY,y1:-s.fromX,x2:-s.y,y2:-s.x,stroke:col,'stroke-width':1.2*unit,'stroke-dasharray':`${2*unit} ${3*unit}`,opacity:.7}));
-        svg.append(svgEl('text',{x:-s.y+4*unit,y:-s.x-4*unit,'font-size':9*unit,fill:col,opacity:.85},`${(s.description||s.label).slice(0,24)} ?`));
-        continue;
-      }
-      const r=(person?6:4.5)*unit*Math.min(1.6,1+0.15*((s.count||1)-1)); // seen more often = bigger
-      svg.append(svgEl('circle',{cx:-s.y,cy:-s.x,r,fill:col,stroke:col,'stroke-width':1.5*unit}));
-      svg.append(svgEl('text',{x:-s.y+9*unit,y:-s.x+4*unit,'font-size':10*unit,fill:'#333'},`${(s.description||s.label).slice(0,28)}${s.distanceCm?` · ${(s.distanceCm/100).toFixed(1)} m`:''}`));
+      if(s.approx){ svg.append(svgEl('line',{x1:s.fromX,y1:-s.fromY,x2:s.x,y2:-s.y,stroke:col,'stroke-width':1.2*unit,'stroke-dasharray':`${2*unit} ${3*unit}`,opacity:.7})); continue; }
+      svg.append(svgEl('circle',{cx:s.x,cy:-s.y,r:(person?6:4.5)*unit,fill:col}));
+      svg.append(svgEl('text',{x:s.x+9*unit,y:-s.y+4*unit,'font-size':10*unit,fill:'#333'},(s.description||s.label).slice(0,28)));
     }
-    const h=d.pose.heading*Math.PI/180, px=-d.pose.y, py=-d.pose.x;
-    svg.append(svgEl('line',{x1:px,y1:py,x2:px-Math.sin(h)*28*unit,y2:py-Math.cos(h)*28*unit,stroke:c,'stroke-width':3*unit,'stroke-linecap':'round'}));
-    svg.append(svgEl('circle',{cx:px,cy:py,r:10*unit,fill:c}));
-    svg.append(svgEl('text',{x:px+13*unit,y:py-12*unit,'font-size':12*unit,'font-weight':600,fill:c},d.id==='tello'?'Black':d.id==='rmtt'?'Red':d.id));
+    const h=d.pose.heading*Math.PI/180, px=d.pose.x, py=-d.pose.y;
+    svg.append(svgEl('line',{x1:px,y1:py,x2:px+Math.cos(h)*30*unit,y2:py-Math.sin(h)*30*unit,stroke:c,'stroke-width':4*unit,'stroke-linecap':'round'}));
+    svg.append(svgEl('circle',{cx:px,cy:py,r:12*unit,fill:c}));
+    svg.append(svgEl('text',{x:px+15*unit,y:py-14*unit,'font-size':13*unit,'font-weight':600,fill:c},d.id==='tello'?'Black':d.id==='rmtt'?'Red':d.id));
   }
-  $('#mapNote').textContent=data.drones.length?`${things} things on the map · blue = people, green = objects, dotted line = direction only (distance unknown), grey = walls and obstacles from depth, squares = saved places.`:'No drone flown from here yet.';
+  $('#mapNote').textContent=`${plan?'Capannone plan · ':''}grid 1 m · black = walls · purple = phones · orange = people seen by phones · red = zones · ${things} things the drones saw · positions of drones come from their own moves and drift a little.`;
 }
-$('#mapButton').addEventListener('click',()=>{void renderMap();mapDialog.showModal()});
-mapDialog.querySelector('.dismiss').addEventListener('click',()=>mapDialog.close());
 if (storedName()) rememberName(storedName());
 refreshDrone();
 setInterval(refreshDrone, 1500);
 // The map refreshes on its own timer, registered after the drone poll.
 setInterval(()=>{if(mapDialog.open) void renderMap()},1500);
+showPanel('mapDialog');

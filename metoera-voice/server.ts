@@ -416,6 +416,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
   }
   const camera = /^\/cameras\/([123])\.mjpeg$/.exec(path);
   if (req.method === 'GET' && camera) { await proxyStream(`${redzoneUrl}/api/slots/${camera[1]}/preview.mjpeg`, res); return; }
+  // One still picture of a phone, for the calibration clicks.
+  const still = /^\/cameras\/([123])\.jpg$/.exec(path);
+  if (req.method === 'GET' && still) {
+    try {
+      const upstream = await fetch(`${redzoneUrl}/api/slots/${still[1]}/preview.jpg`, {signal:AbortSignal.timeout(3000)});
+      if (!upstream.ok) { res.writeHead(404).end(); return; }
+      res.writeHead(200, {'Content-Type':'image/jpeg', 'Cache-Control':'no-store'}).end(Buffer.from(await upstream.arrayBuffer()));
+    } catch { res.writeHead(503).end(); }
+    return;
+  }
   const video = /^\/video\/([a-z]+)$/.exec(path);
   // Only this laptop's drones stream here; another laptop's drone sends its video to that laptop.
   if (req.method === 'GET' && video && drones.has(video[1]) && refusal(video[1]) === null) { await proxyVideo(video[1], res); return; }

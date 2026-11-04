@@ -2,10 +2,10 @@
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#ffffff"><title>Metoera · Voice</title><link rel="stylesheet" href="/style.css"></head>
 <body>
+<div class="layout">
 <main class="voice">
   <div id="pattern" aria-hidden="true"></div>
-  <header><span class="wordmark">metoera</span><div class="header-actions"><button id="camerasButton" class="drones-button" aria-haspopup="dialog">Cameras <span>◉</span></button><button id="mapButton" class="drones-button" aria-haspopup="dialog">Map <span>⌖</span></button><button id="dronesButton" class="drones-button" aria-haspopup="dialog">Drones <span>↗</span></button><span id="connection" role="status">READY TO CONNECT</span></div></header>
-  <div class="safety" role="group" aria-label="Emergency controls"><button id="linkStatus" class="link-status" data-state="checking" title="Open drone details"><span id="dot0" class="dot dot-black" aria-hidden="true"></span><span id="dot1" class="dot dot-red" aria-hidden="true"></span><span id="linkText">Black · Red · checking…</span></button><button id="pilotLine" class="pilot-line" title="Change your name">Set your name</button><span id="safetyStatus" role="status"></span><button id="switchOff" class="switch-off" title="Cancel all commands and land now">Switch off · land</button><button id="killMotors" class="kill-motors" title="Stops the motors at once. The drone drops.">Cut motors</button></div>
+  <header><span class="wordmark">metoera</span><div class="header-actions"><span id="connection" role="status">READY TO CONNECT</span></div></header>
   <section id="emptyState" class="empty-state" aria-label="Suggestions to get started">
     <p class="suggestions-title">TRY ASKING</p>
     <div class="suggestions">
@@ -24,12 +24,42 @@
     <button id="settingsButton" class="round" aria-label="Voice settings" title="Voice settings" aria-haspopup="dialog"><svg viewBox="0 0 24 24"><path class="solid" d="m10 1-.7 3-2 .9L4.7 3.4 2 6.1l1.5 2.6-.8 2L0 11.4v3.8l2.7.7.8 2L2 20.5l2.7 2.7 2.6-1.5 2 .8.7 2.7h3.8l.7-2.7 2-.8 2.6 1.5 2.7-2.7-1.5-2.6.8-2 2.7-.7v-3.8l-2.7-.7-.8-2 1.5-2.6-2.7-2.7-2.6 1.5-2-.9-.7-3z" transform="translate(1 -1) scale(.9)"/><circle cx="12" cy="11.5" r="4" class="hole"/></svg></button>
   </nav>
 </main>
+<section class="dashboard" aria-label="Control panel">
+  <div class="safety dash-bar" role="group" aria-label="Emergency controls"><button id="linkStatus" class="link-status" data-state="checking" title="Open drone details"><span id="dot0" class="dot dot-black" aria-hidden="true"></span><span id="dot1" class="dot dot-red" aria-hidden="true"></span><span id="linkText">Black · Red · checking…</span></button><button id="pilotLine" class="pilot-line" title="Change your name">Set your name</button><span id="safetyStatus" role="status"></span><button id="switchOff" class="switch-off" title="Cancel all commands and land now">Switch off · land</button><button id="killMotors" class="kill-motors" title="Stops the motors at once. The drone drops.">Cut motors</button></div>
+  <nav class="tabs" role="tablist" aria-label="Panels"><button id="mapButton" class="tab" role="tab" data-panel="mapDialog" aria-selected="true">Room</button><button id="dronesButton" class="tab" role="tab" data-panel="dronesDialog" aria-selected="false">Drones</button><button id="camerasButton" class="tab" role="tab" data-panel="camerasDialog" aria-selected="false">Phones</button></nav>
+  <section id="mapDialog" class="panel room-panel" role="tabpanel" aria-label="Room">
+    <div class="room-tools" role="toolbar" aria-label="Room setup">
+      <button data-tool="view" class="tool active">View</button>
+      <button data-tool="place:tello" class="tool">Place Black</button>
+      <button data-tool="place:rmtt" class="tool">Place Red</button>
+      <button data-tool="place:cam1" class="tool">Phone 1</button>
+      <button data-tool="place:cam2" class="tool">Phone 2</button>
+      <button data-tool="place:cam3" class="tool">Phone 3</button>
+      <button data-tool="zone" class="tool">Draw zone</button>
+      <button data-tool="calibrate:1" class="tool">Calibrate 1</button>
+      <button data-tool="calibrate:2" class="tool">Calibrate 2</button>
+      <button data-tool="calibrate:3" class="tool">Calibrate 3</button>
+    </div>
+    <p id="roomHint" class="room-hint" role="status">The plan of the room. Pick a tool above to place drones and phones, draw red zones or calibrate a phone.</p>
+    <div class="room-body">
+      <svg id="mapSvg" class="map-svg" role="img" aria-label="Room plan with drones, phones, people and zones"></svg>
+      <aside id="calibration" class="calibration" hidden>
+        <h3 id="calTitle">Calibrate phone</h3>
+        <p id="calStep" class="room-hint"></p>
+        <div class="cal-image"><img id="calImage" alt="Phone picture to click on"><svg id="calMarks" class="cal-marks" viewBox="0 0 1 1" preserveAspectRatio="none"></svg></div>
+        <div class="cal-actions"><button id="calRefresh">New picture</button><button id="calUndo">Undo point</button><button id="calSave" class="primary-small" disabled>Save calibration</button></div>
+      </aside>
+    </div>
+    <div class="room-actions"><button id="zoneFinish" hidden>Finish zone</button><button id="zoneCancel" hidden>Cancel zone</button><button id="zonesClear">Delete all zones</button><label class="autosend"><input type="checkbox" id="autoSend"> Send the nearest drone when a person enters a zone</label></div>
+    <p class="telemetry-note" id="mapNote">Waiting for the server.</p>
+  </section>
+  <section id="dronesDialog" class="panel" role="tabpanel" aria-label="Drones" hidden><div class="drone-grid" id="droneGrid"></div><p class="telemetry-note" id="telemetryNote">Waiting for the server.</p><p class="telemetry-note" id="clientsLine"></p></section>
+  <section id="camerasDialog" class="panel" role="tabpanel" aria-label="Phones" hidden><p class="drone-intro">Open a link on each phone (same Wi-Fi). Then, on the Room tab, place the phone and calibrate it with 4 clicks. Zones are drawn on the Room plan.</p><div id="cameraGrid" class="camera-grid"></div><p class="telemetry-note" id="camerasNote">Waiting for the camera service.</p></section>
+</section>
+</div>
 <div id="photoView" class="photo-view" hidden role="dialog" aria-label="Photo from the drone"><img alt="Photo from the drone"><p></p></div>
 <dialog id="nameDialog" class="name-dialog"><form method="dialog"><h2>Your name</h2><p>Others on this link see who flies each drone. The person who takes off a drone flies it until it lands: nobody else can command it, not even land it.</p><p id="nameWarning" class="name-warning" role="alert" hidden></p><input id="pilotName" maxlength="24" autocomplete="nickname" placeholder="e.g. Marco" required><button class="primary" value="ok">Start <span>→</span></button></form></dialog>
 <div id="zoneAlert" class="zone-alert" hidden role="alert"></div>
-<dialog id="camerasDialog" class="drones-dialog cameras-dialog"><div class="dialog-head"><div><p class="dialog-kicker">RED ZONE CAMERAS</p><h2>Phones watching the room</h2></div><button class="dismiss" aria-label="Close cameras">×</button></div><p class="drone-intro">1. Open a camera link on each phone (same Wi-Fi) and draw its red zone there. 2. Tell where that zone is on the room map: type x, y in cm, or fly a drone there and press “Here is Black/Red”. When a person enters a zone, Grok is told and, if enabled, the nearest drone flies there.</p><label class="autosend"><input type="checkbox" id="autoSend"> Send the nearest drone when a person enters a zone</label><div id="cameraGrid" class="camera-grid"></div><p class="telemetry-note" id="camerasNote">Waiting for the camera service.</p></dialog>
-<dialog id="mapDialog" class="drones-dialog map-dialog"><div class="dialog-head"><div><p class="dialog-kicker">ROOM MAP</p><h2>What the drones know</h2></div><button class="dismiss" aria-label="Close map">×</button></div><p class="drone-intro">Seen from above. Up is the direction both drones faced at the start; the grid is 1 m. Positions come from the drones’ own moves, so they drift a little.</p><svg id="mapSvg" class="map-svg" role="img" aria-label="Top-down room map"></svg><p class="telemetry-note" id="mapNote">Waiting for the server.</p></dialog>
-<dialog id="dronesDialog" class="drones-dialog"><div class="dialog-head"><div><p class="dialog-kicker">MONITORING</p><h2>Your drones</h2></div><button class="dismiss" aria-label="Close drone view">×</button></div><p class="drone-intro">Drone 1 · Black and Drone 2 · Red. Every voice command moves a real drone.</p><div class="drone-grid" id="droneGrid"></div><p class="telemetry-note" id="telemetryNote">Waiting for the server.</p><p class="telemetry-note" id="clientsLine"></p></dialog>
 <dialog id="settingsDialog"><div class="dialog-head"><h2>Your voice, Grok.</h2><button class="dismiss" aria-label="Close settings">×</button></div><p>Voice conversation with Grok. Commands fly the real Tello.</p><p id="voiceHint" role="status">Allow microphone access to speak with Grok.</p><div class="drone-info"><span>Drones</span><strong id="droneState">Connecting…</strong></div><div class="activity-head"><h3>Activity</h3><span id="count">00</span></div><div id="activity"><p class="empty">No actions yet.</p></div></dialog>
 <script type="module" src="/app.js"></script>
 </body></html>

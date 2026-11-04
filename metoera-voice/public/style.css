@@ -98,3 +98,58 @@
 .camera-zone-actions button{flex:1}
 .camera-result{font-size:11px;color:#777;margin:8px 0 0;min-height:14px}
 .zone-alert{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:30;background:#c62828;color:#fff;padding:10px 16px;border-radius:12px;font-size:13px;font-weight:600;box-shadow:0 10px 30px #0004}
+
+/* ---- Two columns: Grok on the left, the control panel on the right (no pop-ups) ---- */
+.layout{display:grid;grid-template-columns:minmax(320px,400px) minmax(0,1fr);height:100svh;overflow:hidden}
+.layout .voice{min-height:0;height:100svh;padding:0 24px;border-right:1px solid #eee}
+.layout .voice header{height:64px}
+.layout .conversation{padding-top:10px;max-width:none;min-height:0;overflow:auto}
+.layout #transcript{font-size:clamp(22px,2.4vw,34px);max-width:none}
+.layout .wave{height:120px;min-height:60px}
+.layout .controls{height:96px;max-width:none;gap:16px}
+.layout .empty-state{margin-top:10px}
+.layout .suggestion{min-height:70px}
+.layout .suggestion p{font-size:13px}
+.dashboard{display:flex;flex-direction:column;min-width:0;height:100svh;overflow:hidden;padding:14px 18px 10px;gap:10px;background:#fbfbfa}
+.dash-bar{margin-top:0;justify-content:flex-start}
+.dash-bar .link-status{margin-right:auto}
+.tabs{display:flex;gap:6px;border-bottom:1px solid #e6e6e6}
+.tab{border:0;background:transparent;padding:9px 14px;font-size:13px;color:#777;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab[aria-selected=true]{color:#111;border-bottom-color:#111;font-weight:600}
+.panel{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:8px}
+.panel[hidden]{display:none}
+.panel p{font-size:12px;line-height:1.45;color:#888;margin:0}
+.room-tools{display:flex;flex-wrap:wrap;gap:6px}
+.room-tools .tool,.room-actions button,.calibration button{border:1px solid #ddd;background:#fff;border-radius:16px;padding:6px 11px;font-size:11px;color:#333;min-height:30px}
+.room-tools .tool.active{background:#111;color:#fff;border-color:#111}
+.room-tools .tool[data-tool^="calibrate"]{border-color:#b39ddb}
+#roomHint{font-size:12px;color:#444;min-height:16px}
+.room-body{flex:1;min-height:0;display:flex;gap:10px}
+.room-body .map-svg{flex:1;min-width:0;height:100%;aspect-ratio:auto;margin:0;background:#fff;cursor:crosshair}
+.calibration{width:min(340px,40%);flex:none;display:flex;flex-direction:column;gap:8px;overflow:auto}
+.calibration[hidden]{display:none}
+.cal-image{position:relative;background:#000;border-radius:10px;overflow:hidden;cursor:crosshair}
+.cal-image img{display:block;width:100%}
+.cal-image svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.cal-actions{display:flex;gap:6px;flex-wrap:wrap}
+.calibration #calSave{background:#111;color:#fff;border-color:#111}
+.calibration #calSave:disabled{opacity:.4}
+.room-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.room-actions label{margin:0 0 0 auto;display:flex;gap:6px;align-items:center;font-size:12px}
+#zoneFinish{background:#c62828!important;color:#fff!important;border-color:#c62828!important}
+.camera-controls{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.camera-controls .lens{display:flex;gap:4px}
+.camera-card .lens button.active{background:#111;color:#fff;border-color:#111}
+.camera-card button:disabled{opacity:.45}
+.camera-sens,.camera-arm{display:flex;align-items:center;gap:8px;font-size:11px;color:#555;margin:8px 0 0}
+.camera-sens input{flex:1}
+.camera-arm{color:#b3261e}
+.dashboard .drone-grid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+@media(max-width:900px){
+  .layout{display:block;height:auto;overflow:visible}
+  .layout .voice{height:auto;min-height:70svh;border-right:0;border-bottom:1px solid #eee}
+  .dashboard{height:auto;min-height:100svh;overflow:visible;padding:12px 16px}
+  .room-body{flex-direction:column}
+  .room-body .map-svg{height:60svh}
+  .calibration{width:100%}
+}

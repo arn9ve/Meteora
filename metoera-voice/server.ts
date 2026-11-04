@@ -28,11 +28,21 @@ async function readVision(): Promise<Detections | null> {
     return Array.isArray(data.objects) ? data : null;
   } catch { return null; }
 }
-// The real Tello is enabled only when TELLO_IP is set (in .env or .env.tello).
-// TELLO_PORT, TELLO_LOCAL_PORT and TELLO_STATE_PORT are only for local tests against a fake drone.
-const tello = process.env.TELLO_IP
-  ? new RealTello({host:process.env.TELLO_IP, expectedSerial:process.env.TELLO_SETUP_SERIAL, port:Number(process.env.TELLO_PORT ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:readVision})
-  : null;
+// Each drone is enabled only when its IP is set (in .env or .env.tello):
+// TELLO_IP + TELLO_SETUP_SERIAL is droneId 'tello', RMTT_IP + RMTT_SETUP_SERIAL is droneId 'rmtt'.
+// Both share local ports 8889 and 8890 (UdpPort routes replies by sender IP), so they need different IPs.
+// TELLO_PORT, RMTT_PORT, TELLO_LOCAL_PORT, TELLO_STATE_PORT and RMTT_STATE_PORT are only for local tests against fake drones.
+function droneFromEnv(id: string, prefix: string): RealTello | null {
+  const host = process.env[`${prefix}_IP`];
+  if (!host) return null;
+  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:readVision});
+}
+const drones = new Map<string, RealTello>();
+for (const [id, prefix] of [['tello', 'TELLO'], ['rmtt', 'RMTT']] as const) {
+  const drone = droneFromEnv(id, prefix);
+  if (drone) drones.set(id, drone);
+}
+const tello = drones.get('tello') ?? null;
 const files: Record<string, string> = {'/':'index.html','/app.js':'app.js','/style.css':'style.css'};
 const types: Record<string, string> = {'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8'};
 const allowedOrigins = new Set([`http://localhost:${port}`, `http://127.0.0.1:${port}`]);
@@ -58,23 +68,32 @@ const server = http.createServer(async (req, res) => {
     // Emergency buttons: they skip the command queue and cancel whatever is waiting in it.
     if (path === '/api/emergency') {
       try {
+        // Applies to every configured drone at once; the reply for 'tello' keeps the old shape.
         const body = await readJson(req) as {kind?: unknown};
-        if (!tello) json(res, 200, {ok:false, mode:'real', error:'The Tello is not configured.'});
-        else if (body?.kind === 'land') json(res, 200, await tello.forceLand());
-        else if (body?.kind === 'motors') json(res, 200, await tello.killMotors());
-        else json(res, 400, {ok:false, mode:'real', error:'kind must be land or motors'});
+        if (drones.size === 0) json(res, 200, {ok:false, mode:'real', error:'The Tello is not configured.'});
+        else if (body?.kind !== 'land' && body?.kind !== 'motors') json(res, 400, {ok:false, mode:'real', error:'kind must be land or motors'});
+        else {
+          const ids = [...drones.keys()];
+          const results = await Promise.all(ids.map((id) => body.kind === 'land' ? drones.get(id)!.forceLand() : drones.get(id)!.killMotors()));
+          const byDrone = Object.fromEntries(ids.map((id, i) => [id, results[i]]));
+          // A drone that was never linked has nothing to land; it only counts if no drone is linked.
+          const linked = results.filter((result) => result.ok || result.error !== 'The Tello is not connected yet');
+          const failed = (linked.length ? linked : results).find((result) => !result.ok);
+          json(res, 200, {...(failed ?? linked[0]), drones:byDrone});
+        }
       } catch { json(res, 400, {ok:false, mode:'real', error:'Invalid request'}); }
       return;
     }
     if (path === '/api/command') {
       try {
         const body = await readJson(req) as {droneId?: unknown; action?: unknown};
-        if (!tello) json(res, 200, {ok:false, mode:'real', error:'The Tello is not configured. Set TELLO_IP in .env.tello and restart the server.'});
-        else if (body?.droneId !== 'tello') json(res, 200, {ok:false, mode:'real', error:'Invalid droneId'});
+        const drone = typeof body?.droneId === 'string' ? drones.get(body.droneId) : undefined;
+        if (drones.size === 0) json(res, 200, {ok:false, mode:'real', error:'The Tello is not configured. Set TELLO_IP in .env.tello and restart the server.'});
+        else if (!drone) json(res, 200, {ok:false, mode:'real', error:'Invalid droneId'});
         // stop must reach the drone while a move is still running, so it skips the queue.
-        else if (body.action === 'stop' && Object.keys(body).length === 2) json(res, 200, await tello.stop());
-        else if (body.action === 'emergency' && Object.keys(body).length === 2) json(res, 200, await tello.killMotors());
-        else json(res, 200, await tello.execute(body));
+        else if (body.action === 'stop' && Object.keys(body).length === 2) json(res, 200, await drone.stop());
+        else if (body.action === 'emergency' && Object.keys(body).length === 2) json(res, 200, await drone.killMotors());
+        else json(res, 200, await drone.execute(body));
       }
       catch { json(res, 400, {ok:false, mode:'real', error:'Invalid request'}); }
       return;
@@ -93,23 +112,24 @@ const server = http.createServer(async (req, res) => {
     } catch { json(res, 502, {error:'Unable to connect to xAI.'}); }
     return;
   }
-  if (req.method === 'GET' && path === '/api/drones') { json(res, 200, {drone:tello?.snapshot() ?? null}); return; }
+  if (req.method === 'GET' && path === '/api/drones') { json(res, 200, {drone:tello?.snapshot() ?? null, drones:[...drones.values()].map((drone) => drone.snapshot())}); return; }
   if (req.method !== 'GET' || !files[path]) { res.writeHead(404).end(); return; }
   try { const file = files[path]; res.writeHead(200, {'Content-Type':types[extname(file)]}).end(await readFile(join(root,'public',file))); }
   catch { res.writeHead(500).end(); }
 });
-server.listen(port, '127.0.0.1', () => console.log(`Metoera: http://localhost:${port} (${tello ? `Tello at ${process.env.TELLO_IP}` : 'no Tello configured: set TELLO_IP in .env.tello'})`));
-// Check the drone link in the background so the page can show whether it is connected
+server.listen(port, '127.0.0.1', () => console.log(`Metoera: http://localhost:${port} (${drones.size ? [...drones.keys()].map((id) => `${id} at ${process.env[`${id.toUpperCase()}_IP`]}`).join(', ') : 'no Tello configured: set TELLO_IP in .env.tello'})`));
+// Check every drone link in the background so the page shows whether each one is connected
 // before anyone gives a command. Read-only: command, sn?, streamon.
-if (tello) { void tello.probe(); setInterval(() => { void tello.probe(); }, 5000).unref(); }
+for (const drone of drones.values()) { void drone.probe(); setInterval(() => { void drone.probe(); }, 5000).unref(); }
 // If the server stops while the real drone is flying, land it first.
 let shuttingDown = false;
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, async () => {
     if (shuttingDown) process.exit(1);
     shuttingDown = true;
-    if (tello?.snapshot().flight === 'flying') { console.log('Landing the Tello before exit…'); await tello.forceLand(); }
-    tello?.close();
+    const flying = [...drones.values()].filter((drone) => drone.snapshot().flight === 'flying');
+    if (flying.length) { console.log('Landing before exit…'); await Promise.all(flying.map((drone) => drone.forceLand())); }
+    for (const drone of drones.values()) drone.close();
     process.exit(0);
   });
 }

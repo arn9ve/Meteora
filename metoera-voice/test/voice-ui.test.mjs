@@ -97,8 +97,9 @@ test('microphone off clears Grok input and ignores later commands except safety 
   ws.onmessage({data:JSON.stringify({type:'response.function_call_arguments.done',name:'land',call_id:'b',arguments:'{}'})});
   await ws.onmessage({data:JSON.stringify({type:'response.done'})});
   await tick();
-  assert.equal(app.fetches.filter(f=>f.url==='/api/command').length,1);
-  assert.match(app.fetches.find(f=>f.url==='/api/command').body,/"action":"land"/);
+  // land without a named drone goes to both drones, even while muted.
+  const lands=app.fetches.filter(f=>f.url==='/api/command').map(f=>JSON.parse(f.body));
+  assert.deepEqual(lands.map(b=>[b.droneId,b.action]),[['tello','land'],['rmtt','land']]);
 });
 
 test('switch off ends the voice session and calls the emergency endpoint', async () => {

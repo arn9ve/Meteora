@@ -38,3 +38,17 @@
 .link-status[data-state=offline] .dot{background:#c62828}
 .link-status[data-state=offline]{color:#c62828;border-color:#f1c9c9}
 @media(max-width:400px){.safety{justify-content:flex-start}.link-status{flex-basis:100%;justify-content:flex-start;margin-right:0}}
+
+.link-status .dot{background:#bbb}
+.link-status .dot[data-state=connected]{background:#1e8e3e;box-shadow:0 0 0 3px #1e8e3e22}
+.link-status .dot[data-state=waiting]{background:#e8a317}
+.link-status .dot[data-state=offline]{background:#c62828;box-shadow:none}
+.link-status .dot-black{outline:2px solid #111;outline-offset:1px}
+.link-status .dot-red{outline:2px solid #d32f2f;outline-offset:1px}
+.link-status[data-state=waiting]{color:#7a5a00}
+.drone-black{background:#1c1c1c;border-color:#1c1c1c;color:#fff}
+.drone-black h3,.drone-black .drone-coordinates,.drone-black .drone-motion strong{color:#fff}
+.drone-black .drone-availability,.drone-black .drone-position,.drone-black .drone-motion{color:#aaa}
+.drone-black .drone-motion{border-top-color:#333}
+.drone-red{background:#fff5f5;border-color:#e57373}
+.drone-red h3{color:#c62828}

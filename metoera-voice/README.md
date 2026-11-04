@@ -16,13 +16,34 @@ You need Node.js 24.12 or later, an xAI API key, a microphone, and the Tello on 
 
 The xAI key stays on the server; the browser gets a temporary token.
 
+## Two drones: Black and Red
+
+| Name | Model | `.env.tello` | droneId |
+| --- | --- | --- | --- |
+| Drone 1 · Black | Tello EDU | `TELLO_IP`, `TELLO_SETUP_SERIAL` | `tello` |
+| Drone 2 · Red | RoboMaster TT | `RMTT_IP`, `RMTT_SETUP_SERIAL` | `rmtt` |
+
+Set only the IP of a drone you have; the other one stays off the page. Use the serial the drone reports with `sn?` (`tools/check-tello-lan.mjs` prints it), not the label on the box: our RoboMaster's box says `42YF…`, the drone says `0TQZ…`.
+
+Every drone tool takes `drone: black | red`. Grok asks which one when you don't say. "Both" runs the command on Black, then Red. `land` and `stop` with no drone go to both; so does `emergency`. Switch off and Cut motors act on both drones.
+
+Both drones reply to the computer's UDP port 8889, so the server opens 8889 and 8890 once and routes each datagram by sender IP (`src/udp-port.ts`). The two drones need different IPs.
+
+To check, join or fly a second drone with the tools, pass its serial on the command line; `.env.tello` is not changed:
+
+```bash
+TELLO_EXPECT_SERIAL=<serial> node tools/check-tello-lan.mjs <ip>
+TELLO_EXPECT_SERIAL=<serial> node tools/connect-tello.mjs
+TELLO_EXPECT_SERIAL=<serial> node tools/test-flight.mjs <ip>
+```
+
 ## Voice commands
 
 Grok calls one tool per action, in the order you say them, and waits for each result. If you leave out a value it asks instead of guessing.
 
 | Say | Tool | Tello SDK |
 | --- | --- | --- |
-| "Take off" | `takeoff` | `takeoff` (needs ≥ 20% battery) |
+| "Black, take off" | `takeoff` | `takeoff` (needs ≥ 20% battery) |
 | "Land" | `land` | `land` |
 | "Stop" / "wait" / "hold" | `stop` | `stop`: hover now, interrupting a running move |
 | "Move forward half a meter" | `move` | `forward 50` (also back, left, right, up, down; 20 to 100 cm by default) |

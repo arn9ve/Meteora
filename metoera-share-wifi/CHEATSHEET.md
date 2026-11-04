@@ -1,7 +1,7 @@
 # STA cheatsheet
 
 1. Wi‑Fi → `TELLO-…`
-2. `python set_sta_mode.py`  (ssid/pass: hackathon / hackathon)
+2. `python set_sta_mode.py` and enter the SSID and password (this lab: hackathon / hackathon)
 3. Wait ~1 min
 4. Wi‑Fi → `hackathon`
 5. `python find_tello.py` → save `TELLO_IP`

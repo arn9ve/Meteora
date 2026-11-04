@@ -9,8 +9,8 @@ It does **not** replace `metoera-link`. Use link for AP ground checks; use these
 ## Quick path (no Ethernet)
 
 1. Join `TELLO-…` (internet drops briefly — OK).
-2. `python set_sta_mode.py` → drone reboots onto `hackathon`.
-3. Rejoin Mac Wi‑Fi `hackathon`.
+2. `python set_sta_mode.py` asks for the SSID and password, then the aircraft reboots onto that network. This lab is `hackathon` / `hackathon`. `--ssid`, `--password`, and `--yes` skip the prompts.
+3. Join that same Wi‑Fi on this computer.
 4. `python find_tello.py` → set `TELLO_IP` in `.env`.
 5. Optional: `python live_video.py` to confirm video on STA.
 
@@ -26,7 +26,11 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Defaults in `.env.example`: `STA_SSID=hackathon`, `STA_PASSWORD=hackathon`.
+The script asks for the SSID and password. It does not read them from `.env`. `.env.example` only records `TELLO_IP` after the aircraft has joined the network.
+
+```sh
+python -m unittest test_set_sta_mode.py
+```
 
 ## Verified (hackathon LAN)
 

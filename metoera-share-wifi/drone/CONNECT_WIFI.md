@@ -22,12 +22,12 @@ If you have an **Ethernet cable** to the router/switch:
    cd drone
    python3 -m venv venv && source venv/bin/activate
    pip install -r requirements.txt
-   cp -n .env.example .env   # STA_SSID/PASSWORD already hackathon
-   python set_sta_mode.py
+   cp -n .env.example .env
+   python set_sta_mode.py   # type the SSID and password; this lab is hackathon / hackathon
    ```
 
-4. Wait **30–60s** for the drone to reboot onto `hackathon`.
-5. Mac Wi‑Fi → join **`hackathon`** (Ethernet can stay connected).
+4. Wait **30–60s** for the drone to reboot onto the Wi‑Fi you entered.
+5. Wi‑Fi → join the network you entered (this lab: **`hackathon`**). Ethernet can stay connected.
 6. Find the drone:
 
    ```bash

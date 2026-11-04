@@ -59,3 +59,8 @@
 .drone-video.off img{display:none}.drone-video.off span{display:grid}
 .drones-dialog{max-height:92svh;overflow:auto}
 @media(max-width:600px){.drone-grid{grid-template-columns:1fr}}
+/* A drone another laptop flies: see-only here. */
+.drone-card.drone-other{opacity:.55}
+.drone-card.drone-other .drone-availability{color:#555;font-weight:500}
+.link-status .dot[data-state=other]{background:#bbb;box-shadow:none}
+.link-status[data-state=other]{color:#777}

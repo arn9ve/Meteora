@@ -41,6 +41,11 @@ export type TelloOptions = {
   vision?: () => Promise<Detections | null>;
   /** Pause after each scan rotation before a frame counts, so the image is steady. */
   settleMs?: number;
+  /**
+   * Null when this laptop may talk to the drone; otherwise why not ("Connected to …").
+   * Checked before every packet, so a drone another laptop owns never hears from this one.
+   */
+  mayTalk?: () => string | null;
 };
 
 export type Detection = { label: string; confidence: number; center: { x: number; y: number } };
@@ -76,6 +81,7 @@ export class RealTello {
   readonly #maxMoveCm: number;
   readonly #vision: (() => Promise<Detections | null>) | null;
   readonly #settleMs: number;
+  readonly #mayTalk: () => string | null;
   #video = false;
   #linkError: string | null = null;
   #probing = false;
@@ -114,6 +120,7 @@ export class RealTello {
     this.#maxMoveCm = Math.min(500, Math.max(20, options.maxMoveCm ?? 100));
     this.#vision = options.vision ?? null;
     this.#settleMs = options.settleMs ?? 700;
+    this.#mayTalk = options.mayTalk ?? (() => null);
   }
 
   /** True while a queued command (takeoff, move, scan…) is running on this drone. */
@@ -158,6 +165,8 @@ export class RealTello {
   }
 
   async #stop(): Promise<TelloResult> {
+    const refused = this.#mayTalk();
+    if (refused) return this.#fail(refused);
     if (!this.#command || !this.#verified) return this.#fail('The Tello is not connected yet');
     this.#interrupted = true;
     this.#pending?.resolve(null);
@@ -182,6 +191,8 @@ export class RealTello {
   }
 
   async #forceLand(): Promise<TelloResult> {
+    const refused = this.#mayTalk();
+    if (refused) return this.#fail(refused);
     if (!this.#command || !this.#verified) return this.#fail('The Tello is not connected yet');
     this.#interrupted = true;
     this.#pending?.resolve(null);
@@ -198,6 +209,8 @@ export class RealTello {
 
   /** Emergency: the motors stop at once and the drone drops. Bypasses everything. */
   async killMotors(): Promise<TelloResult> {
+    const refused = this.#mayTalk();
+    if (refused) return this.#fail(refused);
     this.#generation += 1;
     const socket = this.#command;
     if (!socket) return this.#fail('The Tello is not connected yet');
@@ -225,6 +238,21 @@ export class RealTello {
       if (this.#verified) { this.#linkError = null; return; }
       this.#linkError = await this.#ensureReady(1, 1500);
     }).finally(() => { this.#probing = false; });
+    this.#queue = run.catch(() => undefined);
+    return run.catch(() => undefined);
+  }
+
+  /**
+   * Hand the drone back when this server stops: stop its video so it no longer reaches this
+   * computer, then close the link. The laptop that takes it over starts with a clean stream.
+   */
+  release(): Promise<void> {
+    const run = this.#queue.then(async () => {
+      if (this.#command && this.#verified && this.#video) {
+        const reply = await this.#request('streamoff', isOk, 1000);
+        if (reply && isOk(reply)) this.#video = false;
+      }
+    }).finally(() => this.close());
     this.#queue = run.catch(() => undefined);
     return run.catch(() => undefined);
   }
@@ -412,6 +440,8 @@ export class RealTello {
   }
 
   async #ensureReady(attempts = 3, timeoutMs = 3000): Promise<string | null> {
+    const refused = this.#mayTalk();
+    if (refused) return refused;
     if (!this.#expectedSerial) return 'TELLO_SETUP_SERIAL is not configured';
     try { await this.#open(); } catch (error) {
       const code = (error as { code?: string }).code ?? 'UDP_ERROR';
@@ -504,6 +534,8 @@ export class RealTello {
   #request(text: string, accept: (reply: string) => boolean, timeoutMs: number, priority = false): Promise<string | null> {
     const socket = this.#command;
     if (!socket) return Promise.resolve(null);
+    // The one place a request leaves: never toward a drone another laptop owns.
+    if (this.#mayTalk()) return Promise.resolve(null);
     // While stop / force land own the drone, nothing else may take the single reply slot.
     if (this.#interrupted && !priority) return Promise.resolve(null);
     return new Promise((resolve) => {

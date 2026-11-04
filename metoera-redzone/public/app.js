@@ -507,6 +507,25 @@ function visualAlert() {
   }, 900);
 }
 
+// Where people are in the picture (normalized boxes), at most twice a second. The Mac maps the
+// feet of each box onto the room plan with this camera's calibration.
+let lastPeoplePost = 0;
+async function postPeople(people, vw, vh) {
+  const now = Date.now();
+  if (!slotToken || now - lastPeoplePost < 500) return;
+  lastPeoplePost = now;
+  const boxes = people.slice(0, 12).map((p) => ({ x: p.bbox[0] / vw, y: p.bbox[1] / vh, w: p.bbox[2] / vw, h: p.bbox[3] / vh, score: p.score }));
+  try {
+    await fetch(`/api/slots/${slotId}/people`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Slot-Token': slotToken },
+      body: JSON.stringify({ token: slotToken, boxes }),
+    });
+  } catch {
+    /* the next detection tries again */
+  }
+}
+
 async function postIntrusion({ score, note, force = false } = {}) {
   const now = Date.now();
   if (!force && now - lastClientAlert < CLIENT_ALERT_GAP_MS) return;
@@ -571,6 +590,7 @@ async function detectOnce() {
     lastPeople = people;
     lastPersonScore = people[0]?.score ?? null;
     drawOverlay();
+    void postPeople(people, vw, vh);
 
     let inZone = false;
     let best = null;

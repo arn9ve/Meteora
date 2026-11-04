@@ -111,6 +111,8 @@ function slotPublic(slot, { includePreviewMeta = true } = {}) {
     hasPreview: Boolean(slot.previewJpeg),
     previewAt: includePreviewMeta ? slot.previewAt : null,
     joined: Boolean(slot.token),
+    // Boxes older than 2 s are dropped: nobody there any more, or the phone stopped.
+    people: slot.people && Date.now() - slot.people.at < 2000 ? slot.people.boxes : [],
   };
 }
 
@@ -497,6 +499,28 @@ async function handle(req, res, remote) {
       return;
     }
 
+    // People the phone sees right now (normalized boxes), for the room plan on the Mac.
+    if (req.method === 'POST' && action === 'people') {
+      try {
+        const body = await readJson(req);
+        if (!authSlot(req, slot, body.token)) {
+          json(res, 401, { ok: false, error: 'Unauthorized slot' });
+          return;
+        }
+        const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : null);
+        slot.people = {
+          at: Date.now(),
+          boxes: (Array.isArray(body.boxes) ? body.boxes : []).slice(0, 12)
+            .map((b) => ({ x: n(b?.x), y: n(b?.y), w: n(b?.w), h: n(b?.h), score: n(b?.score) }))
+            .filter((b) => b.x !== null && b.y !== null && b.w !== null && b.h !== null),
+        };
+        slot.lastSeenAt = Date.now();
+        json(res, 200, { ok: true });
+      } catch {
+        json(res, 400, { ok: false, error: 'Invalid people' });
+      }
+      return;
+    }
     if (req.method === 'POST' && action === 'heartbeat') {
       try {
         const body = await readJson(req);

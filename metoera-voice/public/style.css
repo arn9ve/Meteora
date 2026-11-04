@@ -64,7 +64,7 @@
 .photo-view img{display:block;width:100%}
 .photo-view p{margin:0;padding:10px 12px;font-size:12px}
 /* A drone another laptop flies: see-only here. */
-/* The card fades, but "Connected to <name>" must stay readable on both card colours. */
+/* The card fades, but "Flown by <name>" must stay readable on both card colours. */
 .drone-card.drone-other{opacity:.7}
 .drone-card.drone-other .drone-availability{color:#222;font-weight:600}
 .drone-black.drone-other .drone-availability{color:#fff}
@@ -73,3 +73,4 @@
 
 .pilot-line{border:0;background:transparent;font-size:11px;color:#666;padding:6px 4px;text-decoration:underline dotted;text-underline-offset:3px}
 .name-dialog input{width:100%;border:1px solid #ddd;border-radius:12px;padding:14px;font-size:17px;margin-top:6px}
+.name-warning{color:#b3261e;font-weight:600}

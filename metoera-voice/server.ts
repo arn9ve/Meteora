@@ -9,7 +9,8 @@ import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { RealTello, type Detections } from './src/tello.ts';
-import { Claims, CLAIMS_PORT, parsePeers, udpTransport } from './src/claims.ts';
+import { Claims, CLAIMS_PORT, describeElsewhere, parsePeers, udpTransport } from './src/claims.ts';
+import { Pilots, TAKEOFF } from './src/pilots.ts';
 
 // METOERA_PORT only for running two servers on one computer in local tests.
 const port = Number(process.env.METOERA_PORT ?? 18787);
@@ -46,7 +47,7 @@ function droneFromEnv(id: string, prefix: string): RealTello | null {
   const host = process.env[`${prefix}_IP`]?.trim();
   if (!host) return null;
   if (!isIpv4(host)) { console.log(`${prefix}_IP must be an IPv4 address (got "${host}"); that drone is off`); return null; }
-  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), mayTalk:() => refusal(id)});
+  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), mayTalk:() => mayTalk(id)});
 }
 const drones = new Map<string, RealTello>();
 for (const [id, prefix] of FLEET) {
@@ -54,9 +55,18 @@ for (const [id, prefix] of FLEET) {
   if (drone) drones.set(id, drone);
 }
 const NO_DRONES = 'No drone configured: set TELLO_IP / RMTT_IP (with their serials) in .env.tello and restart the server.';
+const DRONE_NAMES: Record<string, string> = {tello:'Black', rmtt:'Red'};
+const label = (id: string) => DRONE_NAMES[id] ?? id;
 
-// Ownership between laptops (src/claims.ts). Each laptop announces the drones it flies on
-// UDP 18789; a drone another laptop owns is see-only here and never gets a packet from us.
+// Pilots (src/pilots.ts): several people can use this server (the laptop page, phones on the
+// link), each with a name. The person who takes off a drone flies it until it has landed;
+// nobody else can command it, not even land it or cut its motors. A pilot gone for 15 s
+// (page closed, phone asleep, name changed) gets the drone landed by the server.
+const pilots = new Pilots({label});
+
+// Ownership between laptops (src/claims.ts). Each laptop announces the drones it holds on
+// UDP 18789; a drone another laptop holds never gets a packet from us. A landed one is handed
+// over when someone here takes off with it; a flying one stays with the laptop that flies it.
 // METOERA_PEERS (ip[:port],...) reaches laptops directly when the Wi-Fi blocks broadcasts.
 const claimsPort = Number(process.env.METOERA_CLAIMS_PORT ?? CLAIMS_PORT);
 let claims: Claims | null = null;
@@ -65,7 +75,27 @@ function refusal(id: string): string | null {
   if (claims) return claims.refusal(id);
   return claimsError ?? 'Checking that no other laptop controls this drone';
 }
+// Packets may still leave while a drone is handed over (its video is stopped first).
+function mayTalk(id: string): string | null {
+  if (claims) return claims.mayTalk(id);
+  return claimsError ?? 'Checking that no other laptop controls this drone';
+}
 const mine = () => [...drones.keys()].filter((id) => refusal(id) === null);
+// Locked: flying, flown by someone here, or busy with a command. Only an unlocked drone is handed over.
+function droneStatus(id: string) {
+  const drone = drones.get(id)!;
+  const s = drone.snapshot();
+  const pilot = pilots.pilotOf(id);
+  return {flight:s.flight, battery:s.battery, connected:s.connected, pilot, locked:s.flight === 'flying' || pilot !== null || drone.busy};
+}
+// When a lock changes (takeoff, landing), the other laptops hear it at once, not a second later.
+let lockKey = '';
+function lockChanged() {
+  const key = JSON.stringify([...drones.keys()].map((id) => { const s = droneStatus(id); return [id, s.pilot, s.locked]; }));
+  if (key === lockKey) return;
+  lockKey = key;
+  claims?.refresh();
+}
 try {
   const transport = await udpTransport({port:claimsPort, peers:parsePeers(process.env.METOERA_PEERS, claimsPort)});
   claims = new Claims({
@@ -73,8 +103,11 @@ try {
       const serial = process.env[`${prefix}_SETUP_SERIAL`]?.trim().toUpperCase() ?? '';
       return {id, serial:/^[A-Z0-9]{8,}$/.test(serial) ? serial : null, address:process.env[`${prefix}_IP`]!.trim()};
     }),
-    status: (id) => { const s = drones.get(id)!.snapshot(); return {flight:s.flight, battery:s.battery, connected:s.connected}; },
+    status: droneStatus,
     transport,
+    label,
+    // Before another laptop takes a landed drone: stop its video and close the link.
+    onYield: (id) => drones.get(id)!.release(),
     // A drone that just became ours is checked at once instead of at the next 5 s probe.
     onChange: () => { for (const id of mine()) { const drone = drones.get(id)!; if (!drone.snapshot().verified) void drone.probe(); } },
   });
@@ -90,16 +123,18 @@ function droneViews() {
     const snapshot = drone.snapshot();
     const ownership = claims?.ownership(id) ?? null;
     if (ownership?.state === 'other') {
-      const {flight, battery, connected} = ownership.drone;
-      views.push({...snapshot, flight, battery, connected, heightCm:null, heading:null, linkError:null, lastError:null, video:false, owner:{state:'other', name:ownership.owner}});
+      const {flight, battery, connected, pilot, locked} = ownership.drone;
+      views.push({...snapshot, flight, battery, connected, heightCm:null, heading:null, linkError:null, lastError:null, video:false, owner:{state:'other', name:ownership.owner, pilot, locked}});
     } else if (ownership?.state === 'lost') views.push({...snapshot, owner:{state:'lost', name:ownership.owner}});
     else if (ownership?.state === 'mine') views.push({...snapshot, owner:{state:'mine', conflict:ownership.conflict}});
+    else if (ownership?.state === 'yielding') views.push({...snapshot, video:false, owner:{state:'yielding', name:ownership.to}});
+    else if (ownership?.state === 'taking') views.push({...snapshot, owner:{state:'taking', name:ownership.from}});
     else views.push({...snapshot, owner:{state:ownership?.state ?? 'waiting', reason:refusal(id)}});
   }
   // Drones another laptop flies that this laptop does not list in .env.tello.
   for (const {owner, drone} of claims?.elsewhere() ?? []) {
     if (drones.has(drone.id) || views.some((v) => v.id === drone.id)) continue;
-    views.push({id:drone.id, mode:'real', connected:drone.connected, verified:false, linkError:null, video:false, flight:drone.flight, battery:drone.battery, heightCm:null, heading:null, lastError:null, owner:{state:'other', name:owner}});
+    views.push({id:drone.id, mode:'real', connected:drone.connected, verified:false, linkError:null, video:false, flight:drone.flight, battery:drone.battery, heightCm:null, heading:null, lastError:null, owner:{state:'other', name:owner, pilot:drone.pilot, locked:drone.locked}});
   }
   return views;
 }
@@ -181,33 +216,16 @@ async function readJson(req: http.IncomingMessage): Promise<unknown> {
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
 }
-// Pilots: several people can open the same link (each browser is a session with a name).
-// The first person who moves a drone becomes its pilot; the others can still land, stop,
-// cut its motors, read its status and take photos, but not move it. A pilot who closes the
-// page (no request for 15 s) or says "release" frees the drone.
-type PilotSession = {name: string; lastSeen: number};
-const sessions = new Map<string, PilotSession>();
-const pilots = new Map<string, string>(); // droneId -> session id
-const PILOT_TIMEOUT_MS = 15000;
-const FOR_EVERYONE = new Set(['land', 'stop', 'emergency', 'status', 'look', 'photo', 'release']);
-const DRONE_NAMES: Record<string, string> = {tello:'Black', rmtt:'Red'};
+// Each browser is a session (cookie); its name is what the lock goes by (src/pilots.ts).
 function sessionOf(req: http.IncomingMessage, res: http.ServerResponse, secure: boolean): string {
   let id = /(?:^|;\s*)metoera_pilot=([0-9a-f]{32})/.exec(req.headers.cookie ?? '')?.[1];
   if (!id) {
     id = randomBytes(16).toString('hex');
     res.appendHeader('Set-Cookie', `metoera_pilot=${id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${secure ? '; Secure' : ''}`);
   }
-  const session = sessions.get(id) ?? {name:'', lastSeen:0};
-  session.lastSeen = Date.now();
-  sessions.set(id, session);
-  for (const [drone, sid] of pilots) {
-    const pilot = sessions.get(sid);
-    if (!pilot || Date.now() - pilot.lastSeen > PILOT_TIMEOUT_MS) pilots.delete(drone);
-  }
+  pilots.seen(id);
   return id;
 }
-const pilotName = (sid: string) => sessions.get(sid)?.name || 'another person';
-const activePilots = () => [...sessions.values()].filter((s) => s.name && Date.now() - s.lastSeen <= PILOT_TIMEOUT_MS).map((s) => s.name);
 
 async function handle(req: http.IncomingMessage, res: http.ServerResponse, remote: boolean) {
   res.setHeader('Cache-Control', 'no-store');
@@ -237,30 +255,35 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
     // Emergency buttons: they skip the command queue and cancel whatever is waiting in it.
     if (path === '/api/emergency') {
       try {
-        // Applies at once to every drone this laptop flies; another laptop's drone is never
-        // touched. `ok` and `error` sum them up; `drones` has each result.
+        // Applies at once to every drone this laptop holds that nobody else flies: the ones
+        // this person flies and the ones without a pilot. Another person's drone and another
+        // laptop's drone are never touched. `ok` and `error` sum them up; `drones` has each
+        // result, `skipped` why a drone was left alone.
         const body = await readJson(req) as {kind?: unknown};
+        const ids = mine().filter((id) => pilots.mayEmergency(sid, id));
+        const skipped = Object.fromEntries(mine().filter((id) => !ids.includes(id)).map((id) => [id, `${label(id)} is flown by ${pilots.pilotOf(id)}`]));
         if (drones.size === 0) json(res, 200, {ok:false, mode:'real', error:NO_DRONES});
         else if (body?.kind !== 'land' && body?.kind !== 'motors') json(res, 400, {ok:false, mode:'real', error:'kind must be land or motors'});
         else if (mine().length === 0) json(res, 200, {ok:false, mode:'real', error:'This laptop flies no drone right now'});
+        else if (ids.length === 0) json(res, 200, {ok:false, mode:'real', error:`${Object.values(skipped).join('; ')}: only the pilot can land it or cut its motors`, skipped});
         else {
-          const ids = mine();
           const results = await Promise.all(ids.map((id) => body.kind === 'land' ? drones.get(id)!.forceLand() : drones.get(id)!.killMotors()));
           const byDrone = Object.fromEntries(ids.map((id, i) => [id, results[i]]));
           // A drone that was never linked has nothing to land; it only counts if no drone is linked.
           const linked = results.filter((result) => result.ok || result.error !== 'The Tello is not connected yet');
           const failed = (linked.length ? linked : results).find((result) => !result.ok);
-          json(res, 200, {ok:!failed, mode:'real', ...(failed && 'error' in failed ? {error:failed.error} : {}), drones:byDrone});
+          json(res, 200, {ok:!failed, mode:'real', ...(failed && 'error' in failed ? {error:failed.error} : {}), drones:byDrone, skipped});
         }
       } catch { json(res, 400, {ok:false, mode:'real', error:'Invalid request'}); }
       return;
     }
     if (path === '/api/pilot') {
       try {
+        // Changing the name mid-flight hands nothing over: the lock keeps the old name, and the
+        // drone is landed once that name has been silent for 15 s.
         const body = await readJson(req) as {name?: unknown};
-        const name = typeof body?.name === 'string' ? body.name.replace(/[^\p{L}\p{N} ._-]/gu, '').trim().slice(0, 24) : '';
+        const name = pilots.setName(sid, body?.name);
         if (!name) { json(res, 400, {ok:false, error:'Name required'}); return; }
-        sessions.get(sid)!.name = name;
         json(res, 200, {ok:true, name});
       } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
       return;
@@ -269,29 +292,46 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
       try {
         const body = await readJson(req) as {droneId?: unknown; action?: unknown};
         const id = typeof body?.droneId === 'string' ? body.droneId : '';
+        const action = typeof body?.action === 'string' ? body.action : '';
+        const plain = Object.keys(body).length === 2;
         const drone = drones.get(id);
         const elsewhere = claims?.elsewhere().find((e) => e.drone.id === id);
+        const ownership = claims?.ownership(id) ?? null;
+        const blocked = refusal(id);
+        const person = pilots.check(sid, id, action);
         if (drones.size === 0 && !elsewhere) json(res, 200, {ok:false, mode:'real', error:NO_DRONES});
-        else if (!drone) json(res, 200, {ok:false, mode:'real', error:elsewhere ? `Connected to ${elsewhere.owner}` : 'Invalid droneId'});
-        // Another laptop's drone (or one not yet confirmed as ours) gets nothing, emergency included.
-        else if (refusal(id)) json(res, 200, {ok:false, mode:'real', error:refusal(id)});
-        // Another person on this link flies it: only safety and read-only actions are allowed.
-        else if (!FOR_EVERYONE.has(String(body.action)) && pilots.has(id) && pilots.get(id) !== sid) json(res, 200, {ok:false, mode:'real', error:`${DRONE_NAMES[id] ?? id} is flown by ${pilotName(pilots.get(id)!)}. Only they can move it; anyone can land or stop it.`});
-        else if (body.action === 'release' && Object.keys(body).length === 2) {
-          if (pilots.get(id) === sid) pilots.delete(id);
-          json(res, 200, {ok:true, mode:'real', action:'release', drone:drone.snapshot()});
+        else if (!drone) json(res, 200, {ok:false, mode:'real', error:elsewhere ? describeElsewhere(label(id), elsewhere.owner, elsewhere.drone) : 'Invalid droneId'});
+        // Another laptop holds it: its battery and flight come from that laptop's announcements.
+        else if (ownership?.state === 'other' && action === 'status' && plain) {
+          const {flight, battery, connected} = ownership.drone;
+          json(res, 200, {ok:true, mode:'real', action:'status', drone:{...drone.snapshot(), flight, battery, connected, heightCm:null, heading:null}, note:blocked});
         }
-        // stop must reach the drone while a move is still running, so it skips the queue.
-        else if (body.action === 'stop' && Object.keys(body).length === 2) json(res, 200, await drone.stop());
-        else if (body.action === 'emergency' && Object.keys(body).length === 2) json(res, 200, await drone.killMotors());
-        else if (body.action === 'photo' && Object.keys(body).length === 2) json(res, 200, await takePhoto(String(body.droneId)));
-        // A spoken "land" is always sent to the drone, whatever the server believes about its
-        // state (a lost takeoff reply must never block a landing), and it skips the queue.
-        else if (body.action === 'land' && Object.keys(body).length === 2) json(res, 200, await drone.forceLand());
+        // Another laptop's drone (or one not yet confirmed as ours) gets nothing, emergency
+        // included. Only a takeoff may ask for it: a landed, idle drone is then handed over.
+        else if (blocked && !(TAKEOFF.has(action) && claims)) json(res, 200, {ok:false, mode:'real', error:blocked});
+        // Someone else here flies it: only status, look and photo.
+        else if (person) json(res, 200, {ok:false, mode:'real', error:person});
         else {
-          // The first person who moves a free drone becomes its pilot.
-          if (!pilots.has(id) && !FOR_EVERYONE.has(String(body.action))) pilots.set(id, sid);
-          json(res, 200, await drone.execute(body));
+          // A takeoff makes this person the pilot before anything is sent, so a second takeoff
+          // arriving meanwhile is refused.
+          pilots.begin(sid, id, action, drone.snapshot().flight);
+          lockChanged();
+          try {
+            const handover = blocked ? await claims!.request(id) : null;
+            if (handover) json(res, 200, {ok:false, mode:'real', error:handover});
+            // stop must reach the drone while a move is still running, so it skips the queue.
+            else if (action === 'stop' && plain) json(res, 200, await drone.stop());
+            else if (action === 'emergency' && plain) json(res, 200, await drone.killMotors());
+            else if (action === 'photo' && plain) json(res, 200, await takePhoto(id));
+            // A spoken "land" is always sent to the drone, whatever the server believes about its
+            // state (a lost takeoff reply must never block a landing), and it skips the queue.
+            else if (action === 'land' && plain) json(res, 200, await drone.forceLand());
+            else json(res, 200, await drone.execute(body));
+          } finally {
+            pilots.end(id);
+            pilots.settle(id, drone.snapshot().flight, drone.busy);
+            lockChanged();
+          }
         }
       }
       catch { json(res, 400, {ok:false, mode:'real', error:'Invalid request'}); }
@@ -312,9 +352,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
     return;
   }
   if (req.method === 'GET' && path === '/api/drones') { json(res, 200, {drones:droneViews().map((v) => {
-    const pilot = pilots.get(String(v.id));
-    return {...v, pilot:pilot ? {name:pilotName(pilot), me:pilot === sid} : null};
-  }), me:claims?.name ?? null, clients:claims?.clients() ?? [], claimsError, pilot:{name:sessions.get(sid)?.name ?? '', online:activePilots()}}); return; }
+    // The pilot here; another laptop's pilot is in owner.pilot.
+    const pilot = drones.has(String(v.id)) ? pilots.pilotOf(String(v.id)) : null;
+    return {...v, pilot:pilot ? {name:pilot, me:pilots.isPilot(sid, String(v.id))} : null};
+  }), me:claims?.name ?? null, clients:claims?.clients() ?? [], claimsError, pilot:{name:pilots.nameOf(sid), online:pilots.online()}}); return; }
   if (req.method !== 'GET' || !files[path]) { res.writeHead(404).end(); return; }
   try { const file = files[path]; res.writeHead(200, {'Content-Type':types[extname(file)]}).end(await readFile(join(root,'public',file))); }
   catch { res.writeHead(500).end(); }
@@ -324,7 +365,7 @@ if (phone) {
   https.createServer({cert:phone.cert, key:phone.certKey}, (req, res) => { void handle(req, res, true); })
     .listen(phonePort, '0.0.0.0', () => console.log(`Phone (same Wi-Fi): https://${lanAddress}:${phonePort}/?key=${phone.key}\n  The certificate is self-signed: accept the warning once on the phone.`));
 }
-server.listen(port, '127.0.0.1', () => console.log(`Metoera: http://localhost:${port} (${drones.size ? [...drones.keys()].map((id) => `${id} at ${process.env[`${id.toUpperCase()}_IP`]}`).join(', ') : NO_DRONES})${claims ? `\n  This laptop is "${claims.name}" to the others (UDP ${claimsPort}). A drone another laptop flies stays see-only.` : ''}`));
+server.listen(port, '127.0.0.1', () => console.log(`Metoera: http://localhost:${port} (${drones.size ? [...drones.keys()].map((id) => `${id} at ${process.env[`${id.toUpperCase()}_IP`]}`).join(', ') : NO_DRONES})${claims ? `\n  This laptop is "${claims.name}" to the others (UDP ${claimsPort}). A drone flown from another laptop stays see-only; a landed one moves here when someone takes off with it.` : ''}`));
 // Check this laptop's drone links in the background so the page shows whether each one is
 // connected before anyone gives a command. Read-only: command, sn?, streamon. A drone another
 // laptop owns is skipped (and the link refuses to send to it anyway).
@@ -333,6 +374,22 @@ for (const [id, drone] of drones) {
   check();
   setInterval(check, 5000).unref();
 }
+// Every second: a drone back on the ground with nothing running is free again; one whose pilot
+// has been gone for 15 s while it flies is landed by the server (retried every 5 s), because
+// nobody else may land it.
+const goneLanding = new Map<string, number>();
+setInterval(() => {
+  for (const [id, drone] of drones) {
+    const {flight} = drone.snapshot();
+    if (pilots.settle(id, flight, drone.busy)) { goneLanding.delete(id); continue; }
+    if (flight !== 'flying' || !pilots.absent(id) || refusal(id) !== null) continue;
+    if (Date.now() - (goneLanding.get(id) ?? 0) < 5000) continue;
+    goneLanding.set(id, Date.now());
+    console.log(`${pilots.pilotOf(id)} is gone: landing ${label(id)}`);
+    void drone.forceLand();
+  }
+  lockChanged(); // telemetry also moves the lock (h above 20 cm: flying; on the ground for 2 s: landed)
+}, 1000).unref();
 // When the server stops: land what is flying, stop the video of every drone we fly, then tell
 // the other laptops our drones are free.
 let shuttingDown = false;

@@ -42,7 +42,7 @@ export type TelloOptions = {
   /** Pause after each scan rotation before a frame counts, so the image is steady. */
   settleMs?: number;
   /**
-   * Null when this laptop may talk to the drone; otherwise why not ("Connected to …").
+   * Null when this laptop may talk to the drone; otherwise why not ("Black is flown by Amir on Barry's laptop").
    * Checked before every packet, so a drone another laptop owns never hears from this one.
    */
   mayTalk?: () => string | null;

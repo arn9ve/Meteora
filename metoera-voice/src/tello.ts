@@ -5,6 +5,7 @@
 // so a late "ok" can never be read as the answer to a later query.
 import { UdpPort, type Datagram } from './udp-port.ts';
 import { estimateDistanceCm, bearingDeg, type Box } from './distance.ts';
+import { World, normalize } from './world.ts';
 
 export type TelloSnapshot = {
   id: string;
@@ -19,6 +20,8 @@ export type TelloSnapshot = {
   heightCm: number | null;
   heading: number | null;
   lastError: string | null;
+  /** Short memory line: position, last actions, recent sightings. */
+  memory: string;
   timestamp: string;
 };
 
@@ -40,6 +43,10 @@ export type TelloOptions = {
   maxMoveCm?: number;
   /** Latest object detections from the camera (metoera-vision), or null when unavailable. */
   vision?: () => Promise<Detections | null>;
+  /** Latest camera frame as JPEG (with the YOLO boxes), for the vision model. */
+  frame?: () => Promise<Buffer | null>;
+  /** Asks Grok vision about one or more JPEG images; returns its text answer. */
+  askVision?: (images: Buffer[], prompt: string) => Promise<string | null>;
   /** Pause after each scan rotation before a frame counts, so the image is steady. */
   settleMs?: number;
   /**
@@ -69,6 +76,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Tello move for a drone-frame vector in cm, capped to maxLen; null when every axis is under 20 cm. */
+export function moveSdk(forward: number, left: number, up: number, maxLen: number): string | null {
+  const length = Math.hypot(forward, left, up);
+  if (length === 0) return null;
+  const k = Math.min(1, maxLen / length);
+  const f = Math.round(forward * k), l = Math.round(left * k), u = Math.round(up * k);
+  const big = [Math.abs(f) >= 20, Math.abs(l) >= 20, Math.abs(u) >= 20];
+  if (!big.some(Boolean)) return null;
+  if (big.filter(Boolean).length === 1) {
+    if (big[0]) return f > 0 ? `forward ${f}` : `back ${-f}`;
+    if (big[1]) return l > 0 ? `left ${l}` : `right ${-l}`;
+    return u > 0 ? `up ${u}` : `down ${-u}`;
+  }
+  return `go ${f} ${l} ${u} 40`; // Tello go: x forward, y left, z up, speed cm/s
+}
+
 export class RealTello {
   readonly #id: string;
   readonly #host: string;
@@ -81,6 +104,9 @@ export class RealTello {
   readonly #hoverMs: number;
   readonly #maxMoveCm: number;
   readonly #vision: (() => Promise<Detections | null>) | null;
+  readonly #frame: (() => Promise<Buffer | null>) | null;
+  readonly #askVision: ((images: Buffer[], prompt: string) => Promise<string | null>) | null;
+  readonly #world = new World();
   readonly #settleMs: number;
   readonly #mayTalk: () => string | null;
   #video = false;
@@ -120,6 +146,8 @@ export class RealTello {
     // Indoor cap for voice control; the SDK itself allows 500.
     this.#maxMoveCm = Math.min(500, Math.max(20, options.maxMoveCm ?? 100));
     this.#vision = options.vision ?? null;
+    this.#frame = options.frame ?? null;
+    this.#askVision = options.askVision ?? null;
     this.#settleMs = options.settleMs ?? 700;
     this.#mayTalk = options.mayTalk ?? (() => null);
   }
@@ -142,6 +170,7 @@ export class RealTello {
       heightCm: this.#heightCm,
       heading: this.#heading,
       lastError: this.#lastError,
+      memory: this.#world.summary(),
       timestamp: new Date().toISOString(),
     };
   }
@@ -203,6 +232,8 @@ export class RealTello {
     this.#interrupted = false;
     if (reply && isOk(reply)) {
       this.#flight = 'landed';
+      this.#world.applySdk('land');
+      this.#world.record('land', 'forced');
       return { ok: true, mode: 'real', action: 'force_land', drone: this.snapshot() };
     }
     return this.#fail(reply ? `Drone rejected land: ${reply.slice(0, 60)}` : 'No reply to land. Use the motor kill only if the drone is in danger');
@@ -364,6 +395,8 @@ export class RealTello {
       const objects = view.objects.filter((o) => o.confidence >= MIN_CONFIDENCE && (!label || o.label.toLowerCase() === label));
       const counts: Record<string, number> = {};
       for (const o of objects) counts[o.label] = (counts[o.label] ?? 0) + 1;
+      for (const o of objects) this.#world.see(o.label, bearingDeg(o.center.x), o.box ? estimateDistanceCm(o.label, o.box) : null);
+      this.#world.record('look', label ?? 'all');
       return {
         ok: true, mode: 'real', action: 'look', drone: this.snapshot(),
         seen: { counts, objects: objects.map((o) => ({ label: o.label, confidence: Math.round(o.confidence * 100) / 100, side: side(o.center.x), distanceCm: o.box ? estimateDistanceCm(o.label, o.box) : null })), note: 'distanceCm is estimated from the camera image (about ±30%)' },
@@ -381,6 +414,7 @@ export class RealTello {
         const frame = await this.#freshView(Date.now() + this.#settleMs, 4000);
         if (!frame && i === 0) return this.#fail(this.#visionError());
         const matches = frame ? frame.objects.filter((o) => o.confidence >= MIN_CONFIDENCE && o.label.toLowerCase() === label) : [];
+        for (const o of matches) this.#world.see(o.label, bearingDeg(o.center.x), o.box ? estimateDistanceCm(o.label, o.box) : null);
         views.push({ view: i + 1, degreesFromStart: i * 90, count: frame ? matches.length : null, sides: matches.map((o) => side(o.center.x)) });
         const turn = await this.#motion('rotate', 'cw 90', 15000);
         if (!turn.ok) return { ok: false, mode: 'real', error: `scan stopped after view ${i + 1}: ${'error' in turn ? turn.error : ''}`, views } as TelloResult;
@@ -412,6 +446,7 @@ export class RealTello {
       let startDistanceCm: number | null = null;
       let travelledCm = 0;
       let lastAngle = 0;
+      let trackX: number | null = null;
       let searched = false;
       const MAX_TRAVEL_CM = 400;
       const STEP_CM = Math.min(100, this.#maxMoveCm);
@@ -433,12 +468,19 @@ export class RealTello {
         if (!frame) return i === 0 ? this.#fail(this.#visionError()) : report(false, 'Lost the camera image');
         const matches = frame.objects.filter((o) => o.confidence >= MIN_CONFIDENCE && o.label.toLowerCase() === label && o.box);
         // The closest one is the biggest box.
-        const target = matches.sort((a, b) => b.box!.w * b.box!.h - a.box!.w * a.box!.h)[0];
+        // First look: the one most in front of the drone (among the near ones); afterwards: the
+        // one closest to where the target was, so it keeps following the same person.
+        const biggest = Math.max(0, ...matches.map((o) => o.box!.w * o.box!.h));
+        const candidates = matches.filter((o) => o.box!.w * o.box!.h >= biggest * 0.3);
+        const aim: number = trackX ?? 0.5;
+        const target: Detection | undefined = candidates.sort((a, b) => Math.abs(a.center.x - aim) - Math.abs(b.center.x - aim))[0];
+        if (target) trackX = target.center.x;
         if (!target) {
           if (i === 0) return this.#fail(`I do not see a ${label} in front of me`);
           // Lost it after a move: look once toward the side where it was.
           if (!searched) {
             searched = true;
+            trackX = lastAngle >= 0 ? 0.25 : 0.75; // after turning toward it, expect it on the other side
             const look = await turn(lastAngle >= 0 ? 30 : -30);
             if (!look.ok) return report(false, 'error' in look ? look.error : 'rotate failed');
             continue;
@@ -475,6 +517,7 @@ export class RealTello {
         const side = Math.sin(rad) * distanceCm;            // + right, - left
         if (ahead < 20 && Math.abs(side) < 20) {
           steps.push({ distanceCm, angleDeg, action: 'arrived' });
+          this.#world.see(label, angleDeg, distanceCm);
           return report(true, `About ${distanceCm} cm from the ${label}${Math.abs(angleDeg) >= 8 ? `, ${Math.abs(angleDeg)}° to the ${angleDeg > 0 ? 'right' : 'left'}` : ''}`);
         }
         const budget = MAX_TRAVEL_CM - travelledCm;
@@ -504,6 +547,104 @@ export class RealTello {
       return report(true, 'Stopped after the maximum number of steps');
     }
 
+    // ---- Memory: where the drone is, what it did, places, things it saw ----
+    if (value.action === 'memory') {
+      if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for memory');
+      return { ok: true, mode: 'real', action: 'memory', drone: this.snapshot(), memory: this.#world.memory() } as TelloResult;
+    }
+
+    if (value.action === 'mark') {
+      const name = typeof value.name === 'string' ? value.name.trim().toLowerCase().replace(/[^a-z0-9 _-]/g, '').slice(0, 30) : '';
+      if (!name || Object.keys(value).some((k) => !['droneId', 'action', 'name'].includes(k))) return this.#fail('mark needs a name');
+      const pose = this.#world.mark(name);
+      this.#world.record('mark', name);
+      return { ok: true, mode: 'real', action: 'mark', drone: this.snapshot(), place: { name, ...pose } } as TelloResult;
+    }
+
+    // Fly back to a remembered place (home, last_landing, previous, or one saved with mark) or
+    // to room coordinates, in straight lines of at most 200 cm, then face the old heading.
+    if (value.action === 'go_to') {
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'place', 'x', 'y'].includes(k))) return this.#fail('Unknown argument for go_to');
+      if (this.#flight !== 'flying') return this.#fail('go_to requires a flying drone: take off first');
+      let target: { x: number; y: number; z?: number; heading?: number } | null = null;
+      if (typeof value.place === 'string' && value.place.trim()) {
+        target = this.#world.place(value.place.trim().toLowerCase());
+        if (!target) return this.#fail(`No place called ${value.place}. Known places: ${Object.keys(this.#world.memory().places).join(', ') || 'none yet'}`);
+      } else if (typeof value.x === 'number' && typeof value.y === 'number') target = { x: value.x, y: value.y };
+      else return this.#fail('go_to needs a place or x and y');
+      for (let leg = 0; leg < 8; leg += 1) {
+        if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
+        const v = this.#world.vectorTo(target);
+        const sdk = moveSdk(v.forward, v.left, v.up, 200);
+        if (!sdk) break;
+        const move = await this.#motion('go_to', sdk, 20000);
+        if (!move.ok) return move;
+      }
+      if (target.heading !== undefined) {
+        const turn = this.#world.turnTo(target.heading);
+        if (Math.abs(turn) >= 10) {
+          const r = await this.#motion('go_to', `${turn > 0 ? 'cw' : 'ccw'} ${Math.min(Math.abs(turn), 180)}`, 15000);
+          if (!r.ok) return r;
+        }
+      }
+      this.#world.record('go_to', typeof value.place === 'string' ? value.place : `(${value.x},${value.y})`);
+      return { ok: true, mode: 'real', action: 'go_to', drone: this.snapshot(), pose: this.#world.pose, note: 'Position is dead reckoning: expect some tens of cm of drift.' } as TelloResult;
+    }
+
+    // ---- Grok vision: look at real camera images ----
+    if (value.action === 'describe') {
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'question'].includes(k))) return this.#fail('Unknown argument for describe');
+      if (!this.#frame || !this.#askVision) return this.#fail('Vision is not configured on the server');
+      const image = await this.#frame();
+      if (!image) return this.#fail(this.#visionError());
+      const question = typeof value.question === 'string' && value.question.trim() ? value.question.trim().slice(0, 300) : 'What do you see? Mention people (clothes, colours), objects and where they are (left, centre, right; near or far).';
+      const answer = await this.#askVision([image], `You are the camera of an indoor drone. Answer briefly and only from the image. ${question}`);
+      if (!answer) return this.#fail('The vision model did not answer');
+      this.#world.record('describe', question.slice(0, 60));
+      return { ok: true, mode: 'real', action: 'describe', drone: this.snapshot(), answer } as TelloResult;
+    }
+
+    // Find something described in words ("the person in the green t-shirt"): photos at 0°, 90°,
+    // 180° and 270° (turning clockwise), Grok vision picks the photo and where in it, then the
+    // drone turns to face it. Use approach afterwards to fly to it.
+    if (value.action === 'find') {
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'description'].includes(k))) return this.#fail('Unknown argument for find');
+      const description = typeof value.description === 'string' ? value.description.trim().slice(0, 200) : '';
+      if (!description) return this.#fail('find needs a description');
+      if (!this.#frame || !this.#askVision) return this.#fail('Vision is not configured on the server');
+      if (this.#flight !== 'flying') return this.#fail('find requires a flying drone: take off first');
+      const photos: Buffer[] = [];
+      const detections: (Detections | null)[] = [];
+      for (let i = 0; i < SCAN_VIEWS; i += 1) {
+        if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
+        const view = await this.#freshView(Date.now() + this.#settleMs, 4000);
+        const image = await this.#frame();
+        if (!image) return this.#fail(this.#visionError());
+        photos.push(image);
+        detections.push(view);
+        const turn = await this.#motion('rotate', 'cw 90', 15000);
+        if (!turn.ok) return turn;
+      }
+      const reply = await this.#askVision(photos, `These ${photos.length} photos come from an indoor drone camera, taken while turning clockwise: photo 1 straight ahead, photo 2 at 90° right, photo 3 behind (180°), photo 4 at 90° left. Find: "${description}". Answer with JSON only: {"photo": number 1-${photos.length} or null if not visible, "x": horizontal centre of it in that photo from 0 (left edge) to 1 (right edge), "note": "a few words about what you see there"}.`);
+      const parsed = (() => { try { return JSON.parse((reply ?? '').replace(/^[^{]*/, '').replace(/[^}]*$/, '')) as { photo?: unknown; x?: unknown; note?: unknown }; } catch { return null; } })();
+      const photo = typeof parsed?.photo === 'number' && Number.isInteger(parsed.photo) && parsed.photo >= 1 && parsed.photo <= photos.length ? parsed.photo : null;
+      const note = typeof parsed?.note === 'string' ? parsed.note.slice(0, 200) : (reply ?? '').slice(0, 200);
+      this.#world.record('find', description.slice(0, 60));
+      if (!photo) return { ok: true, mode: 'real', action: 'find', drone: this.snapshot(), found: false, note } as TelloResult;
+      const x = typeof parsed?.x === 'number' && parsed.x >= 0 && parsed.x <= 1 ? parsed.x : 0.5;
+      // Distance from the YOLO box nearest to that spot, when there is one.
+      const near = detections[photo - 1]?.objects.filter((o) => o.box && o.confidence >= MIN_CONFIDENCE).sort((a, b) => Math.abs(a.center.x - x) - Math.abs(b.center.x - x))[0];
+      const distanceCm = near && Math.abs(near.center.x - x) < 0.15 ? estimateDistanceCm(near.label, near.box!) : null;
+      // Back at the starting heading now: turn to face it (shortest way).
+      const turnDeg = Math.round(normalize((photo - 1) * 90 + bearingDeg(x)));
+      if (Math.abs(turnDeg) >= 5) {
+        const r = await this.#motion('rotate', `${turnDeg > 0 ? 'cw' : 'ccw'} ${Math.abs(turnDeg)}`, 15000);
+        if (!r.ok) return r;
+      }
+      const sighting = this.#world.see(near?.label ?? 'object', 0, distanceCm, description);
+      return { ok: true, mode: 'real', action: 'find', drone: this.snapshot(), found: true, photo, turnedDeg: turnDeg, distanceCm, note, sighting, next: 'It is now in front of the drone: use approach to fly to it.' } as TelloResult;
+    }
+
     if (value.action === 'status') {
       if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for status');
       const level = await this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 3000);
@@ -520,6 +661,8 @@ export class RealTello {
     if (!isOk(reply)) return this.#fail(`Drone rejected ${action}: ${reply.slice(0, 60)}`);
     onOk?.();
     this.#lastError = null;
+    this.#world.applySdk(sdk);
+    this.#world.record(action, sdk);
     return { ok: true, mode: 'real', action, drone: this.snapshot() };
   }
 
@@ -637,6 +780,7 @@ export class RealTello {
       } else this.#groundSince = 0;
     }
     this.#heading = read('yaw');
+    this.#world.applyTelemetry(this.#heightCm, this.#heading);
     this.#lastStateAt = Date.now();
   }
 

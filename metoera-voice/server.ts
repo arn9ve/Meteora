@@ -35,6 +35,31 @@ async function readVision(id: string): Promise<Detections | null> {
     return Array.isArray(data.objects) ? data : null;
   } catch { return null; }
 }
+// The latest camera frame of one drone (with YOLO boxes), as JPEG.
+async function readFrame(id: string): Promise<Buffer | null> {
+  try {
+    const response = await fetch(`${visionUrl}/frame.jpg?drone=${encodeURIComponent(id)}`, {signal:AbortSignal.timeout(2000)});
+    return response.ok ? Buffer.from(await response.arrayBuffer()) : null;
+  } catch { return null; }
+}
+// Grok vision looks at real camera images (describe, find). VISION_LLM_MODEL picks the model.
+const visionModel = process.env.VISION_LLM_MODEL ?? 'grok-4.20-non-reasoning';
+async function askVision(images: Buffer[], prompt: string): Promise<string | null> {
+  if (!process.env.XAI_API_KEY) return null;
+  try {
+    const response = await fetch('https://api.x.ai/v1/chat/completions', {
+      method:'POST', signal:AbortSignal.timeout(30000),
+      headers:{Authorization:`Bearer ${process.env.XAI_API_KEY}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({model:visionModel, max_tokens:300, messages:[{role:'user', content:[
+        ...images.map((image) => ({type:'image_url', image_url:{url:`data:image/jpeg;base64,${image.toString('base64')}`, detail:'low'}})),
+        {type:'text', text:prompt},
+      ]}]}),
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as {choices?: {message?: {content?: string}}[]};
+    return data.choices?.[0]?.message?.content?.trim() || null;
+  } catch { return null; }
+}
 // Each drone is enabled only when its IP is set (in .env or .env.tello):
 // TELLO_IP + TELLO_SETUP_SERIAL is droneId 'tello', RMTT_IP + RMTT_SETUP_SERIAL is droneId 'rmtt'.
 // Both share local ports 8889 and 8890 (UdpPort routes replies by sender IP), so they need different IPs.
@@ -46,7 +71,7 @@ function droneFromEnv(id: string, prefix: string): RealTello | null {
   const host = process.env[`${prefix}_IP`]?.trim();
   if (!host) return null;
   if (!isIpv4(host)) { console.log(`${prefix}_IP must be an IPv4 address (got "${host}"); that drone is off`); return null; }
-  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), mayTalk:() => refusal(id)});
+  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, mayTalk:() => refusal(id)});
 }
 const drones = new Map<string, RealTello>();
 for (const [id, prefix] of FLEET) {
@@ -211,7 +236,7 @@ type PilotSession = {name: string; lastSeen: number};
 const sessions = new Map<string, PilotSession>();
 const pilots = new Map<string, string>(); // droneId -> session id
 const PILOT_TIMEOUT_MS = 15000;
-const FOR_EVERYONE = new Set(['land', 'stop', 'emergency', 'status', 'look', 'photo', 'release']);
+const FOR_EVERYONE = new Set(['land', 'stop', 'emergency', 'status', 'look', 'photo', 'release', 'describe', 'memory']);
 const DRONE_NAMES: Record<string, string> = {tello:'Black', rmtt:'Red'};
 function sessionOf(req: http.IncomingMessage, res: http.ServerResponse, secure: boolean): string {
   let id = /(?:^|;\s*)metoera_pilot=([0-9a-f]{32})/.exec(req.headers.cookie ?? '')?.[1];

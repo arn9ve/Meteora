@@ -324,7 +324,8 @@ function fakeRoom(fake, { distanceCm = 350, angleDeg = 15 } = {}) {
     const p = pose();
     const dx = person.x - p.x, dy = person.y - p.y;
     const d = Math.hypot(dx, dy);
-    const bearingRight = -(Math.atan2(dy, dx) * 180 / Math.PI - p.heading); // + = right of the camera axis
+    let bearingRight = -(Math.atan2(dy, dx) * 180 / Math.PI - p.heading); // + = right of the camera axis
+    bearingRight = ((bearingRight % 360) + 540) % 360 - 180;
     if (Math.abs(bearingRight) > 35) return { timestamp: Date.now() / 1000, objects: [] }; // outside the 70° view
     const w = Math.min(1, (FOCAL_PX * 0.5) / (d / 100) / FRAME_W);
     const cx = 0.5 + Math.tan(rad(bearingRight)) / (2 * Math.tan(rad(35)));
@@ -383,4 +384,66 @@ test('approach does not move when the person is already closer than the stop dis
   const result = await drone.execute({ droneId: 'tello', action: 'approach' });
   assert.equal(result.ok, true);
   assert.equal(fake.received.some((c) => c.startsWith('forward')), false);
+});
+
+// ---- memory, go_to and find ----
+import { World } from '../src/world.ts';
+
+test('world tracks position from moves and turns, and the way back', () => {
+  const w = new World();
+  w.applySdk('takeoff');
+  w.applySdk('forward 100');
+  w.applySdk('ccw 90');     // now facing +y (left of the start)
+  w.applySdk('forward 50');
+  assert.deepEqual([w.pose.x, w.pose.y, w.pose.heading], [100, 50, 90]);
+  const back = w.vectorTo({ x: 0, y: 0 });
+  // Facing +y, the drone's left is -x: home is back 50 and 100 to its left.
+  assert.deepEqual([back.forward, back.left], [-50, 100]);
+  w.applySdk('go 0 -50 0 40'); // 50 cm to the right while facing +y = toward +x
+  assert.deepEqual([w.pose.x, w.pose.y], [150, 50]);
+  w.see('person', 0, 200);    // straight ahead (heading 90°) 2 m away
+  assert.deepEqual([w.memory().sightings[0].x, w.memory().sightings[0].y], [150, 250]);
+});
+
+test('go_to home flies back to the takeoff point, also after landing and taking off again', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake);
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  await drone.execute({ droneId: 'tello', action: 'move', direction: 'forward', centimeters: 100 });
+  await drone.execute({ droneId: 'tello', action: 'rotate', direction: 'counterclockwise', degrees: 90 });
+  await drone.execute({ droneId: 'tello', action: 'move', direction: 'forward', centimeters: 80 });
+  await drone.execute({ droneId: 'tello', action: 'land' });
+  assert.match((await drone.execute({ droneId: 'tello', action: 'go_to', place: 'home' })).error, /take off first/);
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const result = await drone.execute({ droneId: 'tello', action: 'go_to', place: 'home' });
+  assert.equal(result.ok, true, result.error);
+  assert.ok(Math.hypot(result.pose.x, result.pose.y) < 25, JSON.stringify(result.pose));
+  assert.equal(result.pose.heading, 0); // faces the original direction again
+  const mem = (await drone.execute({ droneId: 'tello', action: 'memory' })).memory;
+  assert.ok(mem.log.some((e) => e.action === 'land'));
+  assert.ok('last_landing' in mem.places);
+  assert.match((await drone.execute({ droneId: 'tello', action: 'go_to', place: 'kitchen' })).error, /No place called kitchen/);
+});
+
+test('find uses Grok vision on four photos, turns to the match, and approach then reaches it', async (t) => {
+  const fake = await fakeDrone();
+  const room = fakeRoom(fake, { distanceCm: 300, angleDeg: 100 }); // behind, to the right
+  let prompt = '';
+  const drone = tello(fake, {
+    settleMs: 10, vision: room, frame: async () => Buffer.from('jpeg'),
+    askVision: async (images, text) => { prompt = text; assert.equal(images.length, 4); return 'Sure: {"photo": 2, "x": 0.62, "note": "a man in a green t-shirt"}'; },
+  });
+  t.after(() => { drone.close(); fake.close(); });
+  assert.match((await drone.execute({ droneId: 'tello', action: 'find', description: 'person in a green t-shirt' })).error, /take off first/);
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const found = await drone.execute({ droneId: 'tello', action: 'find', description: 'person in a green t-shirt' });
+  assert.equal(found.ok, true, found.error);
+  assert.equal(found.found, true);
+  assert.match(prompt, /green t-shirt/);
+  assert.ok(found.turnedDeg >= 95 && found.turnedDeg <= 105, `turned ${found.turnedDeg}`);
+  const approach = await drone.execute({ droneId: 'tello', action: 'approach' });
+  assert.equal(approach.ok, true, approach.error);
+  const left = room.distanceNow();
+  assert.ok(left >= 90 && left <= 135, `ended ${Math.round(left)} cm away`);
 });

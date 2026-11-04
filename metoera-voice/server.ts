@@ -53,8 +53,19 @@ async function readJson(req: http.IncomingMessage): Promise<unknown> {
 const server = http.createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const path = req.url ?? '';
-  if (req.method === 'POST' && ['/session','/api/command'].includes(path)) {
+  if (req.method === 'POST' && ['/session','/api/command','/api/emergency'].includes(path)) {
     if (!req.headers.origin || !allowedOrigins.has(req.headers.origin)) { json(res, 403, {error:'Unauthorized origin'}); return; }
+    // Emergency buttons: they skip the command queue and cancel whatever is waiting in it.
+    if (path === '/api/emergency') {
+      try {
+        const body = await readJson(req) as {kind?: unknown};
+        if (!tello) json(res, 200, {ok:false, mode:'real', error:'The Tello is not configured.'});
+        else if (body?.kind === 'land') json(res, 200, await tello.forceLand());
+        else if (body?.kind === 'motors') json(res, 200, await tello.killMotors());
+        else json(res, 400, {ok:false, mode:'real', error:'kind must be land or motors'});
+      } catch { json(res, 400, {ok:false, mode:'real', error:'Invalid request'}); }
+      return;
+    }
     if (path === '/api/command') {
       try {
         const body = await readJson(req) as {droneId?: unknown; action?: unknown};
@@ -62,6 +73,7 @@ const server = http.createServer(async (req, res) => {
         else if (body?.droneId !== 'tello') json(res, 200, {ok:false, mode:'real', error:'Invalid droneId'});
         // stop must reach the drone while a move is still running, so it skips the queue.
         else if (body.action === 'stop' && Object.keys(body).length === 2) json(res, 200, await tello.stop());
+        else if (body.action === 'emergency' && Object.keys(body).length === 2) json(res, 200, await tello.killMotors());
         else json(res, 200, await tello.execute(body));
       }
       catch { json(res, 400, {ok:false, mode:'real', error:'Invalid request'}); }
@@ -93,7 +105,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, async () => {
     if (shuttingDown) process.exit(1);
     shuttingDown = true;
-    if (tello?.snapshot().flight === 'flying') { console.log('Landing the Tello before exit…'); await tello.emergencyLand(); }
+    if (tello?.snapshot().flight === 'flying') { console.log('Landing the Tello before exit…'); await tello.forceLand(); }
     tello?.close();
     process.exit(0);
   });

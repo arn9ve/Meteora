@@ -33,8 +33,20 @@ Grok calls one tool per action, in the order you say them, and waits for each re
 | "Fly" | `test_flight` | takeoff, hover 5 s, land |
 | "Do a 360 and count the people" | `scan` | `cw 90` four times, counting people from the camera at each stop |
 | "What do you see?" | `look` | none: reads the latest camera detections |
+| "Emergency" / "cut the motors" | `emergency` | `emergency`: motors stop at once, the drone drops |
+| "Stop listening" / "mute" | `mute` | none: turns the microphone off in the page |
 
 A sequence such as "take off, go up 50 centimeters, turn left 180, land" runs step by step. If a step fails, the rest is skipped and Grok says why; `stop` and `land` still go through.
+
+## Emergency controls
+
+Always on screen, even without a voice session:
+
+- **Switch off · land**: cancels every queued command, interrupts the one running, sends `land` (up to 3 tries) and ends the voice session.
+- **Cut motors**: sends `emergency` three times; the motors stop and the drone drops. The button needs a second tap within 2 s so a stray click cannot drop the drone. Saying "emergency" acts at once.
+- **Microphone button** (centre, during a session): turns the microphone off. No audio reaches Grok, what it already heard is cleared, its reply is cancelled, and any tool call that still arrives is ignored except `stop`, `land` and `emergency`. Tap again to turn it back on. Saying "stop listening" does the same; turning it back on needs the button.
+
+Both drone buttons call `POST /api/emergency` with `{kind: "land" | "motors"}`, which skips the command queue.
 
 ## Camera: counting and looking
 
@@ -55,7 +67,7 @@ A sequence such as "take off, go up 50 centimeters, turn left 180, land" runs st
 - `TELLO_MAX_MOVE_CM` in `.env.tello` raises the move limit (default 100, SDK maximum 500).
 - `GET /api/drones` returns `{drone}` with battery, height, heading, flight state and last error. `POST /api/command` takes `{droneId: "tello", action, ...}` and only accepts requests from the page's own origin.
 
-Safety: these limits are enforced on the server, but what Grok decides to call is not. There is no voice emergency motor stop. Keep someone next to the drone; Ctrl+C on the server lands it.
+Safety: these limits are enforced on the server, but what Grok decides to call is not. Keep someone next to the drone. Ctrl+C on the server lands it.
 
 ## Verification
 

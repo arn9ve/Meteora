@@ -18,6 +18,7 @@ async function fakeDrone({ serial = SERIAL, battery = '93', duplicateOk = true }
     else if (text === 'sn?') reply(serial, 60); // arrives after the duplicate "ok"
     else if (text === 'battery?') reply(battery);
     else if (text === 'forward 100') reply('ok', 800); // slow move, used to test stop
+    else if (text === 'emergency') { /* the real Tello does not reply */ }
     else if (['takeoff', 'land', 'stop'].includes(text) || /^(forward|back|left|right|up|down|cw|ccw) \d+$/.test(text) || /^flip [lrfb]$/.test(text) || /^speed \d+$/.test(text)) reply('ok', 50);
     else reply('error');
   });
@@ -104,12 +105,12 @@ test('keepalive uses battery? and records no error', async (t) => {
   assert.equal(drone.snapshot().lastError, null);
 });
 
-test('emergencyLand lands a flying drone', async (t) => {
+test('forceLand lands a flying drone', async (t) => {
   const fake = await fakeDrone();
   const drone = tello(fake);
   t.after(() => { drone.close(); fake.close(); });
   await drone.execute({ droneId: 'tello', action: 'takeoff' });
-  await drone.emergencyLand();
+  assert.equal((await drone.forceLand()).ok, true);
   assert.equal(fake.received.at(-1), 'land');
 });
 
@@ -156,7 +157,7 @@ test('stop interrupts a running move and the next command waits for it', async (
   await new Promise((resolve) => setTimeout(resolve, 100));
   const stop = drone.stop();
   const land = drone.execute({ droneId: 'tello', action: 'land' });
-  assert.equal((await move).error, 'move interrupted by stop');
+  assert.equal((await move).error, 'move interrupted');
   assert.equal((await stop).ok, true);
   assert.equal((await land).ok, true);
   const order = fake.received.filter((c) => ['forward 100', 'stop', 'land'].includes(c));
@@ -216,4 +217,45 @@ test('look summarises what the camera sees now', async (t) => {
   assert.equal(result.ok, true);
   assert.deepEqual(result.seen.counts, { person: 2, cup: 1 });
   assert.deepEqual(result.seen.objects.filter((o) => o.label === 'person').map((o) => o.side), ['left', 'right']);
+});
+
+test('force land cancels queued commands and interrupts the running one', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake);
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const move = drone.execute({ droneId: 'tello', action: 'move', direction: 'forward', centimeters: 100 });
+  const queued = drone.execute({ droneId: 'tello', action: 'rotate', direction: 'clockwise', degrees: 90 });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const land = await drone.forceLand();
+  assert.equal(land.ok, true);
+  assert.equal(land.action, 'force_land');
+  assert.equal((await move).error, 'move interrupted');
+  assert.equal((await queued).error, 'Cancelled by switch off');
+  assert.equal(fake.received.includes('cw 90'), false);
+  assert.equal(drone.snapshot().flight, 'landed');
+  // New commands after the switch off work normally.
+  assert.equal((await drone.execute({ droneId: 'tello', action: 'takeoff' })).ok, true);
+});
+
+test('motor kill sends emergency three times and cancels the queue', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake);
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const queued = drone.execute({ droneId: 'tello', action: 'move', direction: 'up', centimeters: 50 });
+  const kill = await drone.killMotors();
+  assert.equal(kill.ok, true);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(fake.received.filter((c) => c === 'emergency').length, 3);
+  assert.equal((await queued).error, 'Cancelled by switch off');
+  assert.equal(drone.snapshot().flight, 'landed');
+});
+
+test('force land before any connection reports it clearly', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake);
+  t.after(() => { drone.close(); fake.close(); });
+  assert.equal((await drone.forceLand()).error, 'The Tello is not connected yet');
+  assert.equal((await drone.killMotors()).error, 'The Tello is not connected yet');
 });

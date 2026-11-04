@@ -71,7 +71,8 @@ export class RealTello {
   readonly #vision: (() => Promise<Detections | null>) | null;
   readonly #settleMs: number;
   #video = false;
-  #interrupted = false;
+  #interrupted = false; // true while stop / force land / motor kill own the drone
+  #generation = 0; // bumped by force land and motor kill; queued commands from before are cancelled
   #stopDone: Promise<unknown> = Promise.resolve(); // queued work waits for a running stop
   #command: dgram.Socket | null = null;
   #state: dgram.Socket | null = null;
@@ -119,10 +120,12 @@ export class RealTello {
   }
 
   execute(value: unknown): Promise<TelloResult> {
+    const generation = this.#generation;
     const run = this.#queue.then(async () => {
       await this.#stopDone;
+      if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
       this.#busy = true;
-      try { return await this.#execute(value); } finally { this.#busy = false; }
+      try { return await this.#execute(value, generation); } finally { this.#busy = false; }
     });
     this.#queue = run.catch(() => undefined);
     return run;
@@ -140,7 +143,7 @@ export class RealTello {
     this.#interrupted = true;
     this.#pending?.resolve(null);
     this.#pending = null;
-    const reply = await this.#request('stop', isOk, 3000);
+    const reply = await this.#request('stop', isOk, 3000, true);
     this.#interrupted = false;
     if (reply === null) return this.#fail('No reply to stop');
     if (!isOk(reply)) return this.#fail(`Drone rejected stop: ${reply.slice(0, 60)}`);
@@ -148,11 +151,45 @@ export class RealTello {
   }
 
   /** Lands if flying. Used on server shutdown. Bypasses the queue on purpose. */
-  async emergencyLand(): Promise<void> {
-    if (this.#flight !== 'flying' || !this.#command) return;
+  /**
+   * Switch off: cancel everything queued, interrupt what is running and land now.
+   * Bypasses the queue on purpose. Also used when the server shuts down.
+   */
+  forceLand(): Promise<TelloResult> {
+    this.#generation += 1;
+    const run = this.#forceLand();
+    this.#stopDone = run.catch(() => undefined);
+    return run;
+  }
+
+  async #forceLand(): Promise<TelloResult> {
+    if (!this.#command || !this.#verified) return this.#fail('The Tello is not connected yet');
+    this.#interrupted = true;
     this.#pending?.resolve(null);
     this.#pending = null;
-    if (isOk((await this.#request('land', isOk, 15000)) ?? '')) this.#flight = 'landed';
+    let reply: string | null = null;
+    for (let attempt = 0; attempt < 3 && !(reply && isOk(reply)); attempt += 1) reply = await this.#request('land', isOk, 10000, true);
+    this.#interrupted = false;
+    if (reply && isOk(reply)) {
+      this.#flight = 'landed';
+      return { ok: true, mode: 'real', action: 'force_land', drone: this.snapshot() };
+    }
+    return this.#fail(reply ? `Drone rejected land: ${reply.slice(0, 60)}` : 'No reply to land. Use the motor kill only if the drone is in danger');
+  }
+
+  /** Emergency: the motors stop at once and the drone drops. Bypasses everything. */
+  async killMotors(): Promise<TelloResult> {
+    this.#generation += 1;
+    const socket = this.#command;
+    if (!socket) return this.#fail('The Tello is not connected yet');
+    this.#interrupted = true;
+    this.#pending?.resolve(null);
+    this.#pending = null;
+    // No reply is awaited: every datagram must leave before anything else happens.
+    for (let i = 0; i < 3; i += 1) await new Promise((resolve) => socket.send('emergency', this.#port, this.#host, resolve));
+    this.#flight = 'landed';
+    this.#interrupted = false;
+    return { ok: true, mode: 'real', action: 'emergency', drone: this.snapshot() };
   }
 
   close(): void {
@@ -166,7 +203,7 @@ export class RealTello {
     this.#state = null;
   }
 
-  async #execute(value: unknown): Promise<TelloResult> {
+  async #execute(value: unknown, generation = this.#generation): Promise<TelloResult> {
     if (!isRecord(value) || value.droneId !== 'tello') return this.#fail('Invalid droneId');
     const ready = await this.#ensureReady();
     if (ready) return this.#fail(ready);
@@ -186,13 +223,15 @@ export class RealTello {
     if (value.action === 'test_flight') {
       if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for test_flight');
       if (this.#flight === 'flying') return this.#fail('test_flight requires a landed drone');
-      const up = await this.#execute({ droneId: 'tello', action: 'takeoff' });
+      const up = await this.#execute({ droneId: 'tello', action: 'takeoff' }, generation);
       if (!up.ok) return up;
       const until = Date.now() + this.#hoverMs;
       while (Date.now() < until) {
+        if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
         await this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 1500); // keeps the SDK session alive
         await new Promise((resolve) => setTimeout(resolve, Math.min(1000, Math.max(0, until - Date.now()))));
       }
+      if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
       let down: TelloResult = this.#fail('land not attempted');
       for (let attempt = 0; attempt < 3 && !down.ok; attempt += 1) down = await this.#motion('land', 'land', 20000, () => { this.#flight = 'landed'; });
       return down.ok ? { ok: true, mode: 'real', action: 'test_flight', drone: this.snapshot() } : down;
@@ -264,6 +303,7 @@ export class RealTello {
       if (this.#flight !== 'flying') return this.#fail('scan requires a flying drone');
       const views: { view: number; degreesFromStart: number; count: number | null; sides: string[] }[] = [];
       for (let i = 0; i < SCAN_VIEWS; i += 1) {
+        if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
         const frame = await this.#freshView(Date.now() + this.#settleMs, 4000);
         if (!frame && i === 0) return this.#fail(this.#visionError());
         const matches = frame ? frame.objects.filter((o) => o.confidence >= MIN_CONFIDENCE && o.label.toLowerCase() === label) : [];
@@ -294,7 +334,7 @@ export class RealTello {
 
   async #motion(action: string, sdk: string, timeoutMs: number, onOk?: () => void): Promise<TelloResult> {
     const reply = await this.#request(sdk, isOk, timeoutMs);
-    if (reply === null) return this.#fail(this.#interrupted ? `${action} interrupted by stop` : `No reply to ${action}`);
+    if (reply === null) return this.#fail(this.#interrupted ? `${action} interrupted` : `No reply to ${action}`);
     if (!isOk(reply)) return this.#fail(`Drone rejected ${action}: ${reply.slice(0, 60)}`);
     onOk?.();
     this.#lastError = null;
@@ -399,9 +439,11 @@ export class RealTello {
     this.#state = state;
   }
 
-  #request(text: string, accept: (reply: string) => boolean, timeoutMs: number): Promise<string | null> {
+  #request(text: string, accept: (reply: string) => boolean, timeoutMs: number, priority = false): Promise<string | null> {
     const socket = this.#command;
     if (!socket) return Promise.resolve(null);
+    // While stop / force land own the drone, nothing else may take the single reply slot.
+    if (this.#interrupted && !priority) return Promise.resolve(null);
     return new Promise((resolve) => {
       const timer = setTimeout(() => done(null), timeoutMs);
       const done = (reply: string | null) => {

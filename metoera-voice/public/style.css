@@ -19,3 +19,13 @@
 .voice.live .conversation{padding-top:22px}.voice.live .session-info{min-height:30px}.voice.live #pattern{inset:80px 0 0}
 @media(min-width:800px){.empty-state{margin-top:65px}.suggestion{min-height:140px}.suggestion p{font-size:16px}}
 @media(max-height:650px){.empty-state{margin-top:5px}.suggestion{min-height:85px;padding:8px}.suggestion p{margin-top:6px}.controls{height:72px}.session-info{gap:5px}.tap-to-speak{padding:5px 15px}}
+
+.safety{display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap;margin-top:-14px}
+.safety button{border-radius:20px;padding:8px 14px;font-size:11px;font-weight:600;letter-spacing:.02em;min-height:36px}
+.switch-off{border:1px solid #1f1f1f;background:#1f1f1f;color:#fff}.switch-off:hover{background:#000}
+.kill-motors{border:1px solid #c62828;background:#fff;color:#c62828}.kill-motors:hover{background:#c62828;color:#fff}
+#safetyStatus{font-size:10px;color:#888;margin-right:4px}
+.controls{grid-template-columns:1fr auto 1fr}.controls #muteButton{grid-column:2;justify-self:center}.controls #settingsButton{grid-column:3}
+.controls .mute .slash{display:none}.controls .mute.muted{background:#c62828;border-color:#c62828}.controls .mute.muted .slash{display:block;stroke:#fff}
+.voice.muted .symbol.active{color:#eee}
+@media(max-width:400px){.safety{margin-top:-8px}.safety button{padding:7px 11px}}

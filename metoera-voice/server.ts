@@ -256,8 +256,11 @@ async function takePhoto(id: string) {
 
 // Live annotated video of one drone, passed through from metoera-vision.
 async function proxyVideo(id: string, res: http.ServerResponse) {
+  await proxyStream(`${visionUrl}/stream?drone=${encodeURIComponent(id)}`, res);
+}
+async function proxyStream(source: string, res: http.ServerResponse) {
   try {
-    const upstream = await fetch(`${visionUrl}/stream?drone=${encodeURIComponent(id)}`);
+    const upstream = await fetch(source);
     if (!upstream.ok || !upstream.body) { res.writeHead(503).end(); return; }
     res.writeHead(200, {'Content-Type':upstream.headers.get('content-type') ?? 'multipart/x-mixed-replace', 'Cache-Control':'no-store'});
     const reader = upstream.body.getReader();
@@ -266,6 +269,52 @@ async function proxyVideo(id: string, res: http.ServerResponse) {
     res.end();
   } catch { if (!res.headersSent) res.writeHead(503); res.end(); }
 }
+// ---- Red-zone phone cameras (metoera-redzone, Masoud) ----
+// Up to three phones watch a zone each and report when a person enters it. This server reads
+// their state every second, keeps where each zone is on the room map (set on the Cameras page),
+// turns a new intrusion into an event for the pages, and proxies the phone previews.
+const redzoneUrl = (process.env.REDZONE_URL ?? 'http://127.0.0.1:18791').replace(/\/$/, '');
+const redzonePhonePort = Number(process.env.REDZONE_PHONE_PORT ?? 18792);
+const zonesPath = join(root, '.redzone-zones.json');
+type ZonePoint = {x: number; y: number};
+const zones: Record<string, ZonePoint> = JSON.parse(await readFile(zonesPath, 'utf8').catch(() => '{}')) as Record<string, ZonePoint>;
+type RedzoneSlot = {id: string; name?: string; online: boolean; watching: boolean; armed: boolean; personScore?: number | null; lastIntrusionAt: number | null; hasPreview: boolean; joined: boolean};
+type RedzoneEvent = {id: string; slot: string; at: number; claimedBy: string | null};
+const redzone = {available:false, slots:[] as RedzoneSlot[], events:[] as RedzoneEvent[]};
+const intrusionSeen = new Map<string, number | null>();
+async function pollRedzone() {
+  try {
+    const response = await fetch(`${redzoneUrl}/api/slots`, {signal:AbortSignal.timeout(1500)});
+    const data = await response.json() as {slots?: RedzoneSlot[]};
+    if (!Array.isArray(data.slots)) throw new Error('bad slots');
+    redzone.available = true;
+    redzone.slots = data.slots;
+    for (const slot of data.slots) {
+      // The first poll only learns the current state: old intrusions do not fire.
+      if (intrusionSeen.has(slot.id) && slot.lastIntrusionAt && slot.lastIntrusionAt !== intrusionSeen.get(slot.id)) {
+        redzone.events.push({id:`${slot.id}-${slot.lastIntrusionAt}`, slot:slot.id, at:slot.lastIntrusionAt, claimedBy:null});
+        if (redzone.events.length > 20) redzone.events.shift();
+        console.log(`${new Date().toLocaleTimeString()} Red zone ${slot.id}: person entered${zones[slot.id] ? ` (zone at ${zones[slot.id].x},${zones[slot.id].y})` : ' (zone position not set)'}`);
+      }
+      intrusionSeen.set(slot.id, slot.lastIntrusionAt);
+    }
+  } catch { redzone.available = false; }
+}
+void pollRedzone();
+setInterval(() => { void pollRedzone(); }, 1000).unref();
+async function redzonePhoneLink(slot: string): Promise<string | null> {
+  const key = (await readFile(join(root, '..', 'metoera-redzone', '.phone', 'key.txt'), 'utf8').catch(() => '')).trim();
+  return key && lanAddress ? `https://${lanAddress}:${redzonePhonePort}/?key=${key}&slot=${slot}` : null;
+}
+async function redzoneView() {
+  const slotIds = redzone.slots.length ? redzone.slots.map((s) => s.id) : ['1', '2', '3'];
+  return {
+    available:redzone.available, console:`${redzoneUrl}/console`,
+    slots:await Promise.all(slotIds.map(async (id) => ({...(redzone.slots.find((s) => s.id === id) ?? {id, online:false}), zone:zones[id] ?? null, link:await redzonePhoneLink(id)}))),
+    events:redzone.events.slice(-10).map((e) => ({...e, zone:zones[e.slot] ?? null, claimed:e.claimedBy !== null})),
+  };
+}
+
 function json(res: http.ServerResponse, status: number, value: unknown) {
   res.writeHead(status, {'Content-Type':'application/json; charset=utf-8'}).end(JSON.stringify(value));
 }
@@ -327,10 +376,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
     catch { res.writeHead(404).end(); }
     return;
   }
+  const camera = /^\/cameras\/([123])\.mjpeg$/.exec(path);
+  if (req.method === 'GET' && camera) { await proxyStream(`${redzoneUrl}/api/slots/${camera[1]}/preview.mjpeg`, res); return; }
   const video = /^\/video\/([a-z]+)$/.exec(path);
   // Only this laptop's drones stream here; another laptop's drone sends its video to that laptop.
   if (req.method === 'GET' && video && drones.has(video[1]) && refusal(video[1]) === null) { await proxyVideo(video[1], res); return; }
-  if (req.method === 'POST' && ['/session','/api/command','/api/emergency','/api/pilot','/api/nearest'].includes(path)) {
+  if (req.method === 'POST' && ['/session','/api/command','/api/emergency','/api/pilot','/api/nearest','/api/zones','/api/redzone/claim'].includes(path)) {
     if (!req.headers.origin || !allowedOrigins.has(req.headers.origin)) { json(res, 403, {error:'Unauthorized origin'}); return; }
     // Emergency buttons: they skip the command queue and cancel whatever is waiting in it.
     if (path === '/api/emergency') {
@@ -372,6 +423,35 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
     // "Send the nearest drone there": picks the drone that can get to room point x,y soonest
     // (connected, this person may fly it, battery ≥ 25%), counting a takeoff as 100 cm extra,
     // and the spot 100 cm short of the target on the way in.
+    // Where a camera's red zone is on the room map: x,y in cm, or "from" a drone's current spot.
+    if (path === '/api/zones') {
+      try {
+        const body = await readJson(req) as {slot?: unknown; x?: unknown; y?: unknown; from?: unknown};
+        const slot = String(body?.slot ?? '');
+        if (!/^[123]$/.test(slot)) { json(res, 400, {ok:false, error:'slot must be 1, 2 or 3'}); return; }
+        let point: ZonePoint | null = null;
+        if (typeof body.from === 'string' && drones.has(body.from)) { const p = drones.get(body.from)!.map().pose; point = {x:p.x, y:p.y}; }
+        else if (typeof body.x === 'number' && typeof body.y === 'number' && Math.abs(body.x) < 5000 && Math.abs(body.y) < 5000) point = {x:Math.round(body.x), y:Math.round(body.y)};
+        if (body.x === null) { delete zones[slot]; }
+        else if (!point) { json(res, 400, {ok:false, error:'x and y, or from: tello | rmtt'}); return; }
+        else zones[slot] = point;
+        await writeFile(zonesPath, JSON.stringify(zones, null, 2));
+        json(res, 200, {ok:true, slot, zone:zones[slot] ?? null});
+      } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
+      return;
+    }
+    // Several pages can be open: only the first one to claim an intrusion sends a drone.
+    if (path === '/api/redzone/claim') {
+      try {
+        const body = await readJson(req) as {id?: unknown};
+        const event = redzone.events.find((e) => e.id === body?.id);
+        if (!event) { json(res, 404, {ok:false, error:'No such event'}); return; }
+        if (event.claimedBy && event.claimedBy !== sid) { json(res, 200, {ok:false, error:'Another page is already sending a drone'}); return; }
+        event.claimedBy = sid;
+        json(res, 200, {ok:true, zone:zones[event.slot] ?? null});
+      } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
+      return;
+    }
     if (path === '/api/nearest') {
       try {
         const body = await readJson(req) as {x?: unknown; y?: unknown; stopCm?: unknown};
@@ -472,14 +552,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
   }
   // Top-down room map: every drone flown here, in the shared room frame.
   if (req.method === 'GET' && path === '/api/map') {
-    json(res, 200, {frame:'cm; x = toward the wall both drones faced at the start, y = left', drones:[...drones].filter(([id]) => refusal(id) === null).map(([id, drone]) => ({id, ...drone.map()}))});
+    json(res, 200, {frame:'cm; x = toward the wall both drones faced at the start, y = left', drones:[...drones].filter(([id]) => refusal(id) === null).map(([id, drone]) => ({id, ...drone.map()})), zones:Object.entries(zones).map(([slot, p]) => ({slot, ...p, alert:redzone.events.some((e) => e.slot === slot && Date.now() - e.at < 30000)}))});
     return;
   }
   if (req.method === 'GET' && path === '/api/drones') { json(res, 200, {drones:droneViews().map((v) => {
     // The pilot here; another laptop's pilot is in owner.pilot.
     const pilot = drones.has(String(v.id)) ? pilots.pilotOf(String(v.id)) : null;
     return {...v, pilot:pilot ? {name:pilot, me:pilots.isPilot(sid, String(v.id))} : null};
-  }), me:claims?.name ?? null, clients:claims?.clients() ?? [], claimsError, pilot:{name:pilots.nameOf(sid), online:pilots.online()}}); return; }
+  }), me:claims?.name ?? null, clients:claims?.clients() ?? [], claimsError, pilot:{name:pilots.nameOf(sid), online:pilots.online()}, redzone:await redzoneView()}); return; }
   if (req.method !== 'GET' || !files[path]) { res.writeHead(404).end(); return; }
   try { const file = files[path]; res.writeHead(200, {'Content-Type':types[extname(file)]}).end(await readFile(join(root,'public',file))); }
   catch { res.writeHead(500).end(); }

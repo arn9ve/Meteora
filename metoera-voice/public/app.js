@@ -264,7 +264,7 @@ function memoryNote(){
 }
 const ownershipKey=()=>JSON.stringify([drones.map(d=>[d.id,d.owner?.state,d.owner?.name??'',d.owner?.pilot??'',Boolean(d.owner?.locked),d.pilot?.name??'',Boolean(d.pilot?.me)]),myName]);
 let sessionKey='';
-function sessionConfig(){ return {instructions:INSTRUCTIONS+pilotNote()+memoryNote(),tools:buildTools()} }
+function sessionConfig(){ return {instructions:INSTRUCTIONS+pilotNote()+memoryNote()+zoneNote(),tools:buildTools()} }
 // Every drone tool gets the drone parameter; mute is about the microphone, not a drone.
 const droneTool=(name,description,properties={},required=[])=>tool(name,description,{drone:droneParam(),...properties},['emergency','land','stop'].includes(name)?required:['drone',...required]);
 const buildTools=()=>[
@@ -350,6 +350,7 @@ async function refreshDrone() {
     $('#droneState').textContent = parts.map(p => p.text).join(' · ');
     for (const [i, p] of parts.entries()) $(`#dot${i}`).setAttribute('data-state', p.state);
     decideName(data.pilot&&typeof data.pilot.name==='string'?data.pilot.name:'', true);
+    handleRedzone(data.redzone ?? null);
   } catch {
     drones = [];
     $('#droneState').textContent = 'Server unreachable';
@@ -406,6 +407,77 @@ $('#pilotLine').addEventListener('click',()=>{
   warning.textContent=flying.length?`You fly ${flying.join(' and ')}. With another name you can't command it, and the server lands it after 15 s.`:'';
   nameDialog.showModal();
 });
+// ---- Red-zone phone cameras (Masoud's metoera-redzone) ----
+// The server reads the phones; this page shows them, tells Grok about intrusions and, when
+// "send the nearest drone" is on, claims the event (only one page may) and dispatches a drone.
+const camerasDialog=$('#camerasDialog');
+let redzone=null, eventsPrimed=false, autoSend=false;
+const seenEvents=new Set();
+try { autoSend=localStorage.getItem('metoera_autosend')==='1'; } catch {}
+$('#autoSend').checked=autoSend;
+$('#autoSend').addEventListener('change',()=>{ autoSend=$('#autoSend').checked; try{localStorage.setItem('metoera_autosend',autoSend?'1':'0')}catch{} });
+let alertTimer=0;
+function showZoneAlert(text){ const el=$('#zoneAlert'); el.textContent=text; el.hidden=false; clearTimeout(alertTimer); alertTimer=setTimeout(()=>{el.hidden=true},12000); }
+function zoneNote(){
+  const set=(redzone?.slots||[]).filter(s=>s.zone).map(s=>`zone ${s.id} at (${s.zone.x},${s.zone.y})`);
+  return set.length?` Red-zone phone cameras watch these spots of the room map: ${set.join(', ')}. When a person enters one you get an automatic update; to send a drone there, call dispatch with that x,y and label person.`:'';
+}
+function handleRedzone(rz){
+  redzone=rz;
+  if(!rz) return;
+  if(!eventsPrimed){ for(const e of rz.events) seenEvents.add(e.id); eventsPrimed=true; }
+  for(const e of rz.events){ if(seenEvents.has(e.id)) continue; seenEvents.add(e.id); void onIntrusion(e); }
+  if(camerasDialog.open) updateCameras();
+}
+async function onIntrusion(e){
+  const where=e.zone?`at (${e.zone.x},${e.zone.y}) on the room map`:'(its position on the map is not set yet)';
+  showZoneAlert(`Person in red zone ${e.slot}${autoSend&&e.zone?' · sending the nearest drone':''}`);
+  log(`Red zone ${e.slot}`,'Person entered');
+  const sending=autoSend&&e.zone;
+  notifyGrok(`Red zone ${e.slot}: a person entered ${where}. ${sending?'The nearest drone is being sent automatically; say so in a few words.':'Tell the person in one short sentence and offer to send a drone.'}`);
+  if(!sending) return;
+  try {
+    const r=await fetch('/api/redzone/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:e.id})});
+    const j=await r.json();
+    if(j.ok) void runDispatch({x:e.zone.x,y:e.zone.y,label:'person'},generation);
+  } catch {}
+}
+function cameraCard(slot){
+  const card=document.createElement('article');
+  card.className='camera-card';
+  card.dataset.slot=slot.id;
+  card.innerHTML=`<div class="drone-card-head"><h3>Camera ${slot.id}</h3><span class="camera-state"></span></div><div class="camera-video"><img alt=""><span>No picture yet</span></div><div class="camera-link"><input readonly aria-label="Link for phone ${slot.id}"><button class="copy">Copy</button></div><div class="camera-zone"><span>Zone x, y</span><input class="zx" type="number" placeholder="x cm" aria-label="Zone ${slot.id} x"><input class="zy" type="number" placeholder="y cm" aria-label="Zone ${slot.id} y"><button class="save">Save</button></div><div class="camera-zone-actions"><button class="from" data-from="tello">Here is Black</button><button class="from" data-from="rmtt">Here is Red</button><button class="clear">Clear</button></div><p class="camera-result" role="status"></p>`;
+  const out=card.querySelector('.camera-result');
+  const save=async body=>{ try{ const r=await fetch('/api/zones',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slot:slot.id,...body})}); const j=await r.json(); out.textContent=j.ok?(j.zone?`Zone ${slot.id} saved at (${j.zone.x}, ${j.zone.y})`:`Zone ${slot.id} cleared`):j.error; await refreshDrone(); }catch{ out.textContent='Server unreachable'; } };
+  card.querySelector('.save').addEventListener('click',()=>{ const x=Number(card.querySelector('.zx').value), y=Number(card.querySelector('.zy').value); if(Number.isFinite(x)&&Number.isFinite(y)&&card.querySelector('.zx').value!==''&&card.querySelector('.zy').value!=='') void save({x,y}); else out.textContent='Type both x and y (cm), or use a drone position.'; });
+  for(const b of card.querySelectorAll('.from')) b.addEventListener('click',()=>void save({from:b.dataset.from}));
+  card.querySelector('.clear').addEventListener('click',()=>void save({x:null}));
+  card.querySelector('.copy').addEventListener('click',async()=>{ const v=card.querySelector('.camera-link input').value; try{ await navigator.clipboard.writeText(v); out.textContent='Link copied'; }catch{ card.querySelector('.camera-link input').select(); out.textContent='Select and copy the link'; } });
+  return card;
+}
+function updateCameras(){
+  const grid=$('#cameraGrid');
+  if(!redzone){ $('#camerasNote').textContent='Server unreachable.'; return; }
+  $('#camerasNote').textContent=redzone.available?`Camera service running · Mac console: ${redzone.console}`:'Camera service not running: start it with npm start in metoera-redzone.';
+  for(const slot of redzone.slots){
+    let card=grid.querySelector?.(`[data-slot="${slot.id}"]`);
+    if(!card){ card=cameraCard(slot); grid.append(card); }
+    const state=!slot.online?'Phone not connected':`${slot.watching?'Watching':'Connected, not watching'}${typeof slot.personScore==='number'&&slot.personScore>0?` · person ${Math.round(slot.personScore*100)}%`:''}${slot.armed?' · ARM on':''}`;
+    card.querySelector('.camera-state').textContent=state;
+    card.classList.toggle('alert',(redzone.events||[]).some(e=>e.slot===slot.id&&Date.now()-e.at<15000));
+    const link=card.querySelector('.camera-link input');
+    if(link.value!==(slot.link||'')) link.value=slot.link||'Start metoera-redzone to get the phone link';
+    const zx=card.querySelector('.zx'), zy=card.querySelector('.zy');
+    if(document.activeElement!==zx&&document.activeElement!==zy){ zx.value=slot.zone?slot.zone.x:''; zy.value=slot.zone?slot.zone.y:''; }
+    const img=card.querySelector('.camera-video img'), box=card.querySelector('.camera-video');
+    if(slot.online&&slot.hasPreview){ if(!img.getAttribute('src')) img.src=`/cameras/${slot.id}.mjpeg`; box.classList.remove('off'); }
+    else { img.removeAttribute('src'); box.classList.add('off'); }
+  }
+}
+$('#camerasButton').addEventListener('click',()=>{ updateCameras(); camerasDialog.showModal(); });
+camerasDialog.querySelector('.dismiss').addEventListener('click',()=>camerasDialog.close());
+camerasDialog.addEventListener('close',()=>{ for(const img of $('#cameraGrid').querySelectorAll?.('img')??[]) img.removeAttribute('src'); });
+
 // Top-down room map: both drones, their paths, saved places and what they saw.
 const mapDialog=$('#mapDialog');
 const SVGNS='http://www.w3.org/2000/svg';
@@ -419,6 +491,7 @@ async function renderMap(){
   // Room frame: x forward (drawn up), y left (drawn left). Screen: X = -y, Y = -x.
   const pts=[];
   for(const d of data.drones){pts.push(d.pose,...d.path,...Object.values(d.places||{}),...d.sightings,...(d.obstacles||[]))}
+  pts.push(...(data.zones||[]));
   const xs=pts.map(p=>-p.y), ys=pts.map(p=>-p.x);
   let minX=Math.min(-150,...xs)-80, maxX=Math.max(150,...xs)+80, minY=Math.min(-150,...ys)-80, maxY=Math.max(150,...ys)+80;
   const span=Math.max(400,maxX-minX,maxY-minY), cx=(minX+maxX)/2, cy=(minY+maxY)/2;
@@ -429,6 +502,11 @@ async function renderMap(){
   for(let g=Math.ceil(minY/100)*100;g<=minY+span;g+=100) svg.append(svgEl('line',{x1:minX,y1:g,x2:minX+span,y2:g,class:'map-grid','stroke-width':unit}));
   const colours={tello:'#1c1c1c',rmtt:'#d32f2f'};
   let things=0;
+  // Red zones watched by the phone cameras.
+  for(const z of data.zones||[]){
+    svg.append(svgEl('circle',{cx:-z.y,cy:-z.x,r:45*unit,fill:'#e53935',opacity:z.alert?.35:.12,stroke:'#e53935','stroke-width':(z.alert?3:1.5)*unit}));
+    svg.append(svgEl('text',{x:-z.y,y:-z.x+4*unit,'font-size':11*unit,'font-weight':600,fill:'#c62828','text-anchor':'middle'},`Zone ${z.slot}${z.alert?' · person!':''}`));
+  }
   for(const d of data.drones){
     const c=colours[d.id]||'#555';
     // Depth hits (walls, furniture), like a LiDAR sweep.

@@ -16,3 +16,4 @@ __pycache__/
 
 .phone/
 photos/
+.redzone-zones.json

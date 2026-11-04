@@ -13,7 +13,7 @@ function setup() {
     addEventListener(name, fn) { this.handlers[name] = fn; }
     click() { return this.handlers.click?.({target:this}); }
     querySelector(selector) { if (!this.children) this.children = new Map(); if (!this.children.has(selector)) this.children.set(selector,new Element()); return this.children.get(selector); }
-    setAttribute() {} append() {} replaceChildren() {} showModal() { this.open = true; } close() { this.open = false; }
+    setAttribute() {} append() {} prepend() {} replaceChildren() {} showModal() { this.open = true; } close() { this.open = false; }
     getBoundingClientRect() { return {left:0,right:10,top:0,bottom:10}; }
   }
   const element = selector => {if(!elements.has(selector)) elements.set(selector,new Element());return elements.get(selector)};

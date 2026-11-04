@@ -155,6 +155,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
         // stop must reach the drone while a move is still running, so it skips the queue.
         else if (body.action === 'stop' && Object.keys(body).length === 2) json(res, 200, await drone.stop());
         else if (body.action === 'emergency' && Object.keys(body).length === 2) json(res, 200, await drone.killMotors());
+        // A spoken "land" is always sent to the drone, whatever the server believes about its
+        // state (a lost takeoff reply must never block a landing), and it skips the queue.
+        else if (body.action === 'land' && Object.keys(body).length === 2) json(res, 200, await drone.forceLand());
         else json(res, 200, await drone.execute(body));
       }
       catch { json(res, 400, {ok:false, mode:'real', error:'Invalid request'}); }

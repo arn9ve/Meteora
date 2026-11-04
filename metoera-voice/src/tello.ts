@@ -80,6 +80,7 @@ export class RealTello {
   #linkError: string | null = null;
   #probing = false;
   #verifiedAt = 0;
+  #groundSince = 0;
   #interrupted = false; // true while stop / force land / motor kill own the drone
   #generation = 0; // bumped by force land and motor kill; queued commands from before are cancelled
   #stopDone: Promise<unknown> = Promise.resolve(); // queued work waits for a running stop
@@ -113,6 +114,11 @@ export class RealTello {
     this.#maxMoveCm = Math.min(500, Math.max(20, options.maxMoveCm ?? 100));
     this.#vision = options.vision ?? null;
     this.#settleMs = options.settleMs ?? 700;
+  }
+
+  /** True while a queued command (takeoff, move, scan…) is running on this drone. */
+  get busy(): boolean {
+    return this.#busy;
   }
 
   snapshot(): TelloSnapshot {
@@ -482,6 +488,15 @@ export class RealTello {
     if (bat === null) return;
     this.#battery = bat;
     this.#heightCm = read('h');
+    // Telemetry is the truth about flying: a lost takeoff or land reply must not leave the
+    // server thinking the drone is somewhere else.
+    if (this.#heightCm !== null) {
+      if (this.#heightCm >= 20) { this.#flight = 'flying'; this.#groundSince = 0; }
+      else if (this.#heightCm <= 0 && !this.#busy) {
+        this.#groundSince ||= Date.now();
+        if (Date.now() - this.#groundSince > 2000) this.#flight = 'landed';
+      } else this.#groundSince = 0;
+    }
     this.#heading = read('yaw');
     this.#lastStateAt = Date.now();
   }

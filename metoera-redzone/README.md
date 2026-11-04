@@ -28,13 +28,24 @@ Mac oversight uses **MJPEG ~4 fps** (small JPEGs) + status. Phone keeps continuo
 | Control | Default | Behavior |
 | --- | --- | --- |
 | ARM | **OFF** | Log + phone alert only |
-| ARM ON | explicit (console or phone) | Takeoff hook to voice/webhook |
+| ARM ON | explicit (console or phone) | Mission / takeoff hook to voice/webhook |
 | Restart | — | All slots disarm |
+
+## Pad nav (cam1 → Black)
+
+No LiDAR. Six physical space pads = room positions (`pads/refs/`, config `pad-nav.json`).
+
+**First demo:** Phone **slot 1** person+dwell intrusion with **ARM ON** emits mission  
+`Black: takeoff home (pad-01 / P1) → go to target (pad-02 / P2)`.
+
+- Takeoff still requires ARM.
+- Path moves after takeoff stay **off** until `pad-nav.json` `missions.cam1.executePath` is true (or `PAD_NAV_EXECUTE_PATH=1`) and distances are measured.
+- Offline pad ID demo: `python tools/pad_recognize.py --self-test` (venv with opencv-python + numpy).
 
 ## APIs (summary)
 
-- `GET /api/slots`, `GET /api/stream` (SSE)
+- `GET /api/slots`, `GET /api/stream` (SSE), `GET /api/pad-nav`
 - `POST /api/slots/:id/join|heartbeat|preview|intrusion|command`
 - `GET /api/slots/:id/preview.jpg`
 
-Optional env: `REDZONE_PORT`, `REDZONE_PHONE_PORT`, `METOERA_VOICE_URL`, `REDZONE_WEBHOOK_URL`, `REDZONE_DEBOUNCE_MS`, `PHONE_ACCESS=off`.
+Optional env: `REDZONE_PORT`, `REDZONE_PHONE_PORT`, `METOERA_VOICE_URL`, `REDZONE_WEBHOOK_URL`, `REDZONE_DEBOUNCE_MS`, `PAD_NAV_EXECUTE_PATH`, `PHONE_ACCESS=off`.

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "pads": [
+    { "id": "pad-01", "position": "P1", "label": "Constellation A (home default)" },
+    { "id": "pad-02", "position": "P2", "label": "Constellation B (cam1 target)" },
+    { "id": "pad-03", "position": "P3", "label": "Constellation C" },
+    { "id": "pad-04", "position": "P4", "label": "Constellation D" },
+    { "id": "pad-05", "position": "P5", "label": "Constellation E" },
+    { "id": "pad-06", "position": "P6", "label": "Constellation F" }
+  ],
+  "missions": {
+    "cam1": {
+      "slotId": "1",
+      "drone": "Black",
+      "droneId": "tello",
+      "homePad": "pad-01",
+      "targetPad": "pad-02",
+      "summary": "Black: takeoff home (pad-01 / P1) → go to target pad (pad-02 / P2)",
+      "executePath": false,
+      "path": [
+        { "action": "takeoff" },
+        { "action": "move", "direction": "forward", "centimeters": 80, "note": "PLACEHOLDER — measure P1→P2 room distance" },
+        { "action": "land", "note": "Land on/near pad-02 once CV confirms pad ID" }
+      ]
+    }
+  },
+  "safety": {
+    "armRequired": true,
+    "note": "No takeoff or path steps run unless the triggering slot is ARM ON. Restart disarms all slots."
+  }
+}

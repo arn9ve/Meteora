@@ -30,11 +30,13 @@ export type TelloOptions = {
   keepaliveMs?: number;
   minTakeoffBattery?: number;
   hoverMs?: number;
+  maxMoveCm?: number;
 };
 
 const MOVE_DIRECTIONS = ['forward', 'back', 'left', 'right', 'up', 'down'] as const;
 const ROTATE_DIRECTIONS = ['clockwise', 'counterclockwise'] as const;
-const MOVE_LIMIT_CM = 100; // indoor cap for voice control; the SDK itself allows 500
+const FLIP_DIRECTIONS = { left: 'l', right: 'r', forward: 'f', back: 'b' } as const;
+const FLIP_MIN_BATTERY = 50; // the Tello refuses flips below 50%
 const isOk = (text: string) => /^ok$/i.test(text);
 
 type Pending = { accept: (text: string) => boolean; resolve: (text: string | null) => void };
@@ -52,6 +54,9 @@ export class RealTello {
   readonly #keepaliveMs: number;
   readonly #minTakeoffBattery: number;
   readonly #hoverMs: number;
+  readonly #maxMoveCm: number;
+  #interrupted = false;
+  #stopDone: Promise<unknown> = Promise.resolve(); // queued work waits for a running stop
   #command: dgram.Socket | null = null;
   #state: dgram.Socket | null = null;
   #pending: Pending | null = null;
@@ -75,6 +80,8 @@ export class RealTello {
     this.#keepaliveMs = options.keepaliveMs ?? 5000;
     this.#minTakeoffBattery = options.minTakeoffBattery ?? 20;
     this.#hoverMs = options.hoverMs ?? 5000;
+    // Indoor cap for voice control; the SDK itself allows 500.
+    this.#maxMoveCm = Math.min(500, Math.max(20, options.maxMoveCm ?? 100));
   }
 
   snapshot(): TelloSnapshot {
@@ -94,11 +101,31 @@ export class RealTello {
 
   execute(value: unknown): Promise<TelloResult> {
     const run = this.#queue.then(async () => {
+      await this.#stopDone;
       this.#busy = true;
       try { return await this.#execute(value); } finally { this.#busy = false; }
     });
     this.#queue = run.catch(() => undefined);
     return run;
+  }
+
+  /** Hover in place now, interrupting a running move. Bypasses the queue on purpose. */
+  stop(): Promise<TelloResult> {
+    const run = this.#stop();
+    this.#stopDone = run.catch(() => undefined);
+    return run;
+  }
+
+  async #stop(): Promise<TelloResult> {
+    if (!this.#command || !this.#verified) return this.#fail('The Tello is not connected yet');
+    this.#interrupted = true;
+    this.#pending?.resolve(null);
+    this.#pending = null;
+    const reply = await this.#request('stop', isOk, 3000);
+    this.#interrupted = false;
+    if (reply === null) return this.#fail('No reply to stop');
+    if (!isOk(reply)) return this.#fail(`Drone rejected stop: ${reply.slice(0, 60)}`);
+    return { ok: true, mode: 'real', action: 'stop', drone: this.snapshot() };
   }
 
   /** Lands if flying. Used on server shutdown. Bypasses the queue on purpose. */
@@ -162,8 +189,8 @@ export class RealTello {
       const { direction, centimeters } = value;
       if (Object.keys(value).some((k) => !['droneId', 'action', 'direction', 'centimeters'].includes(k))) return this.#fail('Unknown argument for move');
       if (!MOVE_DIRECTIONS.includes(direction as never)) return this.#fail('Invalid move direction');
-      if (typeof centimeters !== 'number' || !Number.isInteger(centimeters) || centimeters < 20 || centimeters > MOVE_LIMIT_CM) {
-        return this.#fail(`centimeters must be an integer from 20 to ${MOVE_LIMIT_CM} for the real drone`);
+      if (typeof centimeters !== 'number' || !Number.isInteger(centimeters) || centimeters < 20 || centimeters > this.#maxMoveCm) {
+        return this.#fail(`centimeters must be an integer from 20 to ${this.#maxMoveCm}`);
       }
       if (this.#flight !== 'flying') return this.#fail('move requires a flying drone');
       return this.#motion('move', `${direction} ${centimeters}`, 15000);
@@ -178,12 +205,38 @@ export class RealTello {
       return this.#motion('rotate', `${direction === 'clockwise' ? 'cw' : 'ccw'} ${degrees}`, 15000);
     }
 
+    if (value.action === 'flip') {
+      const { direction } = value;
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'direction'].includes(k))) return this.#fail('Unknown argument for flip');
+      if (typeof direction !== 'string' || !Object.hasOwn(FLIP_DIRECTIONS, direction)) return this.#fail('Invalid flip direction');
+      if (this.#flight !== 'flying') return this.#fail('flip requires a flying drone');
+      const level = await this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 3000);
+      if (level === null || !/^\d{1,3}$/.test(level)) return this.#fail('Battery level unavailable');
+      this.#battery = Number(level);
+      if (this.#battery < FLIP_MIN_BATTERY) return this.#fail(`Flips need at least ${FLIP_MIN_BATTERY}% battery (now ${this.#battery}%)`);
+      return this.#motion('flip', `flip ${FLIP_DIRECTIONS[direction as keyof typeof FLIP_DIRECTIONS]}`, 15000);
+    }
+
+    if (value.action === 'speed') {
+      const { cmPerSecond } = value;
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'cmPerSecond'].includes(k))) return this.#fail('Unknown argument for speed');
+      if (typeof cmPerSecond !== 'number' || !Number.isInteger(cmPerSecond) || cmPerSecond < 10 || cmPerSecond > 100) return this.#fail('cmPerSecond must be an integer from 10 to 100');
+      return this.#motion('speed', `speed ${cmPerSecond}`, 3000);
+    }
+
+    if (value.action === 'status') {
+      if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for status');
+      const level = await this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 3000);
+      if (level !== null && /^\d{1,3}$/.test(level)) this.#battery = Number(level);
+      return { ok: true, mode: 'real', action: 'status', drone: this.snapshot() };
+    }
+
     return this.#fail('Invalid action');
   }
 
   async #motion(action: string, sdk: string, timeoutMs: number, onOk?: () => void): Promise<TelloResult> {
     const reply = await this.#request(sdk, isOk, timeoutMs);
-    if (reply === null) return this.#fail(`No reply to ${action}`);
+    if (reply === null) return this.#fail(this.#interrupted ? `${action} interrupted by stop` : `No reply to ${action}`);
     if (!isOk(reply)) return this.#fail(`Drone rejected ${action}: ${reply.slice(0, 60)}`);
     onOk?.();
     this.#lastError = null;
@@ -218,6 +271,7 @@ export class RealTello {
   #keepaliveTick(): void {
     if (this.#busy || this.#pending) return;
     const run = this.#queue.then(async () => {
+      await this.#stopDone;
       const level = await this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 3000);
       if (level !== null && /^\d{1,3}$/.test(level)) this.#battery = Number(level);
     });

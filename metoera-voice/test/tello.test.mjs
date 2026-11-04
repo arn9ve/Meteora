@@ -9,18 +9,20 @@ const SERIAL = '0TQZTEST000001';
 async function fakeDrone({ serial = SERIAL, battery = '93', duplicateOk = true } = {}) {
   const socket = dgram.createSocket('udp4');
   const received = [];
+  let closed = false;
   socket.on('message', (payload, peer) => {
     const text = payload.toString();
     received.push(text);
-    const reply = (value, delay = 0) => setTimeout(() => socket.send(value, peer.port, peer.address), delay);
+    const reply = (value, delay = 0) => setTimeout(() => { if (!closed) socket.send(value, peer.port, peer.address); }, delay);
     if (text === 'command') { reply('ok'); if (duplicateOk) reply('ok', 30); }
     else if (text === 'sn?') reply(serial, 60); // arrives after the duplicate "ok"
     else if (text === 'battery?') reply(battery);
-    else if (['takeoff', 'land'].includes(text) || /^(forward|back|left|right|up|down|cw|ccw) \d+$/.test(text)) reply('ok', 50);
+    else if (text === 'forward 100') reply('ok', 800); // slow move, used to test stop
+    else if (['takeoff', 'land', 'stop'].includes(text) || /^(forward|back|left|right|up|down|cw|ccw) \d+$/.test(text) || /^flip [lrfb]$/.test(text) || /^speed \d+$/.test(text)) reply('ok', 50);
     else reply('error');
   });
   await new Promise((resolve) => socket.bind(0, '127.0.0.1', resolve));
-  return { port: socket.address().port, received, close: () => socket.close() };
+  return { port: socket.address().port, received, close: () => { closed = true; socket.close(); } };
 }
 
 function tello(fake, options = {}) {
@@ -84,9 +86,9 @@ test('moves above 100 cm and motions on the ground are rejected locally', async 
   assert.equal((await drone.execute({ droneId: 'tello', action: 'move', direction: 'forward', centimeters: 50 })).error, 'move requires a flying drone');
   await drone.execute({ droneId: 'tello', action: 'takeoff' });
   const far = await drone.execute({ droneId: 'tello', action: 'move', direction: 'forward', centimeters: 300 });
-  assert.match(far.error, /from 20 to 100/);
+  assert.match(far.error, /20 to 100/);
   assert.equal(fake.received.some((c) => c.startsWith('forward')), false);
-  assert.equal((await drone.execute({ droneId: 'tello', action: 'flip' })).error, 'Invalid action');
+  assert.equal((await drone.execute({ droneId: 'tello', action: 'barrel_roll' })).error, 'Invalid action');
 });
 
 test('keepalive uses battery? and records no error', async (t) => {
@@ -120,4 +122,52 @@ test('test_flight takes off, hovers and lands as one action', async (t) => {
   assert.equal(result.action, 'test_flight');
   assert.equal(drone.snapshot().flight, 'landed');
   assert.deepEqual(fake.received.filter((c) => ['takeoff', 'land'].includes(c)), ['takeoff', 'land']);
+});
+
+test('flip, speed and status map to SDK commands', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake);
+  t.after(() => { drone.close(); fake.close(); });
+  assert.equal((await drone.execute({ droneId: 'tello', action: 'speed', cmPerSecond: 30 })).ok, true);
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  assert.equal((await drone.execute({ droneId: 'tello', action: 'flip', direction: 'left' })).ok, true);
+  const status = await drone.execute({ droneId: 'tello', action: 'status' });
+  assert.equal(status.ok, true);
+  assert.equal(status.drone.battery, 93);
+  assert.deepEqual(fake.received.filter((c) => /^(speed|flip)/.test(c)), ['speed 30', 'flip l']);
+  assert.match((await drone.execute({ droneId: 'tello', action: 'speed', cmPerSecond: 500 })).error, /10 to 100/);
+});
+
+test('flip is refused below 50% battery', async (t) => {
+  const fake = await fakeDrone({ battery: '40' });
+  const drone = tello(fake);
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  assert.match((await drone.execute({ droneId: 'tello', action: 'flip', direction: 'back' })).error, /at least 50%/);
+  assert.equal(fake.received.some((c) => c.startsWith('flip')), false);
+});
+
+test('stop interrupts a running move and the next command waits for it', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake);
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const move = drone.execute({ droneId: 'tello', action: 'move', direction: 'forward', centimeters: 100 });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const stop = drone.stop();
+  const land = drone.execute({ droneId: 'tello', action: 'land' });
+  assert.equal((await move).error, 'move interrupted by stop');
+  assert.equal((await stop).ok, true);
+  assert.equal((await land).ok, true);
+  const order = fake.received.filter((c) => ['forward 100', 'stop', 'land'].includes(c));
+  assert.deepEqual(order, ['forward 100', 'stop', 'land']);
+});
+
+test('move limit is configurable', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake, { maxMoveCm: 200 });
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  assert.equal((await drone.execute({ droneId: 'tello', action: 'move', direction: 'up', centimeters: 150 })).ok, true);
+  assert.match((await drone.execute({ droneId: 'tello', action: 'move', direction: 'up', centimeters: 250 })).error, /20 to 200/);
 });

@@ -113,23 +113,45 @@ const allowedOrigins = new Set([`http://localhost:${port}`, `http://127.0.0.1:${
 const phonePort = Number(process.env.PHONE_PORT ?? port + 1);
 const lanAddress = Object.values(networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal && /^(192\.168|10\.|172\.(1[6-9]|2\d|3[01]))\./.test(a.address))?.address;
 const phoneDir = join(root, '.phone');
-async function phoneSetup(): Promise<{key: string; cert: Buffer; certKey: Buffer} | null> {
+// Phones only trust the page (and allow the microphone) when the certificate chains to a
+// trusted root. So the Mac makes a small local root ("Metoera local CA") once, valid 90 days and
+// name-constrained to private LAN addresses, so it can never vouch for an internet site. Its
+// public part is installed once on the phone (see the download page on PHONE_CERT_PORT); the
+// server certificate for this IP is signed with it. Private keys stay in .phone/ (0600).
+function openssl(args: string[]) { execFileSync('/usr/bin/openssl', args, {stdio:'ignore'}); }
+async function localCertificate(ip: string) {
+  const caPath = join(phoneDir, 'ca.pem');
+  const caKeyPath = join(phoneDir, 'ca-key.pem');
+  const caDerPath = join(phoneDir, 'metoera-ca.cer');
+  if (!(await readFile(caPath).catch(() => null)) || !(await readFile(caKeyPath).catch(() => null))) {
+    openssl(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '90', '-sha256', '-subj', '/CN=Metoera local CA',
+      '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
+      '-addext', 'nameConstraints=critical,permitted;IP:192.168.0.0/255.255.0.0,permitted;IP:10.0.0.0/255.0.0.0,permitted;IP:172.16.0.0/255.240.0.0',
+      '-keyout', caKeyPath, '-out', caPath]);
+    await chmod(caKeyPath, 0o600);
+    openssl(['x509', '-in', caPath, '-outform', 'der', '-out', caDerPath]);
+  }
+  const certPath = join(phoneDir, `cert-ca-${ip}.pem`);
+  const keyPath = join(phoneDir, `tls-ca-${ip}.pem`);
+  if (!(await readFile(certPath).catch(() => null)) || !(await readFile(keyPath).catch(() => null))) {
+    const csrPath = join(phoneDir, `leaf-${ip}.csr`);
+    const extPath = join(phoneDir, `leaf-${ip}.cnf`);
+    await writeFile(extPath, `basicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=IP:${ip}\n`);
+    openssl(['req', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=Metoera', '-keyout', keyPath, '-out', csrPath]);
+    await chmod(keyPath, 0o600);
+    openssl(['x509', '-req', '-in', csrPath, '-CA', caPath, '-CAkey', caKeyPath, '-CAcreateserial', '-days', '89', '-sha256', '-extfile', extPath, '-out', certPath]);
+  }
+  const ca = await readFile(caPath);
+  return {cert:Buffer.concat([await readFile(certPath), ca]), certKey:await readFile(keyPath), caDer:await readFile(caDerPath)};
+}
+async function phoneSetup(): Promise<{key: string; cert: Buffer; certKey: Buffer; caDer: Buffer} | null> {
   if (!lanAddress || process.env.PHONE_ACCESS === 'off') return null;
   await mkdir(phoneDir, {recursive:true, mode:0o700});
   let key = (await readFile(join(phoneDir, 'key.txt'), 'utf8').catch(() => '')).trim();
   if (!/^[0-9a-f]{32}$/.test(key)) { key = randomBytes(16).toString('hex'); await writeFile(join(phoneDir, 'key.txt'), key, {mode:0o600}); }
-  const certPath = join(phoneDir, `cert-${lanAddress}.pem`);
-  const keyPath = join(phoneDir, `tls-${lanAddress}.pem`);
-  let cert = await readFile(certPath).catch(() => null);
-  let certKey = await readFile(keyPath).catch(() => null);
-  if (!cert || !certKey) {
-    execFileSync('/usr/bin/openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '30', '-subj', '/CN=Metoera', '-addext', `subjectAltName=IP:${lanAddress}`, '-keyout', keyPath, '-out', certPath], {stdio:'ignore'});
-    await chmod(keyPath, 0o600);
-    cert = await readFile(certPath);
-    certKey = await readFile(keyPath);
-  }
+  const {cert, certKey, caDer} = await localCertificate(lanAddress);
   allowedOrigins.add(`https://${lanAddress}:${phonePort}`);
-  return {key, cert, certKey};
+  return {key, cert, certKey, caDer};
 }
 const phone = await phoneSetup().catch((error) => { console.log(`Phone access off: ${error instanceof Error ? error.message : error}`); return null; });
 function cookieKey(req: http.IncomingMessage): string {
@@ -320,9 +342,19 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
   catch { res.writeHead(500).end(); }
 }
 const server = http.createServer((req, res) => { void handle(req, res, false); });
+// Plain HTTP page on the LAN that only hands out the public root certificate and the steps to
+// trust it. Nothing else is served here (no drones, no key).
+const certPort = Number(process.env.PHONE_CERT_PORT ?? port - 1);
 if (phone) {
+  const steps = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Metoera certificate</title><style>body{font:16px/1.5 -apple-system,Arial,sans-serif;margin:0;padding:24px 16px;max-width:560px;color:#222;background:#fff}a.button{display:block;text-align:center;background:#111;color:#fff;padding:14px;border-radius:12px;text-decoration:none;margin:18px 0}li{margin:8px 0}small{color:#777}</style></head><body><h1>Trust Metoera on this phone</h1><p>Once per phone, so Safari opens the drone page and allows the microphone.</p><a class="button" href="/metoera-ca.cer">1. Download the certificate</a><h2>iPhone</h2><ol><li>Tap <b>Allow</b> when asked to download a configuration profile.</li><li>Settings → <b>Profile Downloaded</b> → Install (passcode) → Install.</li><li>Settings → General → About → <b>Certificate Trust Settings</b> → turn on <b>Metoera local CA</b>.</li><li>Open the link with the key the Mac printed (https://${lanAddress}:${phonePort}/?key=…).</li></ol><h2>Android</h2><ol><li>Settings → Security → Encryption &amp; credentials → Install a certificate → <b>CA certificate</b> → pick metoera-ca.cer.</li><li>Open the link with the key.</li></ol><p><small>The certificate only works for local network addresses (192.168.x.x, 10.x.x.x) and expires in 90 days. Remove it any time from the same settings.</small></p></body></html>`;
+  http.createServer((req, res) => {
+    const path = new URL(req.url ?? '/', 'http://localhost').pathname;
+    if (path === '/metoera-ca.cer') res.writeHead(200, {'Content-Type':'application/x-x509-ca-cert', 'Content-Disposition':'attachment; filename="metoera-ca.cer"'}).end(phone.caDer);
+    else if (path === '/') res.writeHead(200, {'Content-Type':'text/html; charset=utf-8'}).end(steps);
+    else res.writeHead(404).end();
+  }).listen(certPort, '0.0.0.0', () => console.log(`Phone certificate (once per phone): http://${lanAddress}:${certPort}/`));
   https.createServer({cert:phone.cert, key:phone.certKey}, (req, res) => { void handle(req, res, true); })
-    .listen(phonePort, '0.0.0.0', () => console.log(`Phone (same Wi-Fi): https://${lanAddress}:${phonePort}/?key=${phone.key}\n  The certificate is self-signed: accept the warning once on the phone.`));
+    .listen(phonePort, '0.0.0.0', () => console.log(`Phone (same Wi-Fi): https://${lanAddress}:${phonePort}/?key=${phone.key}\n  First time on a phone: open the certificate page (link above) and trust it.`));
 }
 server.listen(port, '127.0.0.1', () => console.log(`Metoera: http://localhost:${port} (${drones.size ? [...drones.keys()].map((id) => `${id} at ${process.env[`${id.toUpperCase()}_IP`]}`).join(', ') : NO_DRONES})${claims ? `\n  This laptop is "${claims.name}" to the others (UDP ${claimsPort}). A drone another laptop flies stays see-only.` : ''}`));
 // Check this laptop's drone links in the background so the page shows whether each one is

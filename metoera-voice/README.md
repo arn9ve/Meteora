@@ -59,7 +59,7 @@ There is no authentication between laptops: anyone on the Wi-Fi could announce a
 On start the server also listens with HTTPS on the local network (port 18788) and prints a link like `https://192.168.5.16:18788/?key=…`. Open it on a phone on the same Wi-Fi.
 
 - The key in the link is required for every request, so other people on the shared Wi-Fi cannot fly the drones. Do not share it. It is kept in `.phone/key.txt` (git-ignored); delete the folder to get a new one.
-- The certificate is self-signed (also in `.phone/`): accept the browser warning once. HTTPS is needed because phones only allow the microphone on secure pages. Android Chrome works with this; iOS Safari may refuse the microphone with a self-signed certificate.
+- The first time on each phone, open the certificate page the server prints (`http://<mac-ip>:18786/`) and follow it: download `metoera-ca.cer`, install it, and on iPhone turn it on in Settings → General → About → Certificate Trust Settings. It is a local root made once on this Mac (`.phone/`, git-ignored), valid 90 days and limited to private LAN addresses, so it cannot vouch for any internet site. After that Safari and Chrome open the page without warnings and allow the microphone.
 - `PHONE_ACCESS=off` disables it; `PHONE_PORT` changes the port.
 
 ## Cameras (YOLO on both drones)

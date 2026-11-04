@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// Read-only SDK check of the Tello on the shared LAN. Sends only: command, battery?, sdk?, sn?.
+// Read-only SDK check of the Tello on the shared LAN. Sends only: command, battery?, sdk?, sn?, hardware?.
+// TELLO_EXPECT_SERIAL=... compares against another drone (e.g. the RoboMaster TT) instead of .env.tello.
 // No flight, Wi-Fi or configuration commands. Run from macOS Terminal (Local Network access).
 import dgram from 'node:dgram';
 import { readFile } from 'node:fs/promises';
 
 const host = process.argv[2] ?? '192.168.5.137';
-const expectedSerial = (await readFile(new URL('../.env.tello', import.meta.url), 'utf8').catch(() => ''))
+const expectedSerial = process.env.TELLO_EXPECT_SERIAL?.trim() || (await readFile(new URL('../.env.tello', import.meta.url), 'utf8').catch(() => ''))
   .match(/^TELLO_SETUP_SERIAL=(.*)$/m)?.[1]?.trim();
 
 const ACCEPT = {
@@ -13,6 +14,8 @@ const ACCEPT = {
   'battery?': (t) => /^\d{1,3}$/.test(t),
   'sdk?': (t) => /^\d+(?:\.\d+)*$/.test(t),
   'sn?': (t) => /^[A-Z0-9]{8,}$/i.test(t) && !/^ok$/i.test(t),
+  // SDK 3.0: RMTT when the expansion board (ESP32) is attached, TELLO otherwise.
+  'hardware?': (t) => /^[A-Za-z]{4,10}$/.test(t) && !/^ok$/i.test(t),
 };
 
 const socket = dgram.createSocket('udp4');
@@ -44,9 +47,11 @@ if (ready === 'ok') {
   const battery = await query('battery?');
   const sdk = await query('sdk?');
   const serial = await query('sn?');
+  const hardware = await query('hardware?');
   console.log(`Battery: ${battery ?? 'unavailable'}%`);
   console.log(`SDK version: ${sdk ?? 'unavailable'}`);
-  console.log(`Serial: ${serial ? (serial === expectedSerial ? 'matches your Tello' : 'DIFFERENT from expected') : 'unavailable'}`);
+  console.log(`Hardware: ${hardware ?? 'unavailable'}`);
+  console.log(`Serial: ${serial ? (serial.toUpperCase() === expectedSerial?.toUpperCase() ? 'matches your Tello' : `DIFFERENT from expected (drone reports ${serial})`) : 'unavailable'}`);
 }
 socket.close();
 console.log('Done. No flight command sent.');

@@ -44,6 +44,12 @@ All scripts run from macOS Terminal with Node 24. None of them flies the drone e
 
 `.env.tello` (local, git-ignored) holds the setup values. Copy `.env.tello.example` and fill it in. `connect-tello.mjs` only accepts `hackathon` as the SSID; change that check if you use another network.
 
+## Two drones (Tello EDU + RoboMaster TT)
+
+Both drones reply to the computer's UDP 8889 and send telemetry to 8890, so two clients that each bind those ports cannot run together (EADDRINUSE). `src/udp-port.ts` opens each port once per process and routes every datagram by the drone's IP (and, for replies, its port 8889). Set `TELLO_IP`/`TELLO_SETUP_SERIAL` (droneId `tello`) and `RMTT_IP`/`RMTT_SETUP_SERIAL` (droneId `rmtt`) in `.env.tello`. `/api/command` picks the drone by `droneId`, `/api/emergency` lands or cuts every configured drone, and `/api/drones` lists both. The voice tools still send `droneId: 'tello'` only.
+
+RoboMaster TT notes (SDK 3.0): `hardware?` answers `RMTT` with the expansion board fitted, `TELLO` without it. With the board fitted, Wi-Fi comes from the board's ESP32 (`RMTT-xxxxxx`); send `ap <ssid> <password>` in direct mode, then move the board switch to router mode. Not yet tried on our RMTT: whether its replies come from port 8889 (the code requires it) and whether they go to local 8889 like the EDU. `tools/diagnose-tello.mjs` checks this, but its MAC check is for our EDU.
+
 ## Full procedure
 
 1. Charge the drone. Reset its Wi-Fi if needed: power on, hold the power button 5 s until the light flashes yellow.

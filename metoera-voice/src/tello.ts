@@ -1,11 +1,12 @@
-// Adapter for one real Tello EDU over the Tello SDK (UDP).
+// Adapter for one real Tello EDU or RoboMaster TT over the Tello SDK (UDP).
 // The Tello sends every reply to local port 8889, so the command socket must bind 8889.
+// Several links (one per drone) share that port through UdpPort, which routes by sender IP.
 // One request is in flight at a time; each request only accepts a reply of its own shape,
 // so a late "ok" can never be read as the answer to a later query.
-import dgram from 'node:dgram';
+import { UdpPort, type Datagram } from './udp-port.ts';
 
 export type TelloSnapshot = {
-  id: 'tello';
+  id: string;
   mode: 'real';
   connected: boolean;
   verified: boolean;
@@ -23,6 +24,8 @@ export type TelloResult =
   | { ok: false; mode: 'real'; error: string };
 
 export type TelloOptions = {
+  /** The droneId voice commands use for this drone. Default 'tello'. */
+  id?: string;
   host: string;
   expectedSerial?: string;
   port?: number;
@@ -59,6 +62,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export class RealTello {
+  readonly #id: string;
   readonly #host: string;
   readonly #port: number;
   readonly #localPort: number;
@@ -74,8 +78,10 @@ export class RealTello {
   #interrupted = false; // true while stop / force land / motor kill own the drone
   #generation = 0; // bumped by force land and motor kill; queued commands from before are cancelled
   #stopDone: Promise<unknown> = Promise.resolve(); // queued work waits for a running stop
-  #command: dgram.Socket | null = null;
-  #state: dgram.Socket | null = null;
+  #command: UdpPort | null = null;
+  #state: UdpPort | null = null;
+  #unsubscribe: (() => void)[] = [];
+  #opening: Promise<void> | null = null;
   #pending: Pending | null = null;
   #queue: Promise<unknown> = Promise.resolve();
   #busy = false;
@@ -89,6 +95,7 @@ export class RealTello {
   #lastError: string | null = null;
 
   constructor(options: TelloOptions) {
+    this.#id = options.id ?? 'tello';
     this.#host = options.host;
     this.#port = options.port ?? 8889;
     this.#localPort = options.localPort ?? 8889;
@@ -105,7 +112,7 @@ export class RealTello {
 
   snapshot(): TelloSnapshot {
     return {
-      id: 'tello',
+      id: this.#id,
       mode: 'real',
       connected: Date.now() - this.#lastStateAt < 3000,
       verified: this.#verified,
@@ -186,7 +193,7 @@ export class RealTello {
     this.#pending?.resolve(null);
     this.#pending = null;
     // No reply is awaited: every datagram must leave before anything else happens.
-    for (let i = 0; i < 3; i += 1) await new Promise((resolve) => socket.send('emergency', this.#port, this.#host, resolve));
+    for (let i = 0; i < 3; i += 1) await socket.send('emergency', this.#port, this.#host);
     this.#flight = 'landed';
     this.#interrupted = false;
     return { ok: true, mode: 'real', action: 'emergency', drone: this.snapshot() };
@@ -195,16 +202,19 @@ export class RealTello {
   close(): void {
     if (this.#keepalive) clearInterval(this.#keepalive);
     this.#keepalive = null;
+    // A reopened link verifies the serial again, which also restarts the keepalive.
+    this.#verified = false;
     this.#pending?.resolve(null);
-    for (const socket of [this.#command, this.#state]) {
-      try { socket?.close(); } catch { /* already closed */ }
-    }
+    for (const unsubscribe of this.#unsubscribe) unsubscribe();
+    this.#unsubscribe = [];
+    this.#command?.release();
+    this.#state?.release();
     this.#command = null;
     this.#state = null;
   }
 
   async #execute(value: unknown, generation = this.#generation): Promise<TelloResult> {
-    if (!isRecord(value) || value.droneId !== 'tello') return this.#fail('Invalid droneId');
+    if (!isRecord(value) || value.droneId !== this.#id) return this.#fail('Invalid droneId');
     const ready = await this.#ensureReady();
     if (ready) return this.#fail(ready);
 
@@ -223,7 +233,7 @@ export class RealTello {
     if (value.action === 'test_flight') {
       if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for test_flight');
       if (this.#flight === 'flying') return this.#fail('test_flight requires a landed drone');
-      const up = await this.#execute({ droneId: 'tello', action: 'takeoff' }, generation);
+      const up = await this.#execute({ droneId: this.#id, action: 'takeoff' }, generation);
       if (!up.ok) return up;
       const until = Date.now() + this.#hoverMs;
       while (Date.now() < until) {
@@ -370,7 +380,9 @@ export class RealTello {
     if (!this.#expectedSerial) return 'TELLO_SETUP_SERIAL is not configured';
     try { await this.#open(); } catch (error) {
       const code = (error as { code?: string }).code ?? 'UDP_ERROR';
-      return code === 'EADDRINUSE' ? 'Port 8889 is in use by another Tello script' : `Cannot open UDP sockets (${code})`;
+      if (code === 'EADDRINUSE') return 'Port 8889 is in use by another Tello script';
+      if (code === 'EHOSTINUSE') return `Another link already controls the drone at ${this.#host}`;
+      return `Cannot open UDP sockets (${code})`;
     }
     if (this.#verified) return null;
     let ready: string | null = null;
@@ -398,45 +410,49 @@ export class RealTello {
     this.#queue = run.catch(() => undefined);
   }
 
-  async #open(): Promise<void> {
-    if (this.#command) return;
-    const command = dgram.createSocket('udp4');
-    const state = dgram.createSocket('udp4');
-    const bind = (socket: dgram.Socket, port: number) => new Promise<void>((resolve, reject) => {
-      socket.once('error', reject);
-      socket.bind(port, () => { socket.off('error', reject); resolve(); });
-    });
+  #open(): Promise<void> {
+    if (this.#command) return Promise.resolve();
+    this.#opening ??= this.#bind().finally(() => { this.#opening = null; });
+    return this.#opening;
+  }
+
+  async #bind(): Promise<void> {
+    let command: UdpPort | null = null;
+    let state: UdpPort | null = null;
+    const unsubscribe: (() => void)[] = [];
     try {
-      await bind(command, this.#localPort);
-      await bind(state, this.#statePort);
+      command = await UdpPort.acquire(this.#localPort);
+      state = await UdpPort.acquire(this.#statePort);
+      unsubscribe.push(command.subscribe(this.#host, (datagram) => this.#onReply(datagram), this.#port));
+      unsubscribe.push(state.subscribe(this.#host, (datagram) => this.#onState(datagram)));
     } catch (error) {
-      try { command.close(); } catch { /* not bound */ }
-      try { state.close(); } catch { /* not bound */ }
+      for (const drop of unsubscribe) drop();
+      command?.release();
+      state?.release();
       throw error;
     }
-    command.on('error', () => undefined);
-    state.on('error', () => undefined);
-    command.on('message', (payload, peer) => {
-      if (peer.address !== this.#host || peer.port !== this.#port || !this.#pending) return;
-      const text = payload.toString('utf8').replaceAll('\0', '').trim();
-      if (this.#pending.accept(text) || /^error\b/i.test(text)) this.#pending.resolve(text);
-    });
-    state.on('message', (payload, peer) => {
-      if (peer.address !== this.#host) return;
-      const text = payload.toString('utf8');
-      const read = (key: string) => {
-        const match = new RegExp(`(?:^|;)${key}:(-?\\d+)(?:;|$)`).exec(text);
-        return match ? Number(match[1]) : null;
-      };
-      const bat = read('bat');
-      if (bat === null) return;
-      this.#battery = bat;
-      this.#heightCm = read('h');
-      this.#heading = read('yaw');
-      this.#lastStateAt = Date.now();
-    });
     this.#command = command;
     this.#state = state;
+    this.#unsubscribe = unsubscribe;
+  }
+
+  #onReply({ text: payload, port }: Datagram): void {
+    if (port !== this.#port || !this.#pending) return;
+    const text = payload.replaceAll('\0', '').trim();
+    if (this.#pending.accept(text) || /^error\b/i.test(text)) this.#pending.resolve(text);
+  }
+
+  #onState({ text }: Datagram): void {
+    const read = (key: string) => {
+      const match = new RegExp(`(?:^|;)${key}:(-?\\d+)(?:;|$)`).exec(text);
+      return match ? Number(match[1]) : null;
+    };
+    const bat = read('bat');
+    if (bat === null) return;
+    this.#battery = bat;
+    this.#heightCm = read('h');
+    this.#heading = read('yaw');
+    this.#lastStateAt = Date.now();
   }
 
   #request(text: string, accept: (reply: string) => boolean, timeoutMs: number, priority = false): Promise<string | null> {
@@ -453,7 +469,7 @@ export class RealTello {
       };
       const pending: Pending = { accept, resolve: done };
       this.#pending = pending;
-      socket.send(text, this.#port, this.#host, (error) => { if (error) done(null); });
+      void socket.send(text, this.#port, this.#host).then((error) => { if (error) done(null); });
     });
   }
 }

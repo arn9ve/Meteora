@@ -19,12 +19,12 @@
   <header class="top">
     <div class="brand-block">
       <p class="brand">Metoera</p>
-      <p class="sub">Red-zone · person only</p>
+      <p class="sub">Red-zone · person only · back lenses</p>
     </div>
-    <div class="cam-switch" role="group" aria-label="Camera">
-      <button type="button" class="cam-btn" data-slot="0" id="cam0" disabled>Cam 1</button>
-      <button type="button" class="cam-btn" data-slot="1" id="cam1" disabled>Cam 2</button>
-      <button type="button" class="cam-btn" data-slot="2" id="cam2" disabled>Cam 3</button>
+    <div class="cam-switch" role="group" aria-label="Back camera lens">
+      <button type="button" class="cam-btn" data-lens="wide" id="camWide" disabled title="Ultra-wide">Wide</button>
+      <button type="button" class="cam-btn" data-lens="normal" id="camNormal" disabled title="Main wide">Normal</button>
+      <button type="button" class="cam-btn" data-lens="tele" id="camTele" disabled title="Telephoto">Tele</button>
     </div>
   </header>
 
@@ -43,7 +43,7 @@
         <span id="modelBadge" class="badge idle">Model…</span>
       </div>
 
-      <p class="hint">Landscape · drag a red zone · alerts only when a <strong>person</strong> enters it.</p>
+      <p class="hint">Back cameras only (no selfie). Landscape · drag a red zone · alerts when a <strong>person</strong> enters it.</p>
 
       <div class="row actions">
         <button type="button" id="btnStart" class="btn primary">Start watching</button>
@@ -60,11 +60,11 @@
       </label>
 
       <p id="message" class="message" role="status"></p>
+      <p id="lensInfo" class="lens-info"></p>
       <ul id="log" class="log" aria-label="Recent events"></ul>
     </section>
   </main>
 
-  <!-- COCO-SSD (person class) — lite MobileNet for iPhone Safari -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
   <script src="/app.js" type="module"></script>

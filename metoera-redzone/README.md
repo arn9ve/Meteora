@@ -4,6 +4,8 @@ Phone-usable red-zone camera for Track D: point an **iPhone 12** at a restricted
 
 Detection: browser **TensorFlow.js COCO-SSD** (`lite_mobilenet_v2`). Arbitrary motion does not alert.
 
+Lenses: **Wide / Normal / Tele** from back cameras only (selfie excluded). Unique deviceIds; if iOS exposes one back camera, zoom constraints select ultra-wide / main / tele when capabilities allow.
+
 This is a **separate** small service (`metoera-redzone/`). It does not edit `metoera-voice` hot files.
 
 ## Quick start (Mac)

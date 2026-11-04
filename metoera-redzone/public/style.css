@@ -84,10 +84,17 @@ body {
   background: transparent;
   color: var(--muted);
   min-height: 40px;
-  min-width: 3.4rem;
+  min-width: 3.6rem;
   padding: 0.4rem 0.55rem;
   font: inherit;
   font-size: 0.78rem;
+}
+
+.lens-info {
+  margin: 0 0 0.55rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
 }
 
 .cam-btn.active {

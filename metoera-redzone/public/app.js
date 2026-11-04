@@ -1,9 +1,9 @@
 /**
  * Metoera red-zone phone UI.
  * Person-only alerts via TensorFlow.js COCO-SSD (lite_mobilenet_v2).
- * Landscape-first + up to 3 cameras.
+ * Landscape-first + back lenses only: Wide / Normal / Tele (no selfie).
  */
-const CAM_KEY = 'metoera-redzone-cam';
+const LENS_KEY = 'metoera-redzone-lens';
 const PERSON_MIN_SCORE = 0.45;
 const DETECT_EVERY_MS = 350;
 const CLIENT_ALERT_GAP_MS = 1500;
@@ -13,6 +13,7 @@ const video = $('video');
 const overlay = $('overlay');
 const camStatus = $('camStatus');
 const message = $('message');
+const lensInfo = $('lensInfo');
 const logEl = $('log');
 const armedBadge = $('armedBadge');
 const detectBadge = $('detectBadge');
@@ -23,14 +24,23 @@ const btnStart = $('btnStart');
 const btnClear = $('btnClear');
 const btnTest = $('btnTest');
 const rotateHint = $('rotateHint');
-const camButtons = [0, 1, 2].map((i) => $(`cam${i}`));
+const lensButtons = {
+  wide: $('camWide'),
+  normal: $('camNormal'),
+  tele: $('camTele'),
+};
 
 const octx = overlay.getContext('2d');
 
+/** @typedef {'wide' | 'normal' | 'tele'} LensId */
+/** @typedef {{ lens: LensId; label: string; deviceId: string; zoom: number | null; source: 'device' | 'zoom' }} LensOption */
+
 /** @type {{ x: number, y: number, w: number, h: number } | null} */
 let roi = null;
-/** @type {MediaDeviceInfo[]} */
-let videoInputs = [];
+/** @type {Partial<Record<LensId, LensOption>>} */
+let lenses = {};
+/** @type {LensId} */
+let activeLens = 'normal';
 /** @type {string | null} */
 let activeDeviceId = null;
 /** @type {MediaStream | null} */
@@ -39,6 +49,8 @@ let stream = null;
 let model = null;
 /** @type {{bbox: number[], score: number}[]} */
 let lastPeople = [];
+/** @type {string} */
+let discoveryNote = '';
 
 let watching = false;
 let detectTimer = 0;
@@ -46,8 +58,10 @@ let drag = null;
 let lastClientAlert = 0;
 let modelReady = false;
 
-function roiKey(deviceId) {
-  return `metoera-redzone-roi:${deviceId || 'default'}`;
+function roiStorageKey() {
+  const opt = lenses[activeLens];
+  const id = opt ? `${opt.deviceId}:${opt.lens}` : activeLens;
+  return `metoera-redzone-roi:${id}`;
 }
 
 function clamp01(n) {
@@ -56,7 +70,7 @@ function clamp01(n) {
 
 function loadRoi() {
   try {
-    const raw = JSON.parse(localStorage.getItem(roiKey(activeDeviceId)) ?? '');
+    const raw = JSON.parse(localStorage.getItem(roiStorageKey()) ?? '');
     if (
       raw &&
       typeof raw.x === 'number' &&
@@ -76,7 +90,7 @@ function loadRoi() {
 }
 
 function saveRoi() {
-  const key = roiKey(activeDeviceId);
+  const key = roiStorageKey();
   if (roi) localStorage.setItem(key, JSON.stringify(roi));
   else localStorage.removeItem(key);
 }
@@ -112,7 +126,7 @@ async function tryLockLandscape() {
       await orientation.lock('landscape').catch(() => undefined);
     }
   } catch {
-    /* iOS Safari usually denies lock outside fullscreen */
+    /* iOS often denies outside fullscreen */
   }
 }
 
@@ -165,11 +179,7 @@ function drawOverlay() {
 }
 
 function boxesOverlapNorm(a, b) {
-  const ax2 = a.x + a.w;
-  const ay2 = a.y + a.h;
-  const bx2 = b.x + b.w;
-  const by2 = b.y + b.h;
-  return a.x < bx2 && ax2 > b.x && a.y < by2 && ay2 > b.y;
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
 function pointerToNorm(e) {
@@ -209,7 +219,7 @@ overlay.addEventListener('pointerup', (e) => {
   if (next) {
     roi = next;
     saveRoi();
-    setMessage('Red zone saved for this camera.');
+    setMessage(`Red zone saved for ${activeLens}.`);
   }
   drawOverlay();
 });
@@ -221,6 +231,179 @@ btnClear.addEventListener('click', () => {
   setMessage('Zone cleared.');
 });
 
+function isFrontLabel(label) {
+  return /front|selfie|facetime|\buser\b|true\s*depth/i.test(label || '');
+}
+
+function isBackLabel(label) {
+  return /back|rear|environment|ultra|tele|dual|triple|wide/i.test(label || '');
+}
+
+/** Classify a back-camera label into a lens slot when possible. */
+function classifyBackLabel(label) {
+  const l = label || '';
+  if (/ultra\s*-?\s*wide|ultrawide/i.test(l)) return 'wide';
+  if (/tele/i.test(l)) return 'tele';
+  // "Back Dual Wide Camera" / "Back Camera" / "Back Triple Camera" → main
+  if (/dual|triple|back\s*camera|rear/i.test(l) || /\bwide\b/i.test(l)) return 'normal';
+  return null;
+}
+
+function uniqueByDeviceId(devices) {
+  const seen = new Set();
+  const out = [];
+  for (const d of devices) {
+    if (!d.deviceId || seen.has(d.deviceId)) continue;
+    seen.add(d.deviceId);
+    out.push(d);
+  }
+  return out;
+}
+
+async function enumerateVideoInputs() {
+  if (!navigator.mediaDevices?.enumerateDevices) return [];
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return uniqueByDeviceId(devices.filter((d) => d.kind === 'videoinput'));
+}
+
+/**
+ * Build Wide / Normal / Tele options from device labels and/or zoom.
+ * Never includes front/selfie cameras.
+ */
+async function discoverLenses(probeTrack) {
+  const all = await enumerateVideoInputs();
+  const back = all.filter((d) => {
+    const label = d.label || '';
+    if (isFrontLabel(label)) return false;
+    if (label && isBackLabel(label)) return true;
+    // Unlabeled: keep for now; we already opened environment-facing stream.
+    return !label;
+  });
+
+  /** @type {Partial<Record<LensId, LensOption>>} */
+  const next = {};
+  const labelSummary = all.map((d) => d.label || '(unnamed)').join(' · ') || '(none yet)';
+
+  // 1) Prefer distinct back deviceIds with clear labels.
+  for (const device of back) {
+    const lens = classifyBackLabel(device.label);
+    if (!lens || next[lens]) continue;
+    next[lens] = {
+      lens,
+      label: device.label || lens,
+      deviceId: device.deviceId,
+      zoom: null,
+      source: 'device',
+    };
+  }
+
+  // 2) If we still lack slots and have a single (or dual) back device, try zoom.
+  const track = probeTrack || stream?.getVideoTracks?.()[0];
+  const caps = track?.getCapabilities?.() || {};
+  const zoomCap = caps.zoom;
+  const backIds = uniqueByDeviceId(back.length ? back : all.filter((d) => !isFrontLabel(d.label)));
+  const primaryId =
+    next.normal?.deviceId ||
+    next.wide?.deviceId ||
+    track?.getSettings?.().deviceId ||
+    backIds[0]?.deviceId ||
+    null;
+
+  if (primaryId && zoomCap && typeof zoomCap.min === 'number' && typeof zoomCap.max === 'number') {
+    const min = zoomCap.min;
+    const max = zoomCap.max;
+    // Ultra-wide is usually zoom < 1 on iPhone multi-cam.
+    if (!next.wide && min < 0.95) {
+      next.wide = {
+        lens: 'wide',
+        label: `Ultra-wide (zoom ${min})`,
+        deviceId: primaryId,
+        zoom: min,
+        source: 'zoom',
+      };
+    }
+    if (!next.normal) {
+      const normalZoom = Math.min(Math.max(1, min), max);
+      next.normal = {
+        lens: 'normal',
+        label: `Main wide (zoom ${normalZoom})`,
+        deviceId: primaryId,
+        zoom: normalZoom,
+        source: 'zoom',
+      };
+    }
+    // Optical tele is typically available around 2x+ on Pro; require max >= 2
+    // and a meaningful step above 1 so we don't fake tele with mild digital crop.
+    if (!next.tele && max >= 2) {
+      const teleZoom = Math.min(Math.max(2, min), max);
+      next.tele = {
+        lens: 'tele',
+        label: `Tele (zoom ${teleZoom})`,
+        deviceId: primaryId,
+        zoom: teleZoom,
+        source: 'zoom',
+      };
+    }
+  }
+
+  // 3) Ensure at least Normal from environment stream if nothing else mapped.
+  if (!next.normal && primaryId) {
+    next.normal = {
+      lens: 'normal',
+      label: backIds[0]?.label || 'Back camera',
+      deviceId: primaryId,
+      zoom: null,
+      source: 'device',
+    };
+  }
+
+  // Drop any option that accidentally reused a front deviceId after re-query.
+  for (const id of /** @type {LensId[]} */ (['wide', 'normal', 'tele'])) {
+    const opt = next[id];
+    if (!opt) continue;
+    const match = all.find((d) => d.deviceId === opt.deviceId);
+    if (match && isFrontLabel(match.label)) delete next[id];
+  }
+
+  const enabled = /** @type {LensId[]} */ (['wide', 'normal', 'tele']).filter((id) => next[id]);
+  discoveryNote =
+    `Devices: ${labelSummary}. Enabled: ${enabled.join(', ') || 'none'}.` +
+    (zoomCap
+      ? ` Zoom ${zoomCap.min}–${zoomCap.max}.`
+      : ' No zoom API on this track.') +
+    ' Front/selfie excluded.';
+
+  // Honest limit note when tele missing (iPhone 12 non-Pro has no tele lens).
+  if (!next.tele) {
+    discoveryNote +=
+      ' Tele unavailable (Safari did not expose a tele device / ≥2× zoom). iPhone 12 non-Pro has no telephoto lens.';
+  }
+  if (!next.wide) {
+    discoveryNote += ' Wide (ultra-wide) unavailable from labels/zoom.';
+  }
+
+  lenses = next;
+  lensInfo.textContent = discoveryNote;
+  renderLensButtons();
+  return next;
+}
+
+function renderLensButtons() {
+  for (const id of /** @type {LensId[]} */ (['wide', 'normal', 'tele'])) {
+    const btn = lensButtons[id];
+    const opt = lenses[id];
+    if (!opt) {
+      btn.disabled = true;
+      btn.classList.remove('active');
+      btn.title = 'Not available on this iPhone / Safari';
+      continue;
+    }
+    btn.disabled = false;
+    btn.title = `${opt.label} (${opt.source})`;
+    btn.classList.toggle('active', id === activeLens);
+  }
+}
+
 function stopStream() {
   if (stream) {
     for (const track of stream.getTracks()) track.stop();
@@ -229,41 +412,39 @@ function stopStream() {
   video.srcObject = null;
 }
 
-async function listCameras() {
-  if (!navigator.mediaDevices?.enumerateDevices) return [];
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  return devices.filter((d) => d.kind === 'videoinput').slice(0, 3);
-}
-
-function renderCamButtons() {
-  for (let i = 0; i < 3; i += 1) {
-    const btn = camButtons[i];
-    const device = videoInputs[i];
-    if (!device) {
-      btn.disabled = true;
-      btn.classList.remove('active');
-      btn.title = 'No camera';
-      continue;
+async function applyZoom(track, zoom) {
+  if (zoom == null || !track?.applyConstraints) return;
+  try {
+    await track.applyConstraints({ advanced: [{ zoom }] });
+  } catch {
+    try {
+      await track.applyConstraints({ zoom });
+    } catch {
+      /* Safari may reject; keep stream anyway */
     }
-    btn.disabled = false;
-    btn.title = device.label || `Camera ${i + 1}`;
-    btn.classList.toggle('active', device.deviceId === activeDeviceId);
   }
 }
 
-async function startCamera(deviceId) {
-  camStatus.textContent = 'Asking for camera…';
+/**
+ * Open a back camera only. Never requests facingMode:user.
+ */
+async function startLens(lensId) {
+  const opt = lenses[lensId] || (lensId === 'normal' ? null : lenses.normal);
+  camStatus.textContent = 'Opening back camera…';
   stopStream();
+
+  /** @type {MediaStreamConstraints} */
   const constraints = {
     audio: false,
-    video: deviceId
+    video: opt?.deviceId
       ? {
-          deviceId: { exact: deviceId },
+          deviceId: { exact: opt.deviceId },
+          facingMode: { ideal: 'environment' },
           width: { ideal: 1280 },
           height: { ideal: 720 },
         }
       : {
-          facingMode: { ideal: 'environment' },
+          facingMode: { exact: 'environment' },
           width: { ideal: 1280 },
           height: { ideal: 720 },
         },
@@ -271,44 +452,69 @@ async function startCamera(deviceId) {
 
   try {
     stream = await navigator.mediaDevices.getUserMedia(constraints);
-    video.srcObject = stream;
-    await video.play();
-    const track = stream.getVideoTracks()[0];
-    activeDeviceId = track?.getSettings?.().deviceId || deviceId || null;
-    if (activeDeviceId) localStorage.setItem(CAM_KEY, activeDeviceId);
-    videoInputs = await listCameras();
-    renderCamButtons();
-    loadRoi();
-    syncCanvasSize();
-    const label = track?.label || 'Camera';
-    camStatus.textContent = `${label} · draw red zone`;
-    setMessage(videoInputs.length ? `${videoInputs.length} camera(s) available.` : 'Camera live.');
-  } catch (error) {
-    const name = error instanceof Error ? error.name : 'Error';
-    camStatus.textContent = `Camera blocked (${name}). Use the HTTPS link.`;
-    setMessage('iOS Safari needs HTTPS for camera access.', true);
-    throw error;
+  } catch {
+    // Fallback if exact environment fails (rare): ideal environment, still not user.
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+    });
   }
+
+  const track = stream.getVideoTracks()[0];
+  const settings = track?.getSettings?.() || {};
+  // Guard: if Safari somehow gave us the front cam, abort and retry environment-only.
+  if (settings.facingMode === 'user' || isFrontLabel(track?.label || '')) {
+    stopStream();
+    throw new Error('Got front/selfie camera — blocked. Use a back lens.');
+  }
+
+  if (opt?.zoom != null) await applyZoom(track, opt.zoom);
+
+  video.srcObject = stream;
+  await video.play();
+
+  activeLens = lenses[lensId] ? lensId : 'normal';
+  activeDeviceId = settings.deviceId || opt?.deviceId || null;
+  localStorage.setItem(LENS_KEY, activeLens);
+
+  await discoverLenses(track);
+  // Re-apply zoom after rediscovery in case capabilities just appeared.
+  const finalOpt = lenses[activeLens];
+  if (finalOpt?.zoom != null) await applyZoom(track, finalOpt.zoom);
+
+  loadRoi();
+  syncCanvasSize();
+  renderLensButtons();
+
+  const zoomNow = track.getSettings?.().zoom;
+  camStatus.textContent = `${finalOpt?.label || 'Back'} · ${activeLens}${
+    zoomNow != null ? ` · z${zoomNow}` : ''
+  }`;
+  setMessage(`Using ${activeLens} (back only). Front camera excluded.`);
 }
 
-async function switchCamera(slot) {
-  const device = videoInputs[slot];
-  if (!device) return;
+async function switchLens(lensId) {
+  if (!lenses[lensId]) {
+    setMessage(`${lensId} lens not available on this phone.`, true);
+    return;
+  }
   const wasWatching = watching;
   if (watching) stopWatching();
   try {
-    await startCamera(device.deviceId);
+    await startLens(lensId);
     if (wasWatching) startWatching();
-  } catch {
-    /* message already set */
+  } catch (error) {
+    setMessage(error instanceof Error ? error.message : String(error), true);
+    camStatus.textContent = 'Camera error';
   }
 }
 
-for (const btn of camButtons) {
-  btn.addEventListener('click', () => {
-    const slot = Number(btn.dataset.slot);
-    void switchCamera(slot);
-  });
+for (const id of /** @type {LensId[]} */ (['wide', 'normal', 'tele'])) {
+  lensButtons[id].addEventListener('click', () => void switchLens(id));
 }
 
 async function loadModel() {
@@ -316,11 +522,10 @@ async function loadModel() {
   modelBadge.className = 'badge idle';
   if (typeof cocoSsd === 'undefined' || typeof tf === 'undefined') {
     modelBadge.textContent = 'No TF';
-    setMessage('Could not load TensorFlow.js / COCO-SSD from CDN. Check network.', true);
+    setMessage('Could not load TensorFlow.js / COCO-SSD from CDN.', true);
     return;
   }
   try {
-    // Prefer WebGL; fall back silently.
     await tf.ready();
     model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
     modelReady = true;
@@ -385,6 +590,7 @@ async function postIntrusion({ score, note, force = false } = {}) {
         force,
         kind: 'person',
         cameraId: activeDeviceId,
+        lens: activeLens,
       }),
     });
     const data = await response.json();
@@ -550,18 +756,25 @@ window.addEventListener('orientationchange', () => {
 updateOrientationHint();
 setDetectUi('idle');
 void (async () => {
-  const preferred = localStorage.getItem(CAM_KEY);
+  const preferred = /** @type {LensId | null} */ (localStorage.getItem(LENS_KEY));
   try {
-    // Permission first so device labels populate.
-    await startCamera(preferred || undefined);
-  } catch {
-    /* already messaged */
+    // Open environment first so labels + zoom capabilities appear, then map lenses.
+    await startLens(preferred === 'wide' || preferred === 'tele' || preferred === 'normal' ? preferred : 'normal');
+    // If preferred lens became available after discovery, switch to it.
+    if (preferred && lenses[preferred] && preferred !== activeLens) {
+      await startLens(preferred);
+    }
+  } catch (error) {
+    camStatus.textContent = 'Camera blocked';
+    setMessage(
+      `Back camera failed (${error instanceof Error ? error.message : error}). Use the HTTPS link and allow camera.`,
+      true,
+    );
   }
   void loadModel();
   void syncState();
   void refreshLog();
   setInterval(() => void refreshLog(), 5000);
-  // Keep painting boxes while idle too (light).
   setInterval(() => {
     if (!watching && modelReady) void detectOnce();
   }, 800);

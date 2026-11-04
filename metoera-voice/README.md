@@ -37,6 +37,24 @@ TELLO_EXPECT_SERIAL=<serial> node tools/connect-tello.mjs
 TELLO_EXPECT_SERIAL=<serial> node tools/test-flight.mjs <ip>
 ```
 
+## Phone
+
+On start the server also listens with HTTPS on the local network (port 18788) and prints a link like `https://192.168.5.16:18788/?key=…`. Open it on a phone on the same Wi-Fi.
+
+- The key in the link is required for every request, so other people on the shared Wi-Fi cannot fly the drones. Do not share it. It is kept in `.phone/key.txt` (git-ignored); delete the folder to get a new one.
+- The certificate is self-signed (also in `.phone/`): accept the browser warning once. HTTPS is needed because phones only allow the microphone on secure pages. Android Chrome works with this; iOS Safari may refuse the microphone with a self-signed certificate.
+- `PHONE_ACCESS=off` disables it; `PHONE_PORT` changes the port.
+
+## Cameras (YOLO on both drones)
+
+Both drones stream video to UDP 11111 on this computer once the server has sent `streamon`. Start the vision service with both drones so it separates the two streams by sender IP:
+
+```bash
+cd ../metoera-vision && .venv/bin/python -m metoera_vision --drones tello=192.168.5.137,rmtt=192.168.5.68
+```
+
+The Drones panel shows each drone's live video with YOLO boxes (`/video/tello`, `/video/rmtt`, passed through from the vision service). `scan` and `look` read the detections of the drone they are called for.
+
 ## Voice commands
 
 Grok calls one tool per action, in the order you say them, and waits for each result. If you leave out a value it asks instead of guessing.

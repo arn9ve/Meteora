@@ -52,3 +52,10 @@
 .drone-black .drone-motion{border-top-color:#333}
 .drone-red{background:#fff5f5;border-color:#e57373}
 .drone-red h3{color:#c62828}
+
+.drone-video{position:relative;margin:14px 0 0;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:4/3}
+.drone-video img{display:block;width:100%;height:100%;object-fit:cover}
+.drone-video span{display:none;position:absolute;inset:0;place-items:center;font-size:11px;color:#999;text-align:center;padding:8px}
+.drone-video.off img{display:none}.drone-video.off span{display:grid}
+.drones-dialog{max-height:92svh;overflow:auto}
+@media(max-width:600px){.drone-grid{grid-template-columns:1fr}}

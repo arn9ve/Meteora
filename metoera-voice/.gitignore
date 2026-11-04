@@ -13,3 +13,5 @@ node_modules/
 .tello-wire-errors.log
 
 __pycache__/
+
+.phone/

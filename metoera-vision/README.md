@@ -56,9 +56,44 @@ scripts/replay_udp.sh samples/sample.mp4
 
 Then open http://127.0.0.1:18790/ for a live annotated view.
 
+### Two drones at once (`--drones`)
+
+Our two drones both push video to this Mac's UDP port 11111:
+
+```bash
+.venv/bin/python -m metoera_vision --drones tello=192.168.5.137,rmtt=192.168.5.68
+```
+
+`tello` is the Tello EDU at 192.168.5.137 and `rmtt` the RoboMaster TT at
+192.168.5.68. One UDP socket on `0.0.0.0:11111` (the `--source` udp address)
+receives every datagram. Each datagram is routed **by sender address** to that
+drone's own H.264 parser/decoder, latest-frame buffer, stats and detection
+result, so the two streams never mix. Datagrams from any other sender are
+counted (`/health` → `source_stats.unknown_senders`) and dropped.
+
+- Entry format: `id=ip` matches any source port from that IP. `id=ip:port`
+  matches IP **and** source port, which lets one machine simulate two drones.
+  Ids may use letters, digits, `-` and `_`.
+- The first drone listed is the default: endpoints called without `?drone=`
+  use it, so a single-drone client calling `/detections` keeps working.
+- One YOLO model is shared. The detector serves the drones round-robin, always
+  on each drone's newest frame, at up to `--detect-fps` **per drone** (5 by
+  default, so about 10 inferences/s in total for two). If the model can't keep up,
+  each drone gets an equal share.
+- Without `--drones`, every source (file, webcam, plain `udp://`) behaves exactly as before.
+
+Simulate both drones locally (no drone needed). The script replays
+`samples/sample.h264` from two source ports to one receiver port:
+
+```bash
+.venv/bin/python -m metoera_vision --drones tello=127.0.0.1:50001,rmtt=127.0.0.1:50002
+.venv/bin/python scripts/replay_udp_multi.py --from 127.0.0.1:50001 --from 127.0.0.1:50002 --to 127.0.0.1:11111
+```
+
 | Flag | Env var | Default |
 |---|---|---|
 | `--source` | `METOERA_VISION_SOURCE` | `udp://0.0.0.0:11111` (or a file path, or `webcam:N`) |
+| `--drones` | `METOERA_VISION_DRONES` | off; `id=ip[:port],...`, e.g. `tello=192.168.5.137,rmtt=192.168.5.68` (needs a `udp://` source) |
 | `--host` / `--port` | `METOERA_VISION_HOST` / `_PORT` | `127.0.0.1` / `18790` |
 | `--model` | `METOERA_VISION_MODEL` | `yolo11n.pt` (any Ultralytics detect model, e.g. `yolov8n.pt`, `yolo11s.pt`) |
 | `--device` | `METOERA_VISION_DEVICE` | `auto` (mps, then cuda, then cpu) |
@@ -75,6 +110,14 @@ Then open http://127.0.0.1:18790/ for a live annotated view.
 All responses are JSON unless noted, with `Cache-Control: no-store`. CORS is
 allowed for the voice UI origin, and `OPTIONS` preflight is supported.
 
+**Multi-drone mode.** Every endpoint accepts `?drone=<id>` (for example
+`/find?label=person&drone=rmtt` or `/stream?drone=tello`). Without it, the first
+drone in `--drones` is used. Results from `/detections` and `/find` include
+`"drone": "<id>"`. An unknown id returns
+`404 {"error": "unknown drone", "drone": "x", "drones": ["tello", "rmtt"]}`.
+That is also what any `?drone=` returns in single-source mode. `/` shows all
+the drones' streams side by side.
+
 ### `GET /health`
 ```json
 {"ok": true, "source": "udp://0.0.0.0:11111", "fps_in": 30.0, "fps_detect": 4.9,
@@ -86,6 +129,23 @@ allowed for the voice UI origin, and `OPTIONS` preflight is supported.
 `ok` is true only when a frame arrived in the last 3 s and nothing is in an
 error state. With no video (no `streamon` yet, or the drone is out of range),
 `ok` is `false` and `last_frame_age_ms` is `null` or growing.
+
+With `--drones`, `/health` adds a `drones` object. The top-level `ok` is true
+only when **every** drone is ok. The flat `fps_in`, `fps_detect`,
+`last_frame_age_ms`, ... fields mirror the default drone:
+```json
+{"ok": true, "default_drone": "tello", "fps_in": 30.2, "fps_detect": 4.6, "last_frame_age_ms": 24, ...,
+ "drones": {
+   "tello": {"ok": true, "address": "192.168.5.137", "fps_in": 30.2, "fps_detect": 4.6,
+             "last_frame_age_ms": 24, "last_detection_age_ms": 257, "frame_size": [960, 720],
+             "frames_dropped": 173, "detections_run": 34, "decode_errors": 0, "packets": 723,
+             "frames_decoded": 208, "error": null},
+   "rmtt": {...}},
+ "source_stats": {"kind": "udp-multi", "packets": 1277, "unknown_packets": 20,
+                  "unknown_senders": {"192.168.5.99:11111": 20}, ...}}
+```
+`/health?drone=rmtt` returns just that drone's entry in flat form, plus `drone`,
+`model`, `device` and so on.
 
 ### `GET /detections`
 The latest result. Coordinates are normalized to 0–1 relative to the frame.
@@ -141,24 +201,36 @@ A small debug page with the stream and live JSON.
 
 Only one process can bind UDP 11111. Don't run another Tello video consumer
 (an SDK `cv2.VideoCapture('udp://...')` or another copy of this service) at
-the same time.
+the same time. For two drones, run one instance with `--drones`. Don't start two
+instances.
 
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q              # all (16), about 10 s once weights are cached
-.venv/bin/python -m pytest -q -m "not smoke"   # fast unit/API tests with a stubbed model (13)
+.venv/bin/python -m pytest -q              # all (33), about 25 s once weights are cached
+.venv/bin/python -m pytest -q -m "not smoke"   # fast unit/API tests with a stubbed model (29)
 ```
 - `tests/test_detect.py`: JSON shape, normalization and clamping, sorting, `/find` matching rules, position text, annotation.
 - `tests/test_frames_service.py`: the latest-frame buffer drops the backlog, and
   a slow detector fed 250 fast frames only ever sees recent frames, in order.
   It also runs the HTTP endpoints, CORS and preflight, MJPEG framing and the 400
   on a missing label, all against a stub model.
+- `tests/test_multi_drone.py`: `--drones` parsing, routing by sender. Two
+  sockets on 127.0.0.1 with different source ports send interleaved synthetic
+  H.264 streams of different resolutions plus a stranger's junk, and each drone
+  must decode its own size with 0 decode errors. Also covers the per-drone
+  endpoints and `/health`, a 404 for an unknown drone on every endpoint, and the
+  detection loop: strict round-robin when the model is the bottleneck, about
+  `--detect-fps` per drone, an idle drone not slowing the other, and newest
+  frame only.
 - `tests/test_smoke_real.py`: the real YOLO model on Ultralytics' `bus.jpg`. It
   also runs a **real UDP ingest**: ffmpeg streams raw H.264 in 1460-byte
   datagrams, after some junk datagrams that imitate start-of-stream garbage. The
   test checks for 960×720 decode and a detected `person`. It also checks
-  file-source pacing.
+  file-source pacing. The two-drone smoke test replays `samples/sample.h264`
+  from two source ports to one port at the same time, using the real model,
+  and checks both drones reach about 30 fps in, about 5 fps of detection, and
+  get detections.
 
 ## Implementation notes
 
@@ -176,6 +248,10 @@ the same time.
 
 ## Limitations
 
+- **Two-drone mode not yet tested with the real drones.** It was verified only
+  with two simulated senders on 127.0.0.1. Routing assumes each drone sends its
+  video from its own IP. If both drones' traffic reaches the Mac through NAT
+  behind one address, use `id=ip:port` entries.
 - **Not yet tested against the real drone.** It was verified only with local
   ffmpeg replays of H.264 over UDP to 127.0.0.1:11111, a video file and still
   images. Real Tello streams can show more packet loss and smearing (grey or

@@ -20,6 +20,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="metoera-vision", description="YOLO object detection for the Tello EDU video stream.")
     p.add_argument("--source", default=env("METOERA_VISION_SOURCE", "udp://0.0.0.0:11111"),
                    help="udp://HOST:PORT (Tello, default) | path to video/image file | webcam:N or N")
+    p.add_argument("--drones", default=env("METOERA_VISION_DRONES", ""),
+                   help="several drones on one UDP port, routed by sender: id=ip[:port],... "
+                        "e.g. tello=192.168.5.137,rmtt=192.168.5.68 (listens on --source's udp address)")
     p.add_argument("--host", default=env("METOERA_VISION_HOST", "127.0.0.1"), help="HTTP bind host")
     p.add_argument("--port", type=int, default=int(env("METOERA_VISION_PORT", "18790")), help="HTTP port")
     p.add_argument("--model", default=env("METOERA_VISION_MODEL", "yolo11n.pt"), help="Ultralytics weights")
@@ -44,24 +47,47 @@ def main(argv=None) -> int:
     logging.basicConfig(level=a.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     log = logging.getLogger("metoera.vision")
 
+    from urllib.parse import urlparse
+
     from .detect import YoloDetector
     from .frames import LatestFrame
     from .server import make_server
-    from .service import VisionService
-    from .sources import make_source
+    from .service import Channel, VisionService
+    from .sources import MultiDroneUdpSource, make_source, parse_drones
+
+    drones = None
+    if a.drones.strip():
+        try:
+            drones = parse_drones(a.drones)
+        except ValueError as e:
+            log.error("--drones: %s", e)
+            return 2
+        if not a.source.strip().startswith("udp://"):
+            log.error("--drones needs a udp:// --source (got %s)", a.source)
+            return 2
 
     classes = [c for c in a.classes.split(",") if c.strip()] or None
     log.info("loading model %s (device=%s)...", a.model, a.device)
     detector = YoloDetector(a.model, device=a.device, conf=a.conf, imgsz=a.imgsz, classes=classes)
 
-    frames = LatestFrame()
-    source = make_source(a.source, frames, loop=not a.no_loop)
-    service = VisionService(source, detector, frames, detect_fps=a.detect_fps)
+    if drones:
+        u = urlparse(a.source.strip())
+        sinks = {d.id: LatestFrame() for d in drones}
+        source = MultiDroneUdpSource(drones, sinks, u.hostname or "0.0.0.0", u.port or 11111)
+        channels = [Channel(d.id, sinks[d.id], stats=lambda i=d.id: source.drone_stats(i), address=d.address)
+                    for d in drones]
+        service = VisionService(source, detector, detect_fps=a.detect_fps, channels=channels)
+        log.info("drones: %s (default: %s)", ", ".join(f"{d.id}={d.address}" for d in drones), drones[0].id)
+    else:
+        frames = LatestFrame()
+        source = make_source(a.source, frames, loop=not a.no_loop)
+        service = VisionService(source, detector, frames, detect_fps=a.detect_fps)
     server = make_server(service, a.host, a.port, a.cors_origin.split(","), a.stream_fps)
 
     service.start()
     log.info("source: %s", source.description)
-    log.info("API on http://%s:%d  (/health /detections /find?label= /frame.jpg /stream)", a.host, a.port)
+    log.info("API on http://%s:%d  (/health /detections /find?label= /frame.jpg /stream%s)", a.host, a.port,
+             "; add ?drone=<id>" if drones else "")
 
     stop = threading.Event()
 

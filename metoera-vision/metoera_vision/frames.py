@@ -35,6 +35,11 @@ class LatestFrame:
         # input fps (exponential moving average)
         self._last_put_t: Optional[float] = None
         self.fps_in = 0.0
+        self._listeners: list = []  # callables run (outside the lock) after every put
+
+    def add_listener(self, fn) -> None:
+        """Call `fn()` after every `put` (used to wake a detector serving several buffers)."""
+        self._listeners.append(fn)
 
     def put(self, image: np.ndarray, t: Optional[float] = None) -> Frame:
         t = time.time() if t is None else t
@@ -50,12 +55,20 @@ class LatestFrame:
                     self.fps_in = inst if self.fps_in == 0 else 0.9 * self.fps_in + 0.1 * inst
             self._last_put_t = t
             self._cond.notify_all()
-            return self._frame
+            frame = self._frame
+        for fn in self._listeners:
+            fn()
+        return frame
 
     def get(self) -> Optional[Frame]:
         with self._cond:
             if self._frame is not None:
                 self._last_read_seq = max(self._last_read_seq, self._frame.seq)
+            return self._frame
+
+    def peek(self) -> Optional[Frame]:
+        """The newest frame without marking it as read (so `dropped` stays accurate)."""
+        with self._cond:
             return self._frame
 
     def wait_newer(self, seq: int, timeout: float) -> Optional[Frame]:

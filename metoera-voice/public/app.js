@@ -166,7 +166,7 @@ async function finishCalls(){
   if(calls.length)send({type:'response.create'});
 }
 const tool=(name,description,properties={},required=[])=>({type:'function',name,description,parameters:{type:'object',properties,required,additionalProperties:false}});
-const INSTRUCTIONS='You are Grok, the voice pilot of two real drones for Metoera: Drone 1, called Black (a Tello EDU), and Drone 2, called Red (a RoboMaster TT). Every drone tool takes drone: black or red. If the person does not say which drone and more than one could be meant, ask; never choose for them. If they say both or all, call the tool once for black and then once for red. land and stop without a drone apply to both. Every tool call physically moves a drone, so do exactly what the person says: no extra steps, no skipped steps, no changed values. Speak concisely. If a value you need is missing or unclear (distance, angle, direction), ask for it; never guess. Convert units yourself: 1 meter = 100 centimeters, half a meter = 50. Turn right means clockwise, turn left means counterclockwise. For a sequence, call one tool at a time in the order given and wait for each result; if one fails, stop and say why. If the person says stop, wait, hold or freeze, call stop at once. If they say land, or sound alarmed, call land at once. If they just say fly or test flight, call test_flight. The drone has a camera with object detection. To count or find things all around (for example: do a 360 and count the people at the table), take off first if it is on the ground, then call scan with the object name in English (person for people). scan turns a full circle in four 90-degree steps and returns a count per view and a total; give the total, mention where they are if useful, and say it is approximate because someone at the edge between two views can be missed or counted twice. To say what is in front of the drone right now, call look. Report only what the results contain; never invent objects. If the person says emergency, cut the motors or kill the motors, call emergency at once (leave drone empty to stop both): the motors stop and the drone drops. If they say stop listening, mute or microphone off, call mute; after that you hear nothing until they turn the microphone back on. Only say the drone did something when the result is ok, and report rejections in plain words, including limits such as the maximum distance.';
+const INSTRUCTIONS='You are Grok, the voice pilot of two real drones for Metoera: Drone 1, called Black (a Tello EDU), and Drone 2, called Red (a RoboMaster TT). Every drone tool takes drone: black or red. If the person does not say which drone and more than one could be meant, ask; never choose for them. If they say both or all, call the tool once for black and then once for red. land and stop without a drone apply to both. If the person asks you to choose which drone to fly or land, call status on black and on red first, prefer a connected drone that is on the ground with more battery for flying (at least 20 percent), say which one you picked and why, then act. If they ask to test the drones, propose a short plan (for example: status on both, test_flight on black, then test_flight on red), and run it step by step only after they agree. Each drone has its own camera with object detection: scan and look take drone black or red, and for both drones call them once per drone and report the result of each drone separately. Every tool call physically moves a drone, so do exactly what the person says: no extra steps, no skipped steps, no changed values. Speak concisely. If a value you need is missing or unclear (distance, angle, direction), ask for it; never guess. Convert units yourself: 1 meter = 100 centimeters, half a meter = 50. Turn right means clockwise, turn left means counterclockwise. For a sequence, call one tool at a time in the order given and wait for each result; if one fails, stop and say why. If the person says stop, wait, hold or freeze, call stop at once. If they say land, or sound alarmed, call land at once. If they just say fly or test flight, call test_flight. The drone has a camera with object detection. To count or find things all around (for example: do a 360 and count the people at the table), take off first if it is on the ground, then call scan with the object name in English (person for people). scan turns a full circle in four 90-degree steps and returns a count per view and a total; give the total, mention where they are if useful, and say it is approximate because someone at the edge between two views can be missed or counted twice. To say what is in front of the drone right now, call look. Report only what the results contain; never invent objects. If the person says emergency, cut the motors or kill the motors, call emergency at once (leave drone empty to stop both): the motors stop and the drone drops. If they say stop listening, mute or microphone off, call mute; after that you hear nothing until they turn the microphone back on. Only say the drone did something when the result is ok, and report rejections in plain words, including limits such as the maximum distance.';
 const dir=(values)=>({type:'string',enum:values});
 const DRONE={type:'string',enum:['black','red'],description:'black = Drone 1 (Tello EDU), red = Drone 2 (RoboMaster TT)'};
 // Every drone tool gets the drone parameter; mute is about the microphone, not a drone.
@@ -208,7 +208,11 @@ function renderDrone() {
     const d = drones.find(x => x.id === info.id);
     const card = document.createElement('article');
     card.className = `drone-card drone-${colour}`;
-    card.innerHTML = '<div class="drone-card-head"><h3></h3><span class="drone-availability"></span></div><p class="drone-position"></p><div class="drone-coordinates"></div><div class="drone-motion"><span>State</span><strong></strong></div>';
+    card.innerHTML = '<div class="drone-card-head"><h3></h3><span class="drone-availability"></span></div><div class="drone-video"><img alt=""><span>Camera off: start metoera-vision</span></div><p class="drone-position"></p><div class="drone-coordinates"></div><div class="drone-motion"><span>State</span><strong></strong></div>';
+    // Live YOLO video, only while the panel is open (the stream stops when the image goes away).
+    const img = card.querySelector('.drone-video img');
+    if (d?.connected) { img.src = `/video/${info.id}`; img.alt = `${info.name} camera`; img.onerror = () => card.querySelector('.drone-video').classList.add('off'); }
+    else card.querySelector('.drone-video').classList.add('off');
     card.querySelector('h3').textContent = info.name;
     card.querySelector('.drone-position').textContent = info.model.toUpperCase();
     card.querySelector('.drone-availability').textContent = !d ? 'Not configured' : d.connected ? 'Connected' : (d.linkError || 'Connecting…');
@@ -220,6 +224,20 @@ function renderDrone() {
 }
 $('#dronesButton').addEventListener('click', () => { renderDrone(); droneDialog.showModal(); });
 droneDialog.querySelector('.dismiss').addEventListener('click', () => droneDialog.close());
+// Closing the panel drops the video streams.
+droneDialog.addEventListener('close', () => $('#droneGrid').replaceChildren());
+
+// While the panel is open, refresh the text only, so the video and buttons are not rebuilt.
+function updateCards() {
+  for (const [colour, info] of Object.entries(FLEET)) {
+    const card = $('#droneGrid').querySelector?.(`.drone-${colour}`);
+    if (!card) continue;
+    const d = drones.find(x => x.id === info.id);
+    card.querySelector('.drone-availability').textContent = !d ? 'Not configured' : d.connected ? 'Connected' : (d.linkError || 'Connecting…');
+    card.querySelector('.drone-coordinates').textContent = d?.connected ? `Battery ${d.battery ?? '–'}% · Height ${d.heightCm ?? '–'} cm` : 'Unavailable';
+    card.querySelector('.drone-motion strong').textContent = d ? `${d.flight === 'flying' ? 'Flying' : 'On the ground'}${Number.isFinite(d.heading) ? ` · ${d.heading}°` : ''}${d.lastError ? ` · ${d.lastError}` : ''}` : 'Set its IP in .env.tello';
+  }
+}
 
 // Always-visible link indicator, one dot per drone: green connected, amber linked without telemetry, red offline.
 function showLink(text, state, detail) {
@@ -251,7 +269,7 @@ async function refreshDrone() {
     $('#droneState').textContent = 'Server unreachable';
     showLink('Server offline', 'offline', 'Start the server with npm start');
   }
-  if (droneDialog.open) renderDrone();
+  if (droneDialog.open) updateCards();
 }
 refreshDrone();
 setInterval(refreshDrone, 1500);

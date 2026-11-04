@@ -110,3 +110,14 @@ test('emergencyLand lands a flying drone', async (t) => {
   await drone.emergencyLand();
   assert.equal(fake.received.at(-1), 'land');
 });
+
+test('test_flight takes off, hovers and lands as one action', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake, { hoverMs: 300 });
+  t.after(() => { drone.close(); fake.close(); });
+  const result = await drone.execute({ droneId: 'tello', action: 'test_flight' });
+  assert.equal(result.ok, true);
+  assert.equal(result.action, 'test_flight');
+  assert.equal(drone.snapshot().flight, 'landed');
+  assert.deepEqual(fake.received.filter((c) => ['takeoff', 'land'].includes(c)), ['takeoff', 'land']);
+});

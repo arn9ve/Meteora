@@ -29,6 +29,7 @@ export type TelloOptions = {
   statePort?: number;
   keepaliveMs?: number;
   minTakeoffBattery?: number;
+  hoverMs?: number;
 };
 
 const MOVE_DIRECTIONS = ['forward', 'back', 'left', 'right', 'up', 'down'] as const;
@@ -50,6 +51,7 @@ export class RealTello {
   readonly #expectedSerial: string | undefined;
   readonly #keepaliveMs: number;
   readonly #minTakeoffBattery: number;
+  readonly #hoverMs: number;
   #command: dgram.Socket | null = null;
   #state: dgram.Socket | null = null;
   #pending: Pending | null = null;
@@ -72,6 +74,7 @@ export class RealTello {
     this.#expectedSerial = options.expectedSerial?.trim() || undefined;
     this.#keepaliveMs = options.keepaliveMs ?? 5000;
     this.#minTakeoffBattery = options.minTakeoffBattery ?? 20;
+    this.#hoverMs = options.hoverMs ?? 5000;
   }
 
   snapshot(): TelloSnapshot {
@@ -131,6 +134,22 @@ export class RealTello {
       this.#battery = battery;
       if (battery < this.#minTakeoffBattery) return this.#fail(`Battery ${battery}% is below ${this.#minTakeoffBattery}%`);
       return this.#motion('takeoff', 'takeoff', 20000, () => { this.#flight = 'flying'; });
+    }
+
+    // Same as tools/test-flight.mjs: take off, hover, land, as one action.
+    if (value.action === 'test_flight') {
+      if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for test_flight');
+      if (this.#flight === 'flying') return this.#fail('test_flight requires a landed drone');
+      const up = await this.#execute({ droneId: 'tello', action: 'takeoff' });
+      if (!up.ok) return up;
+      const until = Date.now() + this.#hoverMs;
+      while (Date.now() < until) {
+        await this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 1500); // keeps the SDK session alive
+        await new Promise((resolve) => setTimeout(resolve, Math.min(1000, Math.max(0, until - Date.now()))));
+      }
+      let down: TelloResult = this.#fail('land not attempted');
+      for (let attempt = 0; attempt < 3 && !down.ok; attempt += 1) down = await this.#motion('land', 'land', 20000, () => { this.#flight = 'landed'; });
+      return down.ok ? { ok: true, mode: 'real', action: 'test_flight', drone: this.snapshot() } : down;
     }
 
     if (value.action === 'land') {

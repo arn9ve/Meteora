@@ -77,16 +77,19 @@ async function simulate(name,args){
 }
 
 async function finishCalls(){
+  const run=generation;
   const calls=pending;
   pending=[];
   let stopped=false;
   for(const event of calls){
+    if(run!==generation) return;
     let result;
     if(stopped) result={ok:false,mode:'simulation',error:'Sequenza interrotta dopo il fallimento di un comando precedente'};
     else {
       try {result=await simulate(event.name,JSON.parse(event.arguments||'{}'));}
       catch {result={ok:false,mode:'simulation',error:'Argomenti non validi'};}
     }
+    if(run!==generation) return;
     if(!result.ok) stopped=true;
     send({type:'conversation.item.create',item:{type:'function_call_output',call_id:event.call_id,output:JSON.stringify(result)}});
   }

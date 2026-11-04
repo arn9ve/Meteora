@@ -12,6 +12,7 @@ import { readFile, writeFile, mkdir, appendFile, chmod, access } from 'node:fs/p
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
+import { buildMissionEvent, loadPadNav, runPadMission } from './pad-nav.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.REDZONE_PORT ?? 18791);
@@ -217,7 +218,27 @@ function enqueueCommand(slot, command) {
 }
 
 async function tryTakeoff(eventId, slotId) {
-  const result = { attempted: true, voice: null, webhook: null, note: null, slotId };
+  const padNav = await loadPadNav().catch(() => null);
+  const mission = padNav ? buildMissionEvent(padNav, slotId) : {
+    kind: 'takeoff-only',
+    summary: `Slot ${slotId}: takeoff`,
+    drone: 'Black',
+    droneId: 'tello',
+    homePad: null,
+    targetPad: null,
+    steps: [{ action: 'takeoff' }],
+    executePath: false,
+  };
+
+  const result = {
+    attempted: true,
+    voice: null,
+    webhook: null,
+    note: null,
+    slotId,
+    mission,
+  };
+
   if (webhookUrl) {
     try {
       const response = await fetch(webhookUrl, {
@@ -229,7 +250,8 @@ async function tryTakeoff(eventId, slotId) {
           slotId,
           at: new Date().toISOString(),
           source: 'metoera-redzone',
-          actionRequested: 'takeoff',
+          actionRequested: mission.kind === 'pad-to-pad' ? 'pad-mission' : 'takeoff',
+          mission,
         }),
         signal: AbortSignal.timeout(4000),
       });
@@ -238,27 +260,23 @@ async function tryTakeoff(eventId, slotId) {
       result.webhook = { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
+
   try {
-    const response = await fetch(`${voiceUrl}/api/command`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Origin: voiceUrl.includes('127.0.0.1') ? 'http://127.0.0.1:18787' : 'http://localhost:18787',
-      },
-      body: JSON.stringify({ droneId: 'tello', action: 'takeoff' }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const body = await response.json().catch(() => ({}));
-    result.voice = { ok: response.ok && body?.ok !== false, status: response.status, body };
-    if (!result.voice.ok) {
-      result.note = 'Voice takeoff did not succeed. Is metoera-voice running with TELLO_IP set?';
+    const flight = await runPadMission(voiceUrl, mission);
+    result.voice = flight.voice;
+    result.steps = flight.steps;
+    result.note = flight.note;
+    if (!result.voice?.ok) {
+      result.note =
+        (result.note ? result.note + ' ' : '') +
+        'Voice takeoff did not succeed. Is metoera-voice running with TELLO_IP set?';
     }
   } catch (error) {
     result.voice = { ok: false, error: error instanceof Error ? error.message : String(error) };
     result.note = 'Could not reach metoera-voice. Event logged; keep ARM OFF until ready.';
   }
   if (!webhookUrl && !result.voice?.ok) {
-    result.note = (result.note ? result.note + ' ' : '') + 'Stub: would takeoff.';
+    result.note = (result.note ? result.note + ' ' : '') + 'Stub: would run mission / takeoff.';
   }
   return result;
 }
@@ -368,6 +386,8 @@ async function handle(req, res, remote) {
   }
 
   if (req.method === 'GET' && path === '/api/health') {
+    const padNav = await loadPadNav().catch(() => null);
+    const cam1 = padNav?.missions?.cam1 ?? null;
     json(res, 200, {
       ok: true,
       service: 'metoera-redzone',
@@ -377,7 +397,22 @@ async function handle(req, res, remote) {
       lan: lanAddress ?? null,
       phonePort: phone ? phonePort : null,
       slots: SLOT_IDS.map((id) => slotPublic(slots[id])),
+      padNav: cam1
+        ? {
+            homePad: cam1.homePad,
+            targetPad: cam1.targetPad,
+            drone: cam1.drone,
+            executePath: Boolean(cam1.executePath) || process.env.PAD_NAV_EXECUTE_PATH === '1',
+            summary: cam1.summary,
+          }
+        : null,
     });
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/api/pad-nav') {
+    const padNav = await loadPadNav().catch((error) => ({ error: String(error) }));
+    json(res, 200, padNav);
     return;
   }
 

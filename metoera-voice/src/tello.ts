@@ -4,6 +4,7 @@
 // One request is in flight at a time; each request only accepts a reply of its own shape,
 // so a late "ok" can never be read as the answer to a later query.
 import { UdpPort, type Datagram } from './udp-port.ts';
+import { estimateDistanceCm, bearingDeg, type Box } from './distance.ts';
 
 export type TelloSnapshot = {
   id: string;
@@ -48,7 +49,7 @@ export type TelloOptions = {
   mayTalk?: () => string | null;
 };
 
-export type Detection = { label: string; confidence: number; center: { x: number; y: number } };
+export type Detection = { label: string; confidence: number; center: { x: number; y: number }; box?: Box };
 export type Detections = { timestamp: number | null; objects: Detection[] };
 
 const MIN_CONFIDENCE = 0.5;
@@ -365,7 +366,7 @@ export class RealTello {
       for (const o of objects) counts[o.label] = (counts[o.label] ?? 0) + 1;
       return {
         ok: true, mode: 'real', action: 'look', drone: this.snapshot(),
-        seen: { counts, objects: objects.map((o) => ({ label: o.label, confidence: Math.round(o.confidence * 100) / 100, side: side(o.center.x) })) },
+        seen: { counts, objects: objects.map((o) => ({ label: o.label, confidence: Math.round(o.confidence * 100) / 100, side: side(o.center.x), distanceCm: o.box ? estimateDistanceCm(o.label, o.box) : null })), note: 'distanceCm is estimated from the camera image (about ±30%)' },
       } as TelloResult;
     }
 
@@ -393,6 +394,114 @@ export class RealTello {
           note: `Sum of ${counted.length} views 90 degrees apart, back at the starting heading. Approximate: something at the edge between two views can be missed or counted twice.`,
         },
       } as TelloResult;
+    }
+
+    // Fly toward a person or object in front and stop at a safe distance, camera only.
+    // Each step: find the closest match, estimate its distance (box size) and angle (box
+    // position), work out the point `stopCm` in front of it and fly a straight line there with
+    // `go x y z` (forward and sideways at once, no turning). Only part of the way per step,
+    // because the estimate is rough, then look again. It turns only when the target is about to
+    // leave the picture, and if it loses the target it looks toward the side it was last seen.
+    if (value.action === 'approach') {
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'label', 'stopCm'].includes(k))) return this.#fail('Unknown argument for approach');
+      const label = typeof value.label === 'string' && value.label.trim() ? value.label.trim().toLowerCase() : 'person';
+      const stopCm = value.stopCm === undefined ? 100 : value.stopCm;
+      if (typeof stopCm !== 'number' || !Number.isInteger(stopCm) || stopCm < 50 || stopCm > 300) return this.#fail('stopCm must be an integer from 50 to 300');
+      if (this.#flight !== 'flying') return this.#fail('approach requires a flying drone');
+      const steps: { distanceCm: number | null; angleDeg: number; action: string }[] = [];
+      let startDistanceCm: number | null = null;
+      let travelledCm = 0;
+      let lastAngle = 0;
+      let searched = false;
+      const MAX_TRAVEL_CM = 400;
+      const STEP_CM = Math.min(100, this.#maxMoveCm);
+      const report = (ok: boolean, reason: string): TelloResult => {
+        const finalDistanceCm = [...steps].reverse().find((s) => s.distanceCm !== null)?.distanceCm ?? null;
+        const approach = { label, stopCm, startDistanceCm, finalDistanceCm, travelledCm, steps, reason, note: 'Distances and angles are estimated from the camera image (about ±30%).' };
+        // The failure result keeps the steps so far, like scan does with its views.
+        return (ok ? { ok: true, mode: 'real', action: 'approach', drone: this.snapshot(), approach }
+          : { ok: false, mode: 'real', error: reason, approach } as unknown) as TelloResult;
+      };
+      const turn = async (deg: number) => {
+        const sdk = `${deg > 0 ? 'cw' : 'ccw'} ${Math.min(Math.abs(deg), 90)}`;
+        steps.push({ distanceCm: null, angleDeg: deg, action: sdk });
+        return this.#motion('rotate', sdk, 15000);
+      };
+      for (let i = 0; i < 14; i += 1) {
+        if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
+        const frame = await this.#freshView(Date.now() + this.#settleMs, 4000);
+        if (!frame) return i === 0 ? this.#fail(this.#visionError()) : report(false, 'Lost the camera image');
+        const matches = frame.objects.filter((o) => o.confidence >= MIN_CONFIDENCE && o.label.toLowerCase() === label && o.box);
+        // The closest one is the biggest box.
+        const target = matches.sort((a, b) => b.box!.w * b.box!.h - a.box!.w * a.box!.h)[0];
+        if (!target) {
+          if (i === 0) return this.#fail(`I do not see a ${label} in front of me`);
+          // Lost it after a move: look once toward the side where it was.
+          if (!searched) {
+            searched = true;
+            const look = await turn(lastAngle >= 0 ? 30 : -30);
+            if (!look.ok) return report(false, 'error' in look ? look.error : 'rotate failed');
+            continue;
+          }
+          return report(false, `Lost sight of the ${label}`);
+        }
+        searched = false;
+        const distanceCm = estimateDistanceCm(label, target.box!);
+        const angleDeg = bearingDeg(target.center.x); // + right, - left
+        lastAngle = angleDeg;
+        startDistanceCm ??= distanceCm;
+        // Near the edge of the picture: turn toward it first so it stays in view.
+        if (Math.abs(angleDeg) > 25) {
+          const r = await turn(angleDeg);
+          if (!r.ok) return report(false, 'error' in r ? r.error : 'rotate failed');
+          continue;
+        }
+        if (distanceCm === null) {
+          // Unknown size: go by how much of the frame the box fills, straight at it.
+          if (target.box!.h >= 0.45 || target.box!.w >= 0.45) {
+            steps.push({ distanceCm, angleDeg, action: 'arrived' });
+            return report(true, `Close to the ${label} (it fills much of the view)`);
+          }
+          if (Math.abs(angleDeg) >= 8) { const r = await turn(angleDeg); if (!r.ok) return report(false, 'error' in r ? r.error : 'rotate failed'); continue; }
+          const move = await this.#motion('move', 'forward 30', 15000);
+          steps.push({ distanceCm, angleDeg, action: 'forward 30' });
+          if (!move.ok) return report(false, 'error' in move ? move.error : 'move failed');
+          travelledCm += 30;
+          continue;
+        }
+        // Where to end up: on the line to the target, stopCm short of it.
+        const rad = (angleDeg * Math.PI) / 180;
+        const ahead = Math.cos(rad) * distanceCm - stopCm; // still to go forward
+        const side = Math.sin(rad) * distanceCm;            // + right, - left
+        if (ahead < 20 && Math.abs(side) < 20) {
+          steps.push({ distanceCm, angleDeg, action: 'arrived' });
+          return report(true, `About ${distanceCm} cm from the ${label}${Math.abs(angleDeg) >= 8 ? `, ${Math.abs(angleDeg)}° to the ${angleDeg > 0 ? 'right' : 'left'}` : ''}`);
+        }
+        const budget = MAX_TRAVEL_CM - travelledCm;
+        if (budget < 20) return report(true, `Stopped after ${travelledCm} cm, the most one approach may travel`);
+        // 70% of the way, at most STEP_CM per step, never closer than the stop distance.
+        let x = Math.max(0, ahead) > 60 ? Math.max(0, ahead) * 0.7 : Math.max(0, ahead);
+        let y = Math.abs(side) > 60 ? side * 0.7 : side;
+        const length = Math.hypot(x, y);
+        const scale = Math.min(1, STEP_CM / length, budget / length);
+        x = Math.round(x * scale);
+        y = Math.round(y * scale);
+        // The Tello rejects a go where every axis is under 20 cm: use the plain moves then.
+        let sdk: string;
+        if (Math.abs(x) >= 20 || Math.abs(y) >= 20) {
+          if (Math.abs(x) < 20) sdk = y > 0 ? `right ${Math.abs(y)}` : `left ${Math.abs(y)}`;
+          else if (Math.abs(y) < 20) sdk = `forward ${x}`;
+          else sdk = `go ${x} ${-y} 0 40`; // Tello go: x forward, y left, z up, speed cm/s
+        } else {
+          steps.push({ distanceCm, angleDeg, action: 'arrived' });
+          return report(true, `About ${distanceCm} cm from the ${label}`);
+        }
+        steps.push({ distanceCm, angleDeg, action: sdk });
+        const move = await this.#motion('move', sdk, 15000);
+        if (!move.ok) return report(false, 'error' in move ? move.error : 'move failed');
+        travelledCm += Math.round(Math.hypot(x, y));
+      }
+      return report(true, 'Stopped after the maximum number of steps');
     }
 
     if (value.action === 'status') {

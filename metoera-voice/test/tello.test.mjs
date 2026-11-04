@@ -19,7 +19,7 @@ async function fakeDrone({ serial = SERIAL, battery = '93', duplicateOk = true }
     else if (text === 'battery?') reply(battery);
     else if (text === 'forward 100') reply('ok', 800); // slow move, used to test stop
     else if (text === 'emergency') { /* the real Tello does not reply */ }
-    else if (['takeoff', 'land', 'stop'].includes(text) || /^(forward|back|left|right|up|down|cw|ccw) \d+$/.test(text) || /^flip [lrfb]$/.test(text) || /^speed \d+$/.test(text)) reply('ok', 50);
+    else if (['takeoff', 'land', 'stop'].includes(text) || /^(forward|back|left|right|up|down|cw|ccw) \d+$/.test(text) || /^go -?\d+ -?\d+ -?\d+ \d+$/.test(text) || /^flip [lrfb]$/.test(text) || /^speed \d+$/.test(text)) reply('ok', 50);
     else reply('error');
   });
   await new Promise((resolve) => socket.bind(0, '127.0.0.1', resolve));
@@ -287,4 +287,100 @@ test('probe forgets a session whose telemetry stopped and shakes hands again', a
   try { await drone.probe(); } finally { Date.now = realNow; }
   assert.equal(fake.received.filter((c) => c === 'command').length, 2);
   assert.equal(drone.snapshot().verified, true);
+});
+
+// ---- approach: distance from the camera only ----
+import { estimateDistanceCm, bearingDeg, FOCAL_PX, FRAME_W } from '../src/distance.ts';
+
+test('distance estimate from a person box and bearing from its position', () => {
+  // Shoulders 50 cm wide at 2 m are 683*0.5/2 ≈ 171 px wide.
+  const w = (FOCAL_PX * 0.5) / 2 / FRAME_W;
+  const d = estimateDistanceCm('person', { x: 0.5 - w / 2, y: 0.2, w, h: 0.5 });
+  assert.ok(d >= 190 && d <= 210, `got ${d}`);
+  assert.equal(estimateDistanceCm('unicorn', { x: 0.4, y: 0.4, w: 0.1, h: 0.1 }), null);
+  assert.equal(bearingDeg(0.5), 0);
+  assert.equal(bearingDeg(1), 35);
+  assert.equal(bearingDeg(0), -35);
+});
+
+// A simulated room: the drone starts at (0,0) facing +x; one person stands `distanceCm` away,
+// `angleDeg` to the right. The fake camera works out the person's box from every move and turn
+// the fake drone has received (go x y: x forward, y left).
+function fakeRoom(fake, { distanceCm = 350, angleDeg = 15 } = {}) {
+  const rad = (d) => (d * Math.PI) / 180;
+  const person = { x: distanceCm * Math.cos(rad(angleDeg)), y: -distanceCm * Math.sin(rad(angleDeg)) };
+  const pose = () => {
+    let x = 0, y = 0, heading = 0; // heading: degrees, + = left (counterclockwise)
+    for (const c of fake.received) {
+      let m;
+      const step = (fwd, left) => { x += fwd * Math.cos(rad(heading)) - left * Math.sin(rad(heading)); y += fwd * Math.sin(rad(heading)) + left * Math.cos(rad(heading)); };
+      if ((m = /^go (-?\d+) (-?\d+) -?\d+ \d+$/.exec(c))) step(Number(m[1]), Number(m[2]));
+      else if ((m = /^(forward|back|left|right) (\d+)$/.exec(c))) step(m[1] === 'forward' ? +m[2] : m[1] === 'back' ? -m[2] : 0, m[1] === 'left' ? +m[2] : m[1] === 'right' ? -m[2] : 0);
+      else if ((m = /^(cw|ccw) (\d+)$/.exec(c))) heading += m[1] === 'ccw' ? Number(m[2]) : -Number(m[2]);
+    }
+    return { x, y, heading };
+  };
+  const view = async () => {
+    const p = pose();
+    const dx = person.x - p.x, dy = person.y - p.y;
+    const d = Math.hypot(dx, dy);
+    const bearingRight = -(Math.atan2(dy, dx) * 180 / Math.PI - p.heading); // + = right of the camera axis
+    if (Math.abs(bearingRight) > 35) return { timestamp: Date.now() / 1000, objects: [] }; // outside the 70° view
+    const w = Math.min(1, (FOCAL_PX * 0.5) / (d / 100) / FRAME_W);
+    const cx = 0.5 + Math.tan(rad(bearingRight)) / (2 * Math.tan(rad(35)));
+    return { timestamp: Date.now() / 1000, objects: [{ label: 'person', confidence: 0.9, center: { x: cx, y: 0.5 }, box: { x: cx - w / 2, y: 0.25, w, h: 0.5 } }] };
+  };
+  view.distanceNow = () => { const p = pose(); return Math.hypot(person.x - p.x, person.y - p.y); };
+  return view;
+}
+
+test('approach flies a straight line toward a person on the right and stops about 1 m away', async (t) => {
+  const fake = await fakeDrone();
+  const room = fakeRoom(fake, { distanceCm: 350, angleDeg: 20 });
+  const drone = tello(fake, { settleMs: 10, vision: room });
+  t.after(() => { drone.close(); fake.close(); });
+  assert.match((await drone.execute({ droneId: 'tello', action: 'approach' })).error, /flying/);
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const result = await drone.execute({ droneId: 'tello', action: 'approach' });
+  assert.equal(result.ok, true, result.error);
+  const moves = fake.received.filter((c) => /^(go|forward|left|right|cw|ccw) /.test(c));
+  // It moves diagonally (forward and to the right) instead of turning first.
+  assert.match(moves[0], /^go \d+ -\d+ 0 40$/, moves.join(', '));
+  assert.equal(moves.some((c) => /^(cw|ccw) /.test(c)), false, moves.join(', '));
+  const left = room.distanceNow();
+  assert.ok(left >= 90 && left <= 130, `ended ${Math.round(left)} cm away after ${moves.join(', ')}`);
+});
+
+test('approach turns first when the person is at the edge of the picture', async (t) => {
+  const fake = await fakeDrone();
+  const room = fakeRoom(fake, { distanceCm: 250, angleDeg: -30 });
+  const drone = tello(fake, { settleMs: 10, vision: room });
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const result = await drone.execute({ droneId: 'tello', action: 'approach' });
+  assert.equal(result.ok, true, result.error);
+  const moves = fake.received.filter((c) => /^(go|forward|left|right|cw|ccw) /.test(c));
+  assert.match(moves[0], /^ccw \d+$/, moves.join(', '));
+  const left = room.distanceNow();
+  assert.ok(left >= 90 && left <= 130, `ended ${Math.round(left)} cm away after ${moves.join(', ')}`);
+});
+
+test('approach refuses when nothing is in view and never moves', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake, { settleMs: 10, vision: async () => ({ timestamp: Date.now() / 1000, objects: [] }) });
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const result = await drone.execute({ droneId: 'tello', action: 'approach', label: 'bottle' });
+  assert.match(result.error, /do not see a bottle/);
+  assert.equal(fake.received.some((c) => /^(forward|cw|ccw) /.test(c)), false);
+});
+
+test('approach does not move when the person is already closer than the stop distance', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake, { settleMs: 10, vision: fakeRoom(fake, { distanceCm: 90, angleDeg: 0 }) });
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const result = await drone.execute({ droneId: 'tello', action: 'approach' });
+  assert.equal(result.ok, true);
+  assert.equal(fake.received.some((c) => c.startsWith('forward')), false);
 });

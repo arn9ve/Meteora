@@ -472,7 +472,7 @@ async function renderMap(){
   svg.replaceChildren();
   // Room frame: x forward (drawn up), y left (drawn left). Screen: X = -y, Y = -x.
   const pts=[];
-  for(const d of data.drones){pts.push(d.pose,...d.path,...Object.values(d.places||{}),...d.sightings)}
+  for(const d of data.drones){pts.push(d.pose,...d.path,...Object.values(d.places||{}),...d.sightings,...(d.obstacles||[]))}
   const xs=pts.map(p=>-p.y), ys=pts.map(p=>-p.x);
   let minX=Math.min(-150,...xs)-80, maxX=Math.max(150,...xs)+80, minY=Math.min(-150,...ys)-80, maxY=Math.max(150,...ys)+80;
   const span=Math.max(400,maxX-minX,maxY-minY), cx=(minX+maxX)/2, cy=(minY+maxY)/2;
@@ -485,6 +485,8 @@ async function renderMap(){
   let things=0;
   for(const d of data.drones){
     const c=colours[d.id]||'#555';
+    // Depth hits (walls, furniture), like a LiDAR sweep.
+    for(const o of d.obstacles||[]) svg.append(svgEl('rect',{x:-o.y-4*unit,y:-o.x-4*unit,width:8*unit,height:8*unit,fill:'#9e9e9e',opacity:.55}));
     if(d.path.length>1) svg.append(svgEl('polyline',{points:d.path.map(p=>`${-p.y},${-p.x}`).join(' '),fill:'none',stroke:c,'stroke-width':2*unit,'stroke-dasharray':`${6*unit} ${4*unit}`,opacity:.6}));
     for(const[name,p]of Object.entries(d.places||{})){
       svg.append(svgEl('rect',{x:-p.y-5*unit,y:-p.x-5*unit,width:10*unit,height:10*unit,fill:'none',stroke:c,'stroke-width':1.5*unit}));
@@ -492,16 +494,23 @@ async function renderMap(){
     }
     for(const s of d.sightings){
       things++;
-      const person=s.label==='person';
-      svg.append(svgEl('circle',{cx:-s.y,cy:-s.x,r:(person?7:5)*unit,fill:s.approx?'none':(person?'#1e88e5':'#43a047'),stroke:person?'#1e88e5':'#43a047','stroke-width':1.5*unit}));
-      svg.append(svgEl('text',{x:-s.y+9*unit,y:-s.x+4*unit,'font-size':10*unit,fill:'#333'},(s.description||s.label).slice(0,28)));
+      const person=s.label==='person', col=person?'#1e88e5':'#43a047';
+      if(s.approx){
+        // Distance unknown: a dotted direction from where the drone saw it.
+        svg.append(svgEl('line',{x1:-s.fromY,y1:-s.fromX,x2:-s.y,y2:-s.x,stroke:col,'stroke-width':1.2*unit,'stroke-dasharray':`${2*unit} ${3*unit}`,opacity:.7}));
+        svg.append(svgEl('text',{x:-s.y+4*unit,y:-s.x-4*unit,'font-size':9*unit,fill:col,opacity:.85},`${(s.description||s.label).slice(0,24)} ?`));
+        continue;
+      }
+      const r=(person?6:4.5)*unit*Math.min(1.6,1+0.15*((s.count||1)-1)); // seen more often = bigger
+      svg.append(svgEl('circle',{cx:-s.y,cy:-s.x,r,fill:col,stroke:col,'stroke-width':1.5*unit}));
+      svg.append(svgEl('text',{x:-s.y+9*unit,y:-s.x+4*unit,'font-size':10*unit,fill:'#333'},`${(s.description||s.label).slice(0,28)}${s.distanceCm?` · ${(s.distanceCm/100).toFixed(1)} m`:''}`));
     }
     const h=d.pose.heading*Math.PI/180, px=-d.pose.y, py=-d.pose.x;
     svg.append(svgEl('line',{x1:px,y1:py,x2:px-Math.sin(h)*28*unit,y2:py-Math.cos(h)*28*unit,stroke:c,'stroke-width':3*unit,'stroke-linecap':'round'}));
     svg.append(svgEl('circle',{cx:px,cy:py,r:10*unit,fill:c}));
     svg.append(svgEl('text',{x:px+13*unit,y:py-12*unit,'font-size':12*unit,'font-weight':600,fill:c},d.id==='tello'?'Black':d.id==='rmtt'?'Red':d.id));
   }
-  $('#mapNote').textContent=data.drones.length?`${things} things on the map · blue = people, green = objects, hollow = distance unknown, squares = saved places.`:'No drone flown from here yet.';
+  $('#mapNote').textContent=data.drones.length?`${things} things on the map · blue = people, green = objects, dotted line = direction only (distance unknown), grey = walls and obstacles from depth, squares = saved places.`:'No drone flown from here yet.';
 }
 $('#mapButton').addEventListener('click',()=>{void renderMap();mapDialog.showModal()});
 mapDialog.querySelector('.dismiss').addEventListener('click',()=>mapDialog.close());

@@ -64,14 +64,14 @@ export function estimateDistanceCm(label: string, box: Box): number | null {
   if (label === 'person') {
     if (!cut.horizontal) estimates.push((FOCAL_PX * 0.5) / wPx);
     if (!cut.vertical) estimates.push((FOCAL_PX * (box.h / box.w > 2 ? 1.65 : 1.0)) / hPx);
-    // Cut off on both axes: the person fills the view, so it is very close.
-    if (!estimates.length) return 40;
+    // Cut off on both axes: only when it really fills the view is it very close; otherwise unknown.
+    if (!estimates.length) return box.w * box.h > 0.5 ? 40 : null;
   } else {
     const size = SIZES[label];
     if (!size) return null;
     if (size.h && !cut.vertical) estimates.push((FOCAL_PX * size.h) / hPx);
     if (size.w && !cut.horizontal) estimates.push((FOCAL_PX * size.w) / wPx);
-    if (!estimates.length) return 40;
+    if (!estimates.length) return box.w * box.h > 0.5 ? 40 : null;
   }
   return Math.round(Math.min(...estimates) * 100);
 }

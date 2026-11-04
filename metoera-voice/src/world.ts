@@ -8,7 +8,7 @@
 
 export type Pose = { x: number; y: number; z: number; heading: number };
 export type LogEntry = { at: string; action: string; detail: string; pose: Pose };
-export type Sighting = { label: string; description: string | null; x: number; y: number; distanceCm: number | null; seenAt: string; heading: number; approx: boolean };
+export type Sighting = { label: string; description: string | null; x: number; y: number; distanceCm: number | null; seenAt: string; heading: number; approx: boolean; fromX: number; fromY: number; count: number };
 
 const rad = (deg: number) => (deg * Math.PI) / 180;
 const round = (p: Pose): Pose => ({ x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z), heading: Math.round(normalize(p.heading)) });
@@ -25,8 +25,10 @@ export class World {
   #log: LogEntry[] = [];
   #places = new Map<string, Pose>();
   #sightings: Sighting[] = [];
-  #yawAtStart: number | null = null; // telemetry yaw when the room frame was fixed
+  #yawAtStart: number | null = null; // telemetry yaw that matches the current heading
+  #anchorYaw = false; // fix the yaw reference at the next telemetry (set on takeoff)
   #path: { x: number; y: number }[] = [{ x: 0, y: 0 }]; // where it has been, for the map
+  #obstacles = new Map<string, { x: number; y: number }>(); // depth hits on a 20 cm grid: walls, furniture
 
   /**
    * `start`: where this drone stands in the shared room frame before its first takeoff, so two
@@ -44,6 +46,9 @@ export class World {
     const p = this.#pose;
     let m: RegExpExecArray | null;
     if (sdk === 'takeoff') {
+      // The Tello's IMU yaw can jump at takeoff (and the drone may have been moved on the
+      // ground): tie the yaw reference to the heading at takeoff, not at power-on.
+      this.#anchorYaw = true;
       if (!this.#places.has('home')) this.#places.set('home', { ...p, z: 0 });
       p.z = Math.max(p.z, 80);
     } else if (sdk === 'land') {
@@ -66,7 +71,8 @@ export class World {
   applyTelemetry(heightCm: number | null, yaw: number | null): void {
     if (heightCm !== null && heightCm >= 0) this.#pose.z = heightCm;
     if (yaw === null) return;
-    if (this.#yawAtStart === null) { this.#yawAtStart = yaw + this.#pose.heading; return; }
+    if (this.#anchorYaw) { this.#yawAtStart = yaw + this.#pose.heading; this.#anchorYaw = false; return; }
+    if (this.#yawAtStart === null) return; // on the ground before the first takeoff: keep the start heading
     this.#pose.heading = normalize(this.#yawAtStart - yaw);
   }
 
@@ -104,14 +110,36 @@ export class World {
    */
   see(label: string, bearingDeg: number, distanceCm: number | null, description: string | null = null): Sighting {
     const heading = normalize(this.#pose.heading - bearingDeg);
-    // Without a distance it is drawn 150 cm along the bearing and flagged approx.
+    // Without a distance it is drawn as a direction from where it was seen (150 cm out, approx).
     const d = distanceCm ?? 150;
+    const fromX = Math.round(this.#pose.x), fromY = Math.round(this.#pose.y);
+    const point = { x: this.#pose.x + d * Math.cos(rad(heading)), y: this.#pose.y + d * Math.sin(rad(heading)) };
+    // The same thing seen again: same label (and description, when both have one), and either
+    // close by (distance estimates are rough, so the radius grows with distance) or, without a
+    // distance, in nearly the same direction from nearly the same spot. Merge into a running mean.
+    const same = this.#sightings.find((s) => {
+      if (s.label !== label || (description && s.description && s.description !== description)) return false;
+      if (distanceCm === null || s.approx) {
+        return Math.hypot(s.fromX - fromX, s.fromY - fromY) < 50 && Math.abs(normalize(s.heading - heading)) < 15;
+      }
+      return Math.hypot(s.x - point.x, s.y - point.y) < Math.max(80, 0.35 * Math.max(d, s.distanceCm ?? d));
+    });
+    if (same) {
+      const n = same.count;
+      if (!(distanceCm === null && !same.approx)) {
+        same.x = Math.round((same.x * n + point.x) / (n + 1));
+        same.y = Math.round((same.y * n + point.y) / (n + 1));
+        if (distanceCm !== null) { same.distanceCm = Math.round(((same.distanceCm ?? distanceCm) * n + distanceCm) / (n + 1)); same.approx = false; }
+      }
+      same.count = n + 1;
+      same.description ??= description;
+      same.seenAt = new Date().toISOString();
+      return same;
+    }
     const sighting: Sighting = {
       label, description, distanceCm, heading: Math.round(heading), seenAt: new Date().toISOString(), approx: distanceCm === null,
-      x: Math.round(this.#pose.x + d * Math.cos(rad(heading))), y: Math.round(this.#pose.y + d * Math.sin(rad(heading))),
+      x: Math.round(point.x), y: Math.round(point.y), fromX, fromY, count: 1,
     };
-    // The same thing seen again near the same spot replaces the older sighting.
-    this.#sightings = this.#sightings.filter((s) => !(s.label === label && (description === null || s.description === description) && Math.hypot(s.x - sighting.x, s.y - sighting.y) < 60));
     this.#sightings.push(sighting);
     if (this.#sightings.length > 80) this.#sightings.shift();
     return sighting;
@@ -146,9 +174,25 @@ export class World {
     };
   }
 
+  /**
+   * Depth columns from the camera (bearing + = right, metric depth along the optical axis) become
+   * obstacle points: like a LiDAR sweep, a turn all around draws the walls and furniture.
+   */
+  addObstacles(columns: { bearing_deg: number; depth_m: number }[]): void {
+    for (const c of columns) {
+      if (!Number.isFinite(c.depth_m) || c.depth_m < 0.3 || c.depth_m > 6) continue;
+      const range = (c.depth_m * 100) / Math.cos(rad(c.bearing_deg)); // depth is along the axis
+      const heading = rad(this.#pose.heading - c.bearing_deg);
+      const x = Math.round((this.#pose.x + range * Math.cos(heading)) / 20) * 20;
+      const y = Math.round((this.#pose.y + range * Math.sin(heading)) / 20) * 20;
+      this.#obstacles.set(`${x},${y}`, { x, y });
+    }
+    while (this.#obstacles.size > 800) this.#obstacles.delete(this.#obstacles.keys().next().value!);
+  }
+
   /** Everything the top-down map in the page draws. */
   map() {
-    return { pose: this.pose, path: this.#path.slice(), places: Object.fromEntries(this.#places), sightings: this.#sightings.slice() };
+    return { pose: this.pose, path: this.#path.slice(), places: Object.fromEntries(this.#places), sightings: this.#sightings.slice(), obstacles: [...this.#obstacles.values()] };
   }
 
   /** One short line for the voice model. */

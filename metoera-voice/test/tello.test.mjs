@@ -475,3 +475,57 @@ test('explore turns all the way round in six steps and maps YOLO and Grok vision
   assert.ok(map.sightings.length >= 2);
   assert.deepEqual(map.path[0], { x: 0, y: -150 });
 });
+
+test('a box cut off by the frame edge gives no distance unless it fills the view', () => {
+  assert.equal(estimateDistanceCm('person', { x: 0, y: 0, w: 0.3, h: 1 }), null);
+  assert.equal(estimateDistanceCm('chair', { x: 0, y: 0.5, w: 0.2, h: 0.5 }), null);
+  assert.equal(estimateDistanceCm('person', { x: 0, y: 0, w: 1, h: 1 }), 40);
+});
+
+test('the same person seen from overlapping views becomes one sighting', () => {
+  const w = new World();
+  w.see('person', 10, 300);
+  w.applySdk('cw 60');
+  w.see('person', -50, 260); // same spot, seen from the next view
+  w.see('person', -48, 340);
+  const people = w.memory().sightings.filter((s) => s.label === 'person');
+  assert.equal(people.length, 1, JSON.stringify(people));
+  assert.equal(people[0].count, 3);
+  w.see('person', 80, 200); // somewhere else entirely
+  assert.equal(w.memory().sightings.filter((s) => s.label === 'person').length, 2);
+});
+
+test('heading reference is fixed at takeoff, not before', () => {
+  const w = new World();
+  w.applyTelemetry(0, 40);   // on the ground, IMU says 40°
+  w.applyTelemetry(0, 75);   // moved by hand: ignored
+  assert.equal(w.pose.heading, 0);
+  w.applySdk('takeoff');
+  w.applyTelemetry(80, 120); // IMU jumped at takeoff: this becomes heading 0
+  assert.equal(w.pose.heading, 0);
+  w.applyTelemetry(80, 210); // turned 90° clockwise
+  assert.equal(w.pose.heading, -90);
+});
+
+test('with metric depth, explore uses measured distances and draws walls', async (t) => {
+  const fake = await fakeDrone();
+  // A person straight ahead whose box is cut at the bottom (no size estimate possible), 2.4 m away.
+  const view = async () => ({ timestamp: Date.now() / 1000, objects: [{ label: 'person', confidence: 0.9, center: { x: 0.5, y: 0.5 }, box: { x: 0.45, y: 0.3, w: 0.1, h: 0.7 } }] });
+  const depth = async () => ({
+    timestamp: Date.now() / 1000,
+    objects: [{ label: 'person', confidence: 0.9, center: { x: 0.5, y: 0.5 }, box: { x: 0.45, y: 0.3, w: 0.1, h: 0.7 }, depth_m: 2.4 }],
+    columns: [-30, -15, 0, 15, 30].map((b) => ({ x: 0.5 + b / 70, bearing_deg: b, depth_m: 3 })), // a wall 3 m ahead
+  });
+  const drone = tello(fake, { settleMs: 10, vision: view, depth });
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const result = await drone.execute({ droneId: 'tello', action: 'explore' });
+  assert.equal(result.ok, true, result.error);
+  const first = drone.map().sightings.find((s) => s.label === 'person');
+  assert.equal(first.distanceCm, 240);
+  assert.deepEqual([first.x, first.y], [240, 0]);
+  const map = drone.map();
+  assert.ok(map.obstacles.length >= 20, `${map.obstacles.length} obstacle points`);
+  // The wall straight ahead at the start is about 300 cm away on the x axis.
+  assert.ok(map.obstacles.some((o) => Math.abs(o.x - 300) <= 20 && Math.abs(o.y) <= 20));
+});

@@ -49,6 +49,8 @@ export type TelloOptions = {
   askVision?: (images: Buffer[], prompt: string) => Promise<string | null>;
   /** Where the drone stands in the shared room frame before its first takeoff. */
   start?: { x: number; y: number; heading: number };
+  /** Metric depth for the latest frame, or null when the depth model is not available. */
+  depth?: () => Promise<DepthView | null>;
   /** Pause after each scan rotation before a frame counts, so the image is steady. */
   settleMs?: number;
   /**
@@ -60,6 +62,12 @@ export type TelloOptions = {
 
 export type Detection = { label: string; confidence: number; center: { x: number; y: number }; box?: Box };
 export type Detections = { timestamp: number | null; objects: Detection[] };
+/** Metric depth of one frame (metoera-vision /depth, Depth Anything V2 Metric Indoor). */
+export type DepthView = {
+  timestamp: number | null;
+  objects: { label: string; confidence: number; box: Box; center: { x: number; y: number }; depth_m: number }[];
+  columns: { x: number; bearing_deg: number; depth_m: number }[];
+};
 
 const MIN_CONFIDENCE = 0.5;
 const SCAN_VIEWS = 4; // 4 x 90 degrees; the Tello camera sees about 82 degrees across
@@ -112,6 +120,7 @@ export class RealTello {
   readonly #frame: (() => Promise<Buffer | null>) | null;
   readonly #askVision: ((images: Buffer[], prompt: string) => Promise<string | null>) | null;
   readonly #world: World;
+  readonly #depth: (() => Promise<DepthView | null>) | null;
   readonly #settleMs: number;
   readonly #mayTalk: () => string | null;
   #video = false;
@@ -154,6 +163,7 @@ export class RealTello {
     this.#frame = options.frame ?? null;
     this.#askVision = options.askVision ?? null;
     this.#world = new World(options.start);
+    this.#depth = options.depth ?? null;
     this.#settleMs = options.settleMs ?? 400;
     this.#mayTalk = options.mayTalk ?? (() => null);
   }
@@ -403,14 +413,15 @@ export class RealTello {
       const label = typeof value.label === 'string' && value.label.trim() ? value.label.trim().toLowerCase() : null;
       const view = await this.#freshView(Date.now() - 1500, 3000);
       if (!view) return this.#fail(this.#visionError());
+      const lookDepth = await this.#depthNow();
       const objects = view.objects.filter((o) => o.confidence >= MIN_CONFIDENCE && (!label || o.label.toLowerCase() === label));
       const counts: Record<string, number> = {};
       for (const o of objects) counts[o.label] = (counts[o.label] ?? 0) + 1;
-      for (const o of objects) this.#world.see(o.label, bearingDeg(o.center.x), o.box ? estimateDistanceCm(o.label, o.box) : null);
+      for (const o of objects) this.#world.see(o.label, bearingDeg(o.center.x), this.#distanceOf(o, lookDepth));
       this.#world.record('look', label ?? 'all');
       return {
         ok: true, mode: 'real', action: 'look', drone: this.snapshot(),
-        seen: { counts, objects: objects.map((o) => ({ label: o.label, confidence: Math.round(o.confidence * 100) / 100, side: side(o.center.x), distanceCm: o.box ? estimateDistanceCm(o.label, o.box) : null })), note: 'distanceCm is estimated from the camera image (about ±30%)' },
+        seen: { counts, objects: objects.map((o) => ({ label: o.label, confidence: Math.round(o.confidence * 100) / 100, side: side(o.center.x), distanceCm: this.#distanceOf(o, lookDepth) })), note: lookDepth ? 'distanceCm is measured with metric depth from the camera (about ±20%)' : 'distanceCm is estimated from the object size in the image (about ±30%)' },
       } as TelloResult;
     }
 
@@ -425,7 +436,8 @@ export class RealTello {
         const frame = await this.#freshView(Date.now() + this.#settleMs, 4000);
         if (!frame && i === 0) return this.#fail(this.#visionError());
         const matches = frame ? frame.objects.filter((o) => o.confidence >= MIN_CONFIDENCE && o.label.toLowerCase() === label) : [];
-        for (const o of matches) this.#world.see(o.label, bearingDeg(o.center.x), o.box ? estimateDistanceCm(o.label, o.box) : null);
+        const scanDepth = await this.#depthNow();
+        for (const o of matches) this.#world.see(o.label, bearingDeg(o.center.x), this.#distanceOf(o, scanDepth));
         views.push({ view: i + 1, degreesFromStart: i * 90, count: frame ? matches.length : null, sides: matches.map((o) => side(o.center.x)) });
         const turn = await this.#motion('rotate', 'cw 90', 15000);
         if (!turn.ok) return { ok: false, mode: 'real', error: `scan stopped after view ${i + 1}: ${'error' in turn ? turn.error : ''}`, views } as TelloResult;
@@ -499,7 +511,7 @@ export class RealTello {
           return report(false, `Lost sight of the ${label}`);
         }
         searched = false;
-        const distanceCm = estimateDistanceCm(label, target.box!);
+        const distanceCm = this.#distanceOf(target, await this.#depthNow());
         const angleDeg = bearingDeg(target.center.x); // + right, - left
         lastAngle = angleDeg;
         startDistanceCm ??= distanceCm;
@@ -568,14 +580,17 @@ export class RealTello {
       const photos: Buffer[] = [];
       const detections: (Detections | null)[] = [];
       const found: { label: string; description: string | null; x: number; y: number; distanceCm: number | null }[] = [];
+      const depths: (DepthView | null)[] = [];
       for (let i = 0; i < VIEWS; i += 1) {
         if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
         const view = await this.#freshView(Date.now() + this.#settleMs, 4000);
         if (!view && i === 0) return this.#fail(this.#visionError());
         detections.push(view);
+        const viewDepth = await this.#depthNow();
+        depths.push(viewDepth);
         for (const o of view?.objects ?? []) {
           if (o.confidence < MIN_CONFIDENCE) continue;
-          const s = this.#world.see(o.label, bearingDeg(o.center.x), o.box ? estimateDistanceCm(o.label, o.box) : null);
+          const s = this.#world.see(o.label, bearingDeg(o.center.x), this.#distanceOf(o, viewDepth));
           found.push({ label: s.label, description: null, x: s.x, y: s.y, distanceCm: s.distanceCm });
         }
         const image = this.#frame ? await this.#frame() : null;
@@ -593,7 +608,7 @@ export class RealTello {
             if (typeof item.photo !== 'number' || item.photo < 1 || item.photo > VIEWS || typeof item.label !== 'string') continue;
             const x = typeof item.x === 'number' && item.x >= 0 && item.x <= 1 ? item.x : 0.5;
             const near = detections[item.photo - 1]?.objects.filter((o) => o.box && o.confidence >= MIN_CONFIDENCE).sort((a, b) => Math.abs(a.center.x - x) - Math.abs(b.center.x - x))[0];
-            const distanceCm = near && Math.abs(near.center.x - x) < 0.12 ? estimateDistanceCm(near.label, near.box!) : null;
+            const distanceCm = near && Math.abs(near.center.x - x) < 0.12 ? this.#distanceOf(near, depths[item.photo - 1]) : null;
             const bearing = normalize((item.photo - 1) * (360 / VIEWS) + bearingDeg(x));
             const description = typeof item.description === 'string' ? item.description.slice(0, 80) : null;
             const s = this.#world.see(item.label.toLowerCase().slice(0, 30), bearing, distanceCm, description);
@@ -687,6 +702,7 @@ export class RealTello {
       if (this.#flight !== 'flying') return this.#fail('find requires a flying drone: take off first');
       const photos: Buffer[] = [];
       const detections: (Detections | null)[] = [];
+      const findDepths: (DepthView | null)[] = [];
       for (let i = 0; i < SCAN_VIEWS; i += 1) {
         if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
         const view = await this.#freshView(Date.now() + this.#settleMs, 4000);
@@ -694,6 +710,7 @@ export class RealTello {
         if (!image) return this.#fail(this.#visionError());
         photos.push(image);
         detections.push(view);
+        findDepths.push(await this.#depthNow());
         const turn = await this.#motion('rotate', 'cw 90', 15000);
         if (!turn.ok) return turn;
       }
@@ -706,7 +723,7 @@ export class RealTello {
       const x = typeof parsed?.x === 'number' && parsed.x >= 0 && parsed.x <= 1 ? parsed.x : 0.5;
       // Distance from the YOLO box nearest to that spot, when there is one.
       const near = detections[photo - 1]?.objects.filter((o) => o.box && o.confidence >= MIN_CONFIDENCE).sort((a, b) => Math.abs(a.center.x - x) - Math.abs(b.center.x - x))[0];
-      const distanceCm = near && Math.abs(near.center.x - x) < 0.15 ? estimateDistanceCm(near.label, near.box!) : null;
+      const distanceCm = near && Math.abs(near.center.x - x) < 0.15 ? this.#distanceOf(near, findDepths[photo - 1]) : null;
       // Back at the starting heading now: turn to face it (shortest way).
       const turnDeg = Math.round(normalize((photo - 1) * 90 + bearingDeg(x)));
       if (Math.abs(turnDeg) >= 5) {
@@ -736,6 +753,24 @@ export class RealTello {
     this.#world.applySdk(sdk);
     this.#world.record(action, sdk);
     return { ok: true, mode: 'real', action, drone: this.snapshot() };
+  }
+
+  /**
+   * Distance to a detected object in cm: measured metric depth when the depth model saw the same
+   * object (same label, centre within 6% of the frame), otherwise the size-based estimate.
+   */
+  #distanceOf(o: Detection, depth: DepthView | null): number | null {
+    const match = depth?.objects.find((d) => d.label === o.label && Math.hypot(d.center.x - o.center.x, d.center.y - o.center.y) < 0.06);
+    if (match && Number.isFinite(match.depth_m) && match.depth_m > 0.2) return Math.round((match.depth_m * 100) / Math.cos((bearingDeg(o.center.x) * Math.PI) / 180));
+    return o.box ? estimateDistanceCm(o.label, o.box) : null;
+  }
+
+  /** Depth for the frame just analysed, also feeding the obstacle map. Never throws. */
+  async #depthNow(): Promise<DepthView | null> {
+    if (!this.#depth) return null;
+    const view = await this.#depth().catch(() => null);
+    if (view?.columns?.length) this.#world.addObstacles(view.columns);
+    return view;
   }
 
   /** Waits for a detection result computed from a frame newer than `after` (ms since epoch). */

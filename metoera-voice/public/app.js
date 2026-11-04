@@ -83,3 +83,57 @@ $('#messageForm').addEventListener('submit', event => {
   keyboard.close();
 });
 window.addEventListener('pagehide', disconnect);
+
+// The team controller can publish measured telemetry through this adapter.
+// No received telemetry means no claim that a drone is present or moving.
+const droneRecords = new Map();
+const droneDialog = $('#dronesDialog');
+const positionLabel = value => Number(value.toFixed(2)).toString();
+function renderDrones() {
+  const grid = $('#droneGrid');
+  grid.replaceChildren();
+  let recentCount = 0;
+  for (const id of ['drone-1', 'drone-2']) {
+    const record = droneRecords.get(id);
+    const recent = record && Date.now() - record.receivedAt < 10000;
+    if (recent) recentCount++;
+    const card = document.createElement('article');
+    card.className = 'drone-card';
+    card.innerHTML = '<div class="drone-card-head"><h3></h3><span class="drone-availability"></span></div><p class="drone-position">POSIZIONE</p><div class="drone-coordinates"></div><div class="drone-motion"><span>Movimento</span><strong></strong></div>';
+    card.querySelector('h3').textContent = id === 'drone-1' ? 'Drone 1' : 'Drone 2';
+    card.querySelector('.drone-availability').textContent = recent ? 'Dati ricevuti' : (record ? 'Dati non aggiornati' : 'In attesa');
+    card.querySelector('.drone-coordinates').textContent = recent && record.position ? `X ${positionLabel(record.position.x)} · Y ${positionLabel(record.position.y)} · Z ${positionLabel(record.position.z)} m` : 'Non disponibile';
+    card.querySelector('.drone-position').textContent = recent && record.position ? `POSIZIONE · ${record.position.frame}` : 'POSIZIONE';
+    const labels = {moving: 'In movimento', stationary: 'Fermo', unknown: 'Non disponibile'};
+    const velocity = recent && record.velocity ? ` · ${['x','y','z'].map(axis => `${axis.toUpperCase()} ${positionLabel(record.velocity[axis])}`).join(' / ')} m/s` : '';
+    card.querySelector('.drone-motion strong').textContent = recent ? labels[record.motion] + velocity : 'Non disponibile';
+    grid.append(card);
+  }
+  $('#telemetryNote').textContent = recentCount ? 'Coordinate in metri nel sistema indicato dal controller. I dati non aggiornati non vengono mostrati.' : 'In attesa dei dati del controller. Le posizioni non sono ancora disponibili.';
+}
+window.addEventListener('metoera:telemetry', event => {
+  const data = event.detail;
+  if (!data || !['drone-1', 'drone-2'].includes(data.id) || !['moving', 'stationary', 'unknown'].includes(data.motion)) return;
+  const timestamp = Date.parse(data.timestamp);
+  if (!Number.isFinite(timestamp) || timestamp > Date.now() + 5000 || Date.now() - timestamp >= 10000) return;
+  let position = null;
+  if (data.position != null) {
+    const p = data.position;
+    if (typeof p !== 'object' || !['x','y','z'].every(axis => typeof p[axis] === 'number' && Number.isFinite(p[axis])) || typeof p.frame !== 'string' || !p.frame.trim() || p.frame.length > 80) return;
+    position = {x:p.x, y:p.y, z:p.z, frame:p.frame};
+  }
+  let velocity = null;
+  if (data.velocity != null) {
+    const v = data.velocity;
+    if (typeof v !== 'object' || !['x','y','z'].every(axis => typeof v[axis] === 'number' && Number.isFinite(v[axis]))) return;
+    velocity = {x:v.x, y:v.y, z:v.z};
+  }
+  const previous = droneRecords.get(data.id);
+  if (previous && timestamp <= previous.timestamp) return;
+  droneRecords.set(data.id, {position, velocity, motion:data.motion, timestamp, receivedAt:timestamp});
+  renderDrones();
+});
+$('#dronesButton').addEventListener('click', () => { renderDrones(); droneDialog.showModal(); });
+droneDialog.querySelector('.dismiss').addEventListener('click', () => droneDialog.close());
+setInterval(() => { if (droneDialog.open) renderDrones(); }, 1000);
+renderDrones();

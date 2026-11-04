@@ -112,13 +112,20 @@ $('#muteButton').addEventListener('click',()=>setMuted(!muted));
 // Two real drones. Grok names them by colour; the server knows them as tello and rmtt.
 const FLEET={black:{id:'tello',name:'Drone 1 · Black',model:'Tello EDU'},red:{id:'rmtt',name:'Drone 2 · Red',model:'RoboMaster TT'}};
 const nameOf=id=>Object.values(FLEET).find(d=>d.id===id)?.name||id;
-let drones=[]; // from /api/drones: each drone with owner {state: mine | other | lost | claiming | waiting}
-// Another laptop flies this drone: it is see-only here, emergency included.
-const seeOnly=d=>['other','lost'].includes(d?.owner?.state);
-const ownedIds=()=>drones.filter(d=>d.owner?.state==='mine').map(d=>d.id);
-const ownedColours=()=>Object.keys(FLEET).filter(c=>ownedIds().includes(FLEET[c].id));
+let drones=[]; // from /api/drones: owner {state: mine | other | lost | taking | yielding | claiming | waiting}, pilot {name, me}
+const droneOf=colour=>drones.find(d=>d.id===FLEET[colour]?.id);
+// Held by another laptop (owner.locked: flying or flown there), or its laptop went silent.
+const elsewhere=d=>['other','lost'].includes(d?.owner?.state);
+// The person who takes off a drone flies it until it lands. Blocked: someone else flies it,
+// here or on another laptop; nothing at all may be sent to it, not even land or emergency.
+const blocked=d=>Boolean((d?.pilot&&!d.pilot.me)||(d?.owner?.state==='other'&&d.owner.locked)||d?.owner?.state==='lost');
+// On the ground and linked to another laptop: a takeoff from here moves it to this laptop.
+const takeable=d=>d?.owner?.state==='other'&&!d.owner.locked;
+// The drones this person may command: on this laptop and not flown by someone else, or takeable.
+const flyable=d=>Boolean(d)&&!blocked(d)&&(['mine','taking'].includes(d.owner?.state)||takeable(d));
+const flyableColours=()=>Object.keys(FLEET).filter(c=>flyable(droneOf(c)));
 // Every voice action goes to a real drone through the local server.
-const actionLabels={explore:'Explore',describe:'Look (vision)',find:'Find',memory:'Memory',mark:'Place saved',go_to:'Go back',approach:'Approach',release:'Released',photo:'Photo',emergency:'Motors cut',takeoff:'Takeoff',land:'Landing',move:'Move',rotate:'Rotation',flip:'Flip',speed:'Speed',stop:'Stop',status:'Status',test_flight:'Test flight',scan:'360° scan',look:'Look'};
+const actionLabels={explore:'Explore',describe:'Look (vision)',find:'Find',memory:'Memory',mark:'Place saved',go_to:'Go back',approach:'Approach',photo:'Photo',emergency:'Motors cut',takeoff:'Takeoff',land:'Landing',move:'Move',rotate:'Rotation',flip:'Flip',speed:'Speed',stop:'Stop',status:'Status',test_flight:'Test flight',scan:'360° scan',look:'Look'};
 // Each drone has its own queue: commands for Black and Red run at the same time, and a
 // sequence for one drone keeps its order. Tools answer Grok at once ("started"); when the
 // drone finishes, Grok gets an automatic update. land, stop and emergency skip the queue.
@@ -160,15 +167,15 @@ function dispatch(name,args,failed,run){
   // Natural commands: "vai a destra" moves 50 cm, "ruota" turns 90 degrees clockwise.
   if(name==='move'&&rest.centimeters===undefined) rest.centimeters=50;
   if(name==='rotate'){rest.direction??='clockwise';rest.degrees??=90}
-  // Emergency without a named drone cuts the motors of every drone this laptop flies.
-  if(name==='emergency'&&!colour){void emergency('motors');return {ok:true,action:'emergency',drones:'every drone this laptop flies'}}
+  // Emergency without a named drone cuts the motors of every drone this person may command.
+  if(name==='emergency'&&!colour){void emergency('motors');return {ok:true,action:'emergency',drones:'every drone you fly'}}
   let ids;
   if(FLEET[colour]) ids=[FLEET[colour].id];
   else if(URGENT.includes(name)){
-    // In a hurry nobody names the drone: every drone not known to be another laptop's. The page's
-    // view can be a moment old, so the server decides; it refuses another laptop's drone.
-    ids=Object.values(FLEET).map(f=>f.id).filter(id=>!seeOnly(drones.find(d=>d.id===id)));
-    if(!ids.length) return {ok:false,mode:'real',error:'This laptop flies no drone right now'};
+    // In a hurry nobody names the drone: every drone on this laptop that nobody else flies.
+    // The page's view can be a moment old, so the server decides; it refuses the others.
+    ids=Object.values(FLEET).map(f=>f.id).filter(id=>{const d=drones.find(x=>x.id===id);return !blocked(d)&&!elsewhere(d)});
+    if(!ids.length) return {ok:false,mode:'real',error:'You fly no drone right now'};
   }
   else return {ok:false,mode:'real',error:'Say which drone: black (Drone 1) or red (Drone 2)'};
   for(const id of ids){
@@ -209,33 +216,36 @@ function finishCalls(){
   if(calls.length) requestResponse();
 }
 const tool=(name,description,properties={},required=[])=>({type:'function',name,description,parameters:{type:'object',properties,required,additionalProperties:false}});
-const INSTRUCTIONS='You are Grok, the voice pilot of two real drones for Metoera: Drone 1, called Black (a Tello EDU), and Drone 2, called Red (a RoboMaster TT). Every drone tool takes drone: black or red. If the person does not say which drone and more than one could be meant, ask; never choose for them. If they say both or all, call the tool for black and for red in the same reply: they run at the same time. land and stop without a drone apply to every drone this laptop flies. If the person asks you to choose which drone to fly or land, call status on black and on red first and wait for both updates, prefer a connected drone that is on the ground with more battery for flying (at least 20 percent), say which one you picked and why, then act. If they ask to test the drones, propose a short plan (for example: status on both, test_flight on black, then test_flight on red), and run it step by step only after they agree. Each drone has its own camera with object detection: scan and look take drone black or red, and for both drones call them once per drone and report the result of each drone separately. Every tool call physically moves a drone, so do exactly what the person says: no extra steps, no skipped steps, no changed values. Speak in the language the person uses (usually Italian) and be very brief: do exactly what is asked and nothing more. Confirm a command with one or two words (for example: ok, fatto, decollo). Never mention battery, height, heading, distances, counts or other drone data unless the person asks for it, and then answer only that. Understand natural commands in Italian or English: destra = right, sinistra = left, avanti = forward, indietro = back, su = up, giù = down, ruota/gira = rotate, girati = rotate 180, fai una foto = photo, atterra = land, decolla = take off, fermati = stop. If no distance is given, move uses 50 cm; if no angle is given, rotate uses 90 degrees; a little = 30 cm, a lot = 100 cm. Only ask when the drone or the direction is really unclear. Convert units yourself: 1 meter = 100 centimeters, half a meter = 50. Turn right means clockwise, turn left means counterclockwise. Drone tools answer at once with status started: the drone works in the background and you receive an automatic drone update message when it is done or failed. Never wait for a drone before handling the next request: the two drones are independent and run at the same time, so you can command Red while Black is still busy. For a sequence on the same drone, call its tools in order in one go; they run in that order, and if one fails the rest for that drone is skipped. When a drone update says done for an action, stay silent. Speak about an update only when it failed (say why in one short sentence) or when it answers something the person asked. If the person says stop, wait, hold or freeze, call stop at once. If they say land, or sound alarmed, call land at once. If they just say fly or test flight, call test_flight. The drone has a camera with object detection. To count or find things all around (for example: do a 360 and count the people at the table), take off first if it is on the ground, then call scan with the object name in English (person for people). scan turns a full circle in four 90-degree steps and returns a count per view and a total; give the total, mention where they are if useful, and say it is approximate because someone at the edge between two views can be missed or counted twice. To say what is in front of the drone right now, or how many people it sees, call look (label person to count people); to count all around, scan. For a photo, call photo. To understand the scene precisely (clothes, colours, who is where), call describe: it sends the camera image to Grok vision. To find something described in words (la persona con la maglietta verde), call find with the full description; it turns the drone to face it, then call approach to go there. Each drone remembers its position (room frame from its first takeoff), its actions, saved places and what it saw: call memory before answering about the past or where things are. To go back somewhere (torna dove eri, torna a casa, torna al punto di prima), call go_to with place home, last_landing, previous or a saved name, or x,y from memory; if the drone is on the ground, take off first. Save a spot with mark when asked to remember it. To explore or map the room (esplora la stanza, mappa la stanza), call explore; with both drones, call explore for black and for red in the same reply so they work at the same time. Both drones share one room map (Map button on the page). After explore, answer in one sentence with what was found. For where is X questions, call memory and use the sightings (room coordinates in cm; x = toward the wall both drones faced at the start, y = left). Use what you learned earlier in the conversation and from memory; never forget a result you already got. To come toward someone or something (vieni verso la persona, avvicinati alla bottiglia), call approach with the object name in English (person by default); it stops about 1 m away, or the distance the person says (vicino = 60 cm). The drone must be flying; if it is on the ground, say so. Report only what the results contain; never invent objects. If the person says emergency, cut the motors or kill the motors, call emergency at once (leave drone empty to stop every drone this laptop flies): the motors stop and the drone drops. If they say stop listening, mute or microphone off, call mute; after that you hear nothing until they turn the microphone back on. Only say a drone did something when its drone update says done, and report rejections in plain words, including limits such as the maximum distance.';
+const INSTRUCTIONS='You are Grok, the voice pilot of two real drones for Metoera: Drone 1, called Black (a Tello EDU), and Drone 2, called Red (a RoboMaster TT). Every drone tool takes drone: black or red. If the person does not say which drone and more than one could be meant, ask; never choose for them. If they say both or all, call the tool for black and for red in the same reply: they run at the same time. land and stop without a drone apply to every drone you fly. If the person asks you to choose which drone to fly or land, call status on black and on red first and wait for both updates, prefer a connected drone that is on the ground with more battery for flying (at least 20 percent), say which one you picked and why, then act. If they ask to test the drones, propose a short plan (for example: status on both, test_flight on black, then test_flight on red), and run it step by step only after they agree. Each drone has its own camera with object detection: scan and look take drone black or red, and for both drones call them once per drone and report the result of each drone separately. Every tool call physically moves a drone, so do exactly what the person says: no extra steps, no skipped steps, no changed values. Speak in the language the person uses (usually Italian) and be very brief: do exactly what is asked and nothing more. Confirm a command with one or two words (for example: ok, fatto, decollo). Never mention battery, height, heading, distances, counts or other drone data unless the person asks for it, and then answer only that. Understand natural commands in Italian or English: destra = right, sinistra = left, avanti = forward, indietro = back, su = up, giù = down, ruota/gira = rotate, girati = rotate 180, fai una foto = photo, atterra = land, decolla = take off, fermati = stop. If no distance is given, move uses 50 cm; if no angle is given, rotate uses 90 degrees; a little = 30 cm, a lot = 100 cm. Only ask when the drone or the direction is really unclear. Convert units yourself: 1 meter = 100 centimeters, half a meter = 50. Turn right means clockwise, turn left means counterclockwise. Drone tools answer at once with status started: the drone works in the background and you receive an automatic drone update message when it is done or failed. Never wait for a drone before handling the next request: the two drones are independent and run at the same time, so you can command Red while Black is still busy. For a sequence on the same drone, call its tools in order in one go; they run in that order, and if one fails the rest for that drone is skipped. When a drone update says done for an action, stay silent. Speak about an update only when it failed (say why in one short sentence) or when it answers something the person asked. If the person says stop, wait, hold or freeze, call stop at once. If they say land, or sound alarmed, call land at once. If they just say fly or test flight, call test_flight. The drone has a camera with object detection. To count or find things all around (for example: do a 360 and count the people at the table), take off first if it is on the ground, then call scan with the object name in English (person for people). scan turns a full circle in four 90-degree steps and returns a count per view and a total; give the total, mention where they are if useful, and say it is approximate because someone at the edge between two views can be missed or counted twice. To say what is in front of the drone right now, or how many people it sees, call look (label person to count people); to count all around, scan. For a photo, call photo. To understand the scene precisely (clothes, colours, who is where), call describe: it sends the camera image to Grok vision. To find something described in words (la persona con la maglietta verde), call find with the full description; it turns the drone to face it, then call approach to go there. Each drone remembers its position (room frame from its first takeoff), its actions, saved places and what it saw: call memory before answering about the past or where things are. To go back somewhere (torna dove eri, torna a casa, torna al punto di prima), call go_to with place home, last_landing, previous or a saved name, or x,y from memory; if the drone is on the ground, take off first. Save a spot with mark when asked to remember it. To explore or map the room (esplora la stanza, mappa la stanza), call explore; with both drones, call explore for black and for red in the same reply so they work at the same time. Both drones share one room map (Map button on the page). After explore, answer in one sentence with what was found. For where is X questions, call memory and use the sightings (room coordinates in cm; x = toward the wall both drones faced at the start, y = left). Use what you learned earlier in the conversation and from memory; never forget a result you already got. To come toward someone or something (vieni verso la persona, avvicinati alla bottiglia), call approach with the object name in English (person by default); it stops about 1 m away, or the distance the person says (vicino = 60 cm). The drone must be flying; if it is on the ground, say so. Report only what the results contain; never invent objects. If the person says emergency, cut the motors or kill the motors, call emergency at once (leave drone empty to stop every drone you fly): the motors stop and the drone drops. If they say stop listening, mute or microphone off, call mute; after that you hear nothing until they turn the microphone back on. Only say a drone did something when its drone update says done, and report rejections in plain words, including limits such as the maximum distance.';
 const dir=(values)=>({type:'string',enum:values});
-// Grok only gets the drones this laptop flies. Another laptop's drone is see-only: if this
-// laptop flies none, the names stay listed so Grok can say who flies them, and the server refuses.
+// Grok only gets the drones this person may command. If there are none, the names stay listed
+// so Grok can say who flies them, and the server refuses.
 function droneParam(){
-  const list=ownedColours().length?ownedColours():Object.keys(FLEET);
+  const list=flyableColours().length?flyableColours():Object.keys(FLEET);
   return {type:'string',enum:list,description:list.map(c=>`${c} = ${FLEET[c].name} (${FLEET[c].model})`).join(', ')};
 }
-function ownershipNote(){
-  const own=ownedColours();
-  const others=Object.entries(FLEET).map(([c,f])=>[c,drones.find(d=>d.id===f.id)]).filter(([,d])=>seeOnly(d)).map(([c,d])=>`${c} is flown by another laptop (${d.owner.name})`);
-  return ` This laptop flies: ${own.length?own.join(' and '):'no drone right now'}.${others.length?` ${others.join('; ')}: you cannot command it at all, not even land or emergency; if asked, say which laptop flies it.`:''}`;
+// Who flies what, for Grok: the person who takes off a drone flies it until it lands.
+function whoFlies(d){
+  if(d.pilot&&!d.pilot.me) return `${d.pilot.name}, another person on this laptop`;
+  if(d.owner?.state==='lost') return `nobody right now: ${d.owner.name}'s laptop stopped answering and it lands by itself`;
+  return `${d.owner.pilot||'someone'} on ${d.owner.name}'s laptop`;
 }
-const ownershipKey=()=>JSON.stringify([ownedColours(),drones.filter(seeOnly).map(d=>[d.id,d.owner.name]),drones.map(d=>[d.id,d.pilot?.name??'',d.pilot?.me??false]),myName]);
-let sessionKey='';
-// Other people on this same link: Grok must not try to move the drone they fly.
 function pilotNote(){
-  const busy=Object.entries(FLEET).map(([c,f])=>[c,drones.find(d=>d.id===f.id)]).filter(([,d])=>d?.pilot&&!d.pilot.me).map(([c,d])=>`${c} is flown by ${d.pilot.name}, another person on this link`);
-  const yours=Object.entries(FLEET).filter(([,f])=>drones.find(d=>d.id===f.id)?.pilot?.me).map(([c])=>c);
-  return `${myName?` You are talking to ${myName}.`:''}${yours.length?` ${myName||'This person'} flies ${yours.join(' and ')}.`:''}${busy.length?` ${busy.join('; ')}: only land, stop, emergency, status, look and photo work on it; for anything else say who flies it.`:''} The first person who moves a free drone becomes its pilot; release gives it back.`;
+  const entries=Object.keys(FLEET).map(c=>[c,droneOf(c)]).filter(([,d])=>d);
+  const yours=entries.filter(([,d])=>d.pilot?.me).map(([c])=>c);
+  const free=entries.filter(([,d])=>d.owner?.state==='mine'&&!d.pilot).map(([c])=>c);
+  const away=entries.filter(([,d])=>takeable(d)).map(([c,d])=>`${c} is on the ground, linked to ${d.owner.name}'s laptop: only takeoff, test_flight and status work on it, and a takeoff first moves it to this laptop (about 2 seconds)`);
+  const others=entries.filter(([,d])=>blocked(d)).map(([c,d])=>`${c} is flown by ${whoFlies(d)}`);
+  return `${myName?` You are talking to ${myName}.`:' The person has not typed a name yet; without one they cannot take off.'}${yours.length?` ${myName||'This person'} flies ${yours.join(' and ')}.`:''}${free.length?` Free to fly: ${free.join(' and ')}.`:''}${away.length?` ${away.join('; ')}.`:''}${others.length?` ${others.join('; ')}: you cannot command it at all, not even land, stop or emergency (status still works); if asked, say who flies it.`:''} The person who takes off a drone flies it until it has landed; then anyone may fly it.`;
 }
 // What each drone remembers, so a new or reconnected session starts with the history.
 function memoryNote(){
   const lines=Object.entries(FLEET).map(([c,f])=>{const d=drones.find(x=>x.id===f.id);return d?.memory?`${c}: ${d.memory}`:null}).filter(Boolean);
   return lines.length?` Drone memory at the start of this session: ${lines.join(' | ')}.`:'';
 }
-function sessionConfig(){ return {instructions:INSTRUCTIONS+ownershipNote()+pilotNote()+memoryNote(),tools:buildTools()} }
+const ownershipKey=()=>JSON.stringify([drones.map(d=>[d.id,d.owner?.state,d.owner?.name??'',d.owner?.pilot??'',Boolean(d.owner?.locked),d.pilot?.name??'',Boolean(d.pilot?.me)]),myName]);
+let sessionKey='';
+function sessionConfig(){ return {instructions:INSTRUCTIONS+pilotNote()+memoryNote(),tools:buildTools()} }
 // Every drone tool gets the drone parameter; mute is about the microphone, not a drone.
 const droneTool=(name,description,properties={},required=[])=>tool(name,description,{drone:droneParam(),...properties},['emergency','land','stop'].includes(name)?required:['drone',...required]);
 const buildTools=()=>[
@@ -244,7 +254,6 @@ const buildTools=()=>[
   droneTool('stop','Hover in place immediately, interrupting a move in progress'),
   droneTool('move','Move in a straight line: forward/back, left/right, up/down (avanti, indietro, sinistra, destra, su, giù). Without a distance it moves 50 cm',{direction:dir(['forward','back','left','right','up','down']),centimeters:{type:'integer',minimum:20,maximum:500,description:'Optional, default 50'}},['direction']),
   droneTool('rotate','Turn in place (ruota, gira). Right = clockwise, left = counterclockwise. Without an angle it turns 90 degrees; turn around = 180',{direction:dir(['clockwise','counterclockwise']),degrees:{type:'integer',minimum:1,maximum:360,description:'Optional, default 90'}},[]),
-  droneTool('release','Give this drone back so another person on the link can fly it (lascia il drone, rilascia)'),
   droneTool('approach','Fly toward the person or object in front of the drone and stop at a safe distance (vieni verso, avvicinati, vai dalla persona). Uses the camera only; distances are estimates',{label:{type:'string',description:'Object class in English, default person'},stopCm:{type:'integer',minimum:50,maximum:300,description:'How far from it to stop, default 100'}},[]),
   droneTool('explore','Explore the room from where the drone is: six photos turning all around, YOLO and Grok vision put people, furniture and objects on the room map (esplora, guardati intorno e ricorda). Drone must be flying'),
   droneTool('describe','Look through the camera with Grok vision and answer a question about the scene (cosa vedi, chi c\'è, di che colore è). Precise: clothes, colours, positions',{question:{type:'string',description:'What to look for or ask about the image'}},[]),
@@ -278,28 +287,32 @@ window.addEventListener('pagehide', disconnect);
 const droneDialog = $('#dronesDialog');
 const CHECKING = 'Checking that no other laptop controls this drone';
 // Dot colour: green connected, amber connecting (or still checking the other laptops), red
-// offline, grey when another laptop flies it.
-const linkOf = d => !d ? 'none' : seeOnly(d) ? 'other' : d.owner?.state !== 'mine' ? 'waiting' : d.connected ? 'connected' : d.verified ? 'waiting' : 'offline';
+// offline, grey when someone else flies it or it is linked to another laptop.
+const linkOf = d => !d ? 'none' : blocked(d) || elsewhere(d) ? 'other' : d.owner?.state !== 'mine' ? 'waiting' : d.connected ? 'connected' : d.verified ? 'waiting' : 'offline';
 function availability(d) {
   if (!d) return 'Not configured';
   const o = d.owner;
-  if (o?.state === 'other') return `Connected to ${o.name}`;
+  if (o?.state === 'other') return o.locked ? `${o.pilot ? `Flown by ${o.pilot}` : 'In use'} · ${o.name}'s laptop` : `On the ground · on ${o.name}'s laptop · say take off to fly it here`;
   if (o?.state === 'lost') return `${o.name} stopped answering · it lands by itself`;
-  if (o?.state === 'mine') return `${d.connected ? 'Connected' : (d.linkError || 'Connecting…')}${d.pilot ? (d.pilot.me ? ' · you fly it' : ` · flown by ${d.pilot.name}`) : ''}${o.conflict ? ` · also claimed by ${o.conflict}` : ''}`;
+  if (o?.state === 'taking') return `Taking over${o.name ? ` from ${o.name}` : ''}…`;
+  if (o?.state === 'yielding') return `Handing over to ${o.name}…`;
+  if (o?.state === 'mine') return `${d.connected ? 'Connected' : (d.linkError || 'Connecting…')} · ${d.pilot ? (d.pilot.me ? 'you fly it' : `flown by ${d.pilot.name}`) : 'free'}${o.conflict ? ` · also claimed by ${o.conflict}` : ''}`;
   return o?.reason && o.reason !== CHECKING ? o.reason : 'Checking other laptops…';
 }
 const coordinates = d => d?.connected ? `Battery ${d.battery ?? '–'}% · Height ${d.heightCm ?? '–'} cm` : 'Unavailable';
-const motion = d => d ? `${d.flight === 'flying' ? 'Flying' : 'On the ground'}${Number.isFinite(d.heading) ? ` · ${d.heading}°` : ''}${d.lastError && !seeOnly(d) ? ` · ${d.lastError}` : ''}` : 'Set its IP in .env.tello';
+const motion = d => d ? `${d.flight === 'flying' ? 'Flying' : 'On the ground'}${Number.isFinite(d.heading) ? ` · ${d.heading}°` : ''}${d.lastError && !elsewhere(d) ? ` · ${d.lastError}` : ''}` : 'Set its IP in .env.tello';
 let clientsText = '';
+// The cards are rebuilt (video started or dropped) only when a drone changes laptop.
+const videoKey = () => JSON.stringify(drones.map(d => [d.id, d.owner?.state, d.owner?.name ?? '']));
 let cardsKey = '';
 function renderDrone() {
   const grid = $('#droneGrid');
   grid.replaceChildren();
-  cardsKey = ownershipKey();
+  cardsKey = videoKey();
   for (const [colour, info] of Object.entries(FLEET)) {
     const d = drones.find(x => x.id === info.id);
     const card = document.createElement('article');
-    card.className = `drone-card drone-${colour}${seeOnly(d) ? ' drone-other' : ''}`;
+    card.className = `drone-card drone-${colour}${blocked(d) ? ' drone-other' : ''}`;
     card.innerHTML = '<div class="drone-card-head"><h3></h3><span class="drone-availability"></span></div><div class="drone-video"><img alt=""><span>Camera off: start metoera-vision</span></div><p class="drone-position"></p><div class="drone-coordinates"></div><div class="drone-motion"><span>State</span><strong></strong></div>';
     // Live YOLO video of this laptop's drones, only while the panel is open (the stream stops
     // when the image goes away). Another laptop's drone sends its video to that laptop.
@@ -307,7 +320,7 @@ function renderDrone() {
     if (d?.connected && d.owner?.state === 'mine') { img.src = `/video/${info.id}`; img.alt = `${info.name} camera`; img.onerror = () => card.querySelector('.drone-video').classList.add('off'); }
     else {
       card.querySelector('.drone-video').classList.add('off');
-      if (seeOnly(d)) card.querySelector('.drone-video span').textContent = `Camera on ${d.owner.name}'s laptop`;
+      if (elsewhere(d)) card.querySelector('.drone-video span').textContent = `Camera on ${d.owner.name}'s laptop`;
     }
     card.querySelector('h3').textContent = info.name;
     card.querySelector('.drone-position').textContent = info.model.toUpperCase();
@@ -316,7 +329,7 @@ function renderDrone() {
     card.querySelector('.drone-motion strong').textContent = motion(d);
     grid.append(card);
   }
-  $('#telemetryNote').textContent = 'The server checks each of its drones every 5 seconds. Drone 1 uses TELLO_IP, Drone 2 uses RMTT_IP. A drone another laptop flies is see-only here.';
+  $('#telemetryNote').textContent = 'The server checks each of its drones every 5 seconds. Drone 1 uses TELLO_IP, Drone 2 uses RMTT_IP. The person who takes off a drone flies it until it lands; a landed drone on another laptop moves here when someone takes off with it.';
   $('#clientsLine').textContent = clientsText;
 }
 $('#dronesButton').addEventListener('click', () => { renderDrone(); droneDialog.showModal(); });
@@ -327,11 +340,12 @@ droneDialog.addEventListener('close', () => $('#droneGrid').replaceChildren());
 // While the panel is open, refresh the text only, so the video is not rebuilt. When a drone
 // changes hands (ours ↔ another laptop's) the cards are rebuilt to start or drop its video.
 function updateCards() {
-  if (ownershipKey() !== cardsKey) { renderDrone(); return; }
+  if (videoKey() !== cardsKey) { renderDrone(); return; }
   for (const [colour, info] of Object.entries(FLEET)) {
     const card = $('#droneGrid').querySelector?.(`.drone-${colour}`);
     if (!card) continue;
     const d = drones.find(x => x.id === info.id);
+    card.classList.toggle('drone-other', blocked(d));
     card.querySelector('.drone-availability').textContent = availability(d);
     card.querySelector('.drone-coordinates').textContent = coordinates(d);
     card.querySelector('.drone-motion strong').textContent = motion(d);
@@ -362,32 +376,59 @@ async function refreshDrone() {
     const parts = Object.entries(FLEET).map(([colour, info]) => {
       const d = drones.find(x => x.id === info.id);
       const label = colour === 'black' ? 'Black' : 'Red';
-      const text = !d ? `${label} –` : seeOnly(d) ? `${label} · ${d.owner.name}` : d.owner?.state !== 'mine' ? `${label} …` : d.connected ? `${label} ${d.battery ?? '–'}%${d.flight==='flying'?' ✈':''}` : `${label} off`;
+      const who = d?.pilot && !d.pilot.me ? ` · ${d.pilot.name}` : '';
+      const text = !d ? `${label} –` : elsewhere(d) ? `${label} · ${d.owner.pilot || d.owner.name}` : d.owner?.state !== 'mine' ? `${label} …` : d.connected ? `${label} ${d.battery ?? '–'}%${d.flight==='flying'?' ✈':''}${who}` : `${label} off${who}`;
       return {state:linkOf(d), text, detail:`${info.name}: ${availability(d)}`};
     });
-    // The overall colour is about this laptop's drones; another laptop's drone does not count.
+    // The overall colour is about the drones this person may fly here; the others do not count.
     const configured = parts.filter(p => !['none', 'other'].includes(p.state));
     const overall = !configured.length ? (parts.some(p => p.state === 'other') ? 'other' : 'none') : configured.every(p => p.state === 'connected') ? 'connected' : configured.some(p => ['connected', 'waiting'].includes(p.state)) ? 'waiting' : 'offline';
     showLink(parts.map(p => p.text).join(' · '), overall, parts.map(p => p.detail).join('. '));
     $('#droneState').textContent = parts.map(p => p.text).join(' · ');
     for (const [i, p] of parts.entries()) $(`#dot${i}`).setAttribute('data-state', p.state);
+    decideName(data.pilot&&typeof data.pilot.name==='string'?data.pilot.name:'');
   } catch {
     drones = [];
     $('#droneState').textContent = 'Server unreachable';
     showLink('Server offline', 'offline', 'Start the server with npm start');
+    decideName('');
   }
   if (droneDialog.open) updateCards();
 }
-// Each person on the link has a name, so the others see who flies each drone.
+// The name belongs to this browser, shared by its tabs: localStorage and the metoera_pilot cookie.
 let myName='';
-try { myName=localStorage.getItem('metoera_name')||''; } catch {}
+let nameDecided=false;
+function storedName(){
+  try { return localStorage.getItem('metoera_name')||''; } catch { return ''; }
+}
+function rememberName(name){
+  myName=name;
+  try { localStorage.setItem('metoera_name', myName); } catch {}
+  $('#pilotLine').textContent=`You are ${myName}`;
+}
 async function sendName(name){
-  try { const r=await fetch('/api/pilot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}); const j=await r.json(); if(j.ok){myName=j.name; try{localStorage.setItem('metoera_name',myName)}catch{} $('#pilotLine').textContent=`You are ${myName}`;} } catch {}
+  try { const r=await fetch('/api/pilot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}); const j=await r.json(); if(j.ok) rememberName(j.name); } catch {}
+}
+function decideName(serverName){
+  if(nameDecided) return;
+  nameDecided=true;
+  const fromServer=typeof serverName==='string'?serverName.trim():'';
+  if(fromServer){ rememberName(fromServer); return; }
+  const saved=storedName();
+  if(saved){ void sendName(saved); return; }
+  nameDialog.showModal?.();
 }
 const nameDialog=$('#nameDialog');
 nameDialog.addEventListener('close',()=>{ const v=$('#pilotName').value.trim(); if(v) void sendName(v); else if(!myName) setTimeout(()=>nameDialog.showModal?.(),0); });
-if(myName) void sendName(myName); else nameDialog.showModal?.();
-$('#pilotLine').addEventListener('click',()=>{ $('#pilotName').value=myName; nameDialog.showModal(); });
+// The lock goes by the name: renaming while flying gives up control of the drone.
+$('#pilotLine').addEventListener('click',()=>{
+  $('#pilotName').value=myName;
+  const flying=Object.keys(FLEET).filter(c=>{const d=droneOf(c);return d?.pilot?.me&&d.flight==='flying'}).map(c=>c[0].toUpperCase()+c.slice(1));
+  const warning=$('#nameWarning');
+  warning.hidden=!flying.length;
+  warning.textContent=flying.length?`You fly ${flying.join(' and ')}. With another name you can't command it, and the server lands it after 15 s.`:'';
+  nameDialog.showModal();
+});
 // Top-down room map: both drones, their paths, saved places and what they saw.
 const mapDialog=$('#mapDialog');
 const SVGNS='http://www.w3.org/2000/svg';

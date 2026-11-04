@@ -57,7 +57,7 @@ Every teammate may run this server on their own laptop and list both drones in `
 - **A flying drone stays where it is.** While a drone flies, has a pilot or runs a command, it is **locked** to its laptop. Every other laptop's status line names that pilot. It sends the drone nothing: no command, not even land.
 - **A landed drone moves on takeoff.** A landed, idle drone held by another laptop shows "On the ground · on Barry's laptop · say take off to fly it here". Saying "take off" on your laptop asks Barry's laptop for it. Barry's laptop stops the video and lets go, your laptop shakes hands with the drone (`command`, `sn?`, `streamon`), and the takeoff runs, in about 2 s in all. You are then its pilot. If the drone took off on Barry's laptop meanwhile, you get "Black is flown by … on Barry's laptop" and nothing moves. Status on such a drone is answered from Barry's announcements; other commands are refused until it is here.
 - **Stopping a server.** Ctrl+C lands what is flying, stops the video and says goodbye, so another laptop takes the drone over about 2 s later. If a laptop goes silent instead (crash, Wi-Fi), the others wait 3.5 s; if its drone was locked they wait 20 s more ("stopped answering · it lands by itself"), because the Tello lands by itself about 15 s after its last command. Nobody else can land it before that, so keep someone next to every drone.
-- **How they find each other.** Each server announces its drones once a second, and at once when a lock changes, on UDP **18789**, as a broadcast to every network the laptop is on. If a teammate's drone never shows on the status line, the Wi-Fi blocks broadcasts: set `METOERA_PEERS` to the other laptop's IP on both laptops.
+- **How they find each other.** Each server announces its drones once a second, and at once when a lock changes, on UDP **18789**, as a broadcast to every network the laptop is on. The drone view, opened from the status line, lists **Laptops on this network**. If your teammate is missing there, the Wi-Fi blocks broadcasts: set `METOERA_PEERS` to the other laptop's IP on both laptops.
 
 | Setting (`.env` or `.env.tello`) | Default | |
 | --- | --- | --- |
@@ -83,7 +83,7 @@ Both drones stream video to UDP 11111 on this computer once the server has sent 
 cd ../metoera-vision && .venv/bin/python -m metoera_vision --drones tello=192.168.5.137,rmtt=192.168.5.68
 ```
 
-The voice page does not show the camera. `scan` and `look` read the detections of the drone they are called for, and a spoken photo still saves a frame.
+Click the status line to open the same drone view: each drone's live video with YOLO boxes (`/video/tello`, `/video/rmtt`, passed through from the vision service). `scan` and `look` read the detections of the drone they are called for.
 
 ## Voice commands
 

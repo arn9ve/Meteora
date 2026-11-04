@@ -70,6 +70,7 @@ const redOther = {id:'rmtt', mode:'real', connected:true, verified:false, batter
 const redTakeable = {...redOther, flight:'landed', owner:{state:'other', name:'Arnove', pilot:null, locked:false}};
 // On this laptop, flown by another person on the link.
 const blackFlownByMarco = {...blackMine, flight:'flying', heightCm:80, pilot:{name:'Marco', me:false}};
+const cardOf = (app, colour) => app.created.filter(e => e.className?.includes(`drone-${colour}`)).at(-1);
 async function openVoice(app) {
   app.element('#startVoice').click();
   app.resolveMedia({getTracks:()=>[app.track]});
@@ -78,10 +79,21 @@ async function openVoice(app) {
   return app.WebSocket.last;
 }
 
-test('the status line names a drone flown from another laptop', async () => {
+test('clicking the status line opens the drone view', async () => {
   const app = setup({drones:()=>[blackMine, redOther]});
   await tick(); await tick();
   assert.equal(app.element('#linkText').textContent, 'Black 80% · Red · Amir');
+  app.element('#linkStatus').click();
+  assert.equal(app.element('#dronesDialog').open, true);
+  const red = cardOf(app, 'red');
+  const black = cardOf(app, 'black');
+  assert.match(red.className, /drone-other/);
+  assert.equal(red.querySelector('.drone-availability').textContent, "Flown by Amir · Arnove's laptop");
+  assert.equal(red.querySelector('.drone-video span').textContent, "Camera on Arnove's laptop");
+  assert.doesNotMatch(black.className, /drone-other/);
+  assert.equal(black.querySelector('.drone-availability').textContent, 'Connected · free');
+  assert.equal(black.querySelector('.drone-video img').src, '/video/tello');
+  assert.equal(app.element('#clientsLine').textContent, 'Laptops on this network: you (Barry), Arnove');
 });
 
 test('Grok only gets the drones this person may fly, and is told who flies the others', async () => {
@@ -99,6 +111,8 @@ test('a landed drone on another laptop can be taken off from here', async () => 
   const app = setup({drones:()=>[blackMine, redTakeable]});
   await tick(); await tick();
   assert.equal(app.element('#linkText').textContent, 'Black 80% · Red · Arnove');
+  app.element('#linkStatus').click();
+  assert.equal(cardOf(app, 'red').querySelector('.drone-availability').textContent, "On the ground · on Arnove's laptop · say take off to fly it here");
   const ws = await openVoice(app);
   const session = ws.sent.find(m => m.type === 'session.update').session;
   assert.deepEqual(session.tools.find(t => t.name === 'takeoff').parameters.properties.drone.enum, ['black', 'red']);
@@ -115,6 +129,10 @@ test('a drone another person here flies: greyed with its video, left out of Grok
   const app = setup({drones:()=>[blackFlownByMarco, redTakeable]});
   await tick(); await tick();
   assert.equal(app.element('#linkText').textContent, 'Black 80% ✈ · Marco · Red · Arnove');
+  app.element('#linkStatus').click();
+  const black = cardOf(app, 'black');
+  assert.match(black.className, /drone-other/);
+  assert.equal(black.querySelector('.drone-video img').src, '/video/tello');
   const ws = await openVoice(app);
   const session = ws.sent.find(m => m.type === 'session.update').session;
   assert.deepEqual(session.tools.find(t => t.name === 'land').parameters.properties.drone.enum, ['red']);

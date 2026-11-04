@@ -256,6 +256,7 @@ settings.addEventListener('click', event => { if(event.target === settings) {
 window.addEventListener('pagehide', disconnect);
 
 // The real drones as reported by the server: Drone 1 · Black and Drone 2 · Red.
+const droneDialog = $('#dronesDialog');
 const CHECKING = 'Checking that no other laptop controls this drone';
 // Dot colour: green connected, amber connecting (or still checking the other laptops), red
 // offline, grey when someone else flies it or it is linked to another laptop.
@@ -270,13 +271,67 @@ function availability(d) {
   if (o?.state === 'mine') return `${d.connected ? 'Connected' : (d.linkError || 'Connecting…')} · ${d.pilot ? (d.pilot.me ? 'you fly it' : `flown by ${d.pilot.name}`) : 'free'}${o.conflict ? ` · also claimed by ${o.conflict}` : ''}`;
   return o?.reason && o.reason !== CHECKING ? o.reason : 'Checking other laptops…';
 }
+const coordinates = d => d?.connected ? `Battery ${d.battery ?? '–'}% · Height ${d.heightCm ?? '–'} cm` : 'Unavailable';
+const motion = d => d ? `${d.flight === 'flying' ? 'Flying' : 'On the ground'}${Number.isFinite(d.heading) ? ` · ${d.heading}°` : ''}${d.lastError && !elsewhere(d) ? ` · ${d.lastError}` : ''}` : 'Set its IP in .env.tello';
+let clientsText = '';
+// The cards are rebuilt (video started or dropped) only when a drone changes laptop.
+const videoKey = () => JSON.stringify(drones.map(d => [d.id, d.owner?.state, d.owner?.name ?? '']));
+let cardsKey = '';
+function renderDrone() {
+  const grid = $('#droneGrid');
+  grid.replaceChildren();
+  cardsKey = videoKey();
+  for (const [colour, info] of Object.entries(FLEET)) {
+    const d = drones.find(x => x.id === info.id);
+    const card = document.createElement('article');
+    card.className = `drone-card drone-${colour}${blocked(d) ? ' drone-other' : ''}`;
+    card.innerHTML = '<div class="drone-card-head"><h3></h3><span class="drone-availability"></span></div><div class="drone-video"><img alt=""><span>Camera off: start metoera-vision</span></div><p class="drone-position"></p><div class="drone-coordinates"></div><div class="drone-motion"><span>State</span><strong></strong></div>';
+    // Live YOLO video of this laptop's drones, only while the panel is open (the stream stops
+    // when the image goes away). Another laptop's drone sends its video to that laptop.
+    const img = card.querySelector('.drone-video img');
+    if (d?.connected && d.owner?.state === 'mine') { img.src = `/video/${info.id}`; img.alt = `${info.name} camera`; img.onerror = () => card.querySelector('.drone-video').classList.add('off'); }
+    else {
+      card.querySelector('.drone-video').classList.add('off');
+      if (elsewhere(d)) card.querySelector('.drone-video span').textContent = `Camera on ${d.owner.name}'s laptop`;
+    }
+    card.querySelector('h3').textContent = info.name;
+    card.querySelector('.drone-position').textContent = info.model.toUpperCase();
+    card.querySelector('.drone-availability').textContent = availability(d);
+    card.querySelector('.drone-coordinates').textContent = coordinates(d);
+    card.querySelector('.drone-motion strong').textContent = motion(d);
+    grid.append(card);
+  }
+  $('#telemetryNote').textContent = 'The server checks each of its drones every 5 seconds. Drone 1 uses TELLO_IP, Drone 2 uses RMTT_IP. The person who takes off a drone flies it until it lands; a landed drone on another laptop moves here when someone takes off with it.';
+  $('#clientsLine').textContent = clientsText;
+}
+droneDialog.querySelector('.dismiss').addEventListener('click', () => droneDialog.close());
+// Closing the panel drops the video streams.
+droneDialog.addEventListener('close', () => $('#droneGrid').replaceChildren());
+
+// While the panel is open, refresh the text only, so the video is not rebuilt. When a drone
+// changes hands (ours ↔ another laptop's) the cards are rebuilt to start or drop its video.
+function updateCards() {
+  if (videoKey() !== cardsKey) { renderDrone(); return; }
+  for (const [colour, info] of Object.entries(FLEET)) {
+    const card = $('#droneGrid').querySelector?.(`.drone-${colour}`);
+    if (!card) continue;
+    const d = drones.find(x => x.id === info.id);
+    card.classList.toggle('drone-other', blocked(d));
+    card.querySelector('.drone-availability').textContent = availability(d);
+    card.querySelector('.drone-coordinates').textContent = coordinates(d);
+    card.querySelector('.drone-motion strong').textContent = motion(d);
+  }
+  $('#clientsLine').textContent = clientsText;
+}
+
 // Always-visible link indicator, one dot per drone: green connected, amber linked without telemetry, red offline.
 function showLink(text, state, detail) {
   const pill=$('#linkStatus');
   pill.setAttribute('data-state',state);
-  pill.title=detail;
+  pill.title=`${detail}. Click for details`;
   $('#linkText').textContent=text;
 }
+$('#linkStatus').addEventListener('click', () => { renderDrone(); droneDialog.showModal(); });
 
 async function refreshDrone() {
   try {
@@ -284,6 +339,8 @@ async function refreshDrone() {
     const data = await response.json();
     if (!response.ok || !Array.isArray(data.drones)) throw new Error('Invalid status');
     drones = data.drones.filter(d => Object.values(FLEET).some(f => f.id === d.id));
+    const others = (data.clients || []).map(c => c.name);
+    clientsText = data.claimsError || `Laptops on this network: you${data.me ? ` (${data.me})` : ''}${others.length ? `, ${others.join(', ')}` : '. No other laptop heard'}`;
     // A drone changed hands during a voice session: Grok gets the new list of drones it may fly.
     const key = ownershipKey();
     if (key !== sessionKey) { sessionKey = key; if (socket?.readyState === WebSocket.OPEN) send({type:'session.update',session:sessionConfig()}); }
@@ -307,6 +364,7 @@ async function refreshDrone() {
     showLink('Server offline', 'offline', 'Start the server with npm start');
     decideName('', false);
   }
+  if (droneDialog.open) updateCards();
 }
 // The name belongs to this browser, shared by its tabs: localStorage and a metoera_name cookie.
 // Saving only after the dialog's close event misses a new tab: that event can run once the input is already cleared.

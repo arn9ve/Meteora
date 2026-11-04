@@ -30,7 +30,7 @@
 .voice.muted .symbol.active{color:#eee}
 @media(max-width:400px){.safety{margin-top:-8px}.safety button{padding:7px 11px}}
 
-.link-status{margin:0 auto 0 0;display:flex;align-items:center;gap:7px;border:1px solid #e6e6e6;background:#fff;border-radius:20px;padding:8px 12px;font-size:11px;color:#444;min-height:36px}
+.link-status{margin:0 auto 0 0;display:flex;align-items:center;gap:7px;border:1px solid #e6e6e6;background:#fff;border-radius:20px;padding:8px 12px;font-size:11px;color:#444;min-height:36px}.link-status:hover{background:#f6f6f6}
 .link-status .dot{width:8px;height:8px;border-radius:50%;background:#bbb;flex:none}
 .link-status[data-state=connected] .dot{background:#1e8e3e;box-shadow:0 0 0 3px #1e8e3e22}
 .link-status[data-state=waiting] .dot{background:#e8a317}

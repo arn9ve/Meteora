@@ -305,7 +305,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
   const video = /^\/video\/([a-z]+)$/.exec(path);
   // Only this laptop's drones stream here; another laptop's drone sends its video to that laptop.
   if (req.method === 'GET' && video && drones.has(video[1]) && refusal(video[1]) === null) { await proxyVideo(video[1], res); return; }
-  if (req.method === 'POST' && ['/session','/api/command','/api/emergency','/api/pilot'].includes(path)) {
+  if (req.method === 'POST' && ['/session','/api/command','/api/emergency','/api/pilot','/api/nearest'].includes(path)) {
     if (!req.headers.origin || !allowedOrigins.has(req.headers.origin)) { json(res, 403, {error:'Unauthorized origin'}); return; }
     // Emergency buttons: they skip the command queue and cancel whatever is waiting in it.
     if (path === '/api/emergency') {
@@ -340,6 +340,31 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
         const name = pilots.setName(sid, body?.name);
         if (!name) { json(res, 400, {ok:false, error:'Name required'}); return; }
         json(res, 200, {ok:true, name});
+      } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
+      return;
+    }
+    // "Send the nearest drone there": picks the drone that can get to room point x,y soonest
+    // (connected, this person may fly it, battery ≥ 25%), counting a takeoff as 100 cm extra,
+    // and the spot 100 cm short of the target on the way in.
+    if (path === '/api/nearest') {
+      try {
+        const body = await readJson(req) as {x?: unknown; y?: unknown; stopCm?: unknown};
+        if (typeof body?.x !== 'number' || typeof body?.y !== 'number') { json(res, 400, {ok:false, error:'x and y required'}); return; }
+        const tx = body.x, ty = body.y;
+        const stopCm = typeof body.stopCm === 'number' && body.stopCm >= 50 && body.stopCm <= 300 ? body.stopCm : 100;
+        const options = [...drones].flatMap(([id, drone]) => {
+          const snap = drone.snapshot();
+          const why = refusal(id) ?? pilots.check(sid, id, 'go_to') ?? (!snap.connected ? 'not connected' : (snap.battery ?? 0) < 25 ? `battery ${snap.battery ?? '?'}%` : null);
+          const pose = drone.map().pose;
+          const distance = Math.hypot(tx - pose.x, ty - pose.y);
+          return [{id, why, distance:Math.round(distance), cost:distance + (snap.flight === 'flying' ? 0 : 100), flying:snap.flight === 'flying', pose}];
+        });
+        const usable = options.filter((o) => !o.why).sort((a, b) => a.cost - b.cost);
+        const best = usable[0];
+        if (!best) { json(res, 200, {ok:false, error:`No drone can go: ${options.map((o) => `${label(o.id)} ${o.why}`).join('; ') || 'none configured'}`}); return; }
+        const k = best.distance > stopCm ? (best.distance - stopCm) / best.distance : 0;
+        const stop = {x:Math.round(best.pose.x + (tx - best.pose.x) * k), y:Math.round(best.pose.y + (ty - best.pose.y) * k)};
+        json(res, 200, {ok:true, drone:best.id, name:label(best.id), distanceCm:best.distance, flying:best.flying, stop, target:{x:tx, y:ty}, others:options.filter((o) => o.id !== best.id).map((o) => ({id:o.id, distanceCm:o.distance, why:o.why}))});
       } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
       return;
     }

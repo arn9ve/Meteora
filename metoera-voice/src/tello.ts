@@ -602,6 +602,20 @@ export class RealTello {
       return { ok: true, mode: 'real', action: 'explore', drone: this.snapshot(), pose: this.#world.pose, found, ...(visionNote ? { note: visionNote } : {}) } as TelloResult;
     }
 
+    // Turn in place to face a point of the room map (x, y in cm).
+    if (value.action === 'face') {
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'x', 'y'].includes(k)) || typeof value.x !== 'number' || typeof value.y !== 'number') return this.#fail('face needs x and y');
+      if (this.#flight !== 'flying') return this.#fail('face requires a flying drone');
+      const pose = this.#world.pose;
+      const heading = (Math.atan2(value.y - pose.y, value.x - pose.x) * 180) / Math.PI;
+      const turn = this.#world.turnTo(heading);
+      if (Math.abs(turn) >= 8) {
+        const r = await this.#motion('rotate', `${turn > 0 ? 'cw' : 'ccw'} ${Math.min(Math.abs(turn), 180)}`, 15000);
+        if (!r.ok) return r;
+      }
+      return { ok: true, mode: 'real', action: 'face', drone: this.snapshot(), pose: this.#world.pose } as TelloResult;
+    }
+
     // ---- Memory: where the drone is, what it did, places, things it saw ----
     if (value.action === 'memory') {
       if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for memory');

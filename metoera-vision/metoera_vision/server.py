@@ -15,6 +15,9 @@ log = logging.getLogger("metoera.vision.http")
 
 BOUNDARY = "metoeraframe"
 
+# Endpoints about one feed: with several drones they need ?drone=<id> (there is no default drone).
+PER_DRONE_ROUTES = ("/detections", "/find", "/frame.jpg", "/stream")
+
 INDEX_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>metoera-vision</title>
 <style>body{font-family:system-ui;background:#111;color:#eee;margin:16px}img{max-width:100%;border:1px solid #333}
 pre{background:#1b1b1b;padding:8px;max-height:40vh;overflow:auto}</style></head><body>
@@ -91,6 +94,9 @@ def make_handler(service: VisionService, allowed_origins: list[str], stream_fps:
             route = u.path.rstrip("/") or "/"
             drone = (q.get("drone") or [""])[0].strip() or None
             try:
+                if drone is None and service.multi and route in PER_DRONE_ROUTES:
+                    self._json({"error": "say which drone: add ?drone=<id>", "drones": service.drone_ids}, 400)
+                    return
                 if drone is not None:
                     try:
                         service.channel(drone)

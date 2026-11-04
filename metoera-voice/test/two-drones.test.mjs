@@ -129,3 +129,47 @@ test('a link that was closed and reopened keeps the drone alive again', async (t
   await new Promise((resolve) => setTimeout(resolve, 250));
   assert.equal(fake.received.filter((line) => line === 'battery?').length > before, true);
 });
+
+test('a drone another laptop owns never receives a packet from this laptop', async (t) => {
+  const replyPort = await freePort();
+  const fake = await fakeDrone({ serial: 'FAKEEDU0000001', replyPort, statePort: 0, battery: '81' });
+  let refusal = 'Connected to Arnove';
+  const drone = new RealTello({ host: '127.0.0.1', port: fake.port, localPort: replyPort, statePort: 0, expectedSerial: 'FAKEEDU0000001', keepaliveMs: 40, mayTalk: () => refusal });
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.probe();
+  const results = [
+    await drone.execute({ droneId: 'tello', action: 'takeoff' }),
+    await drone.execute({ droneId: 'tello', action: 'status' }),
+    await drone.stop(),
+    await drone.forceLand(),
+    await drone.killMotors(),
+  ];
+  for (const result of results) assert.equal(result.error, 'Connected to Arnove');
+  await drone.release();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.deepEqual(fake.received, []);
+  assert.equal(drone.snapshot().linkError, 'Connected to Arnove');
+
+  // The other laptop let it go: now it is ours and works normally.
+  refusal = null;
+  assert.equal((await drone.execute({ droneId: 'tello', action: 'status' })).ok, true);
+  assert.equal(fake.received.includes('command'), true);
+
+  // Should the gate close again, even the keepalive goes quiet.
+  refusal = 'Connected to Arnove';
+  const sent = fake.received.length;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(fake.received.length, sent);
+});
+
+test('release stops the video before closing the link', async (t) => {
+  const replyPort = await freePort();
+  const fake = await fakeDrone({ serial: 'FAKEEDU0000001', replyPort, statePort: 0, battery: '81' });
+  const drone = new RealTello({ host: '127.0.0.1', port: fake.port, localPort: replyPort, statePort: 0, expectedSerial: 'FAKEEDU0000001' });
+  t.after(() => { drone.close(); fake.close(); });
+  assert.equal((await drone.execute({ droneId: 'tello', action: 'status' })).ok, true);
+  assert.equal(drone.snapshot().video, true);
+  await drone.release();
+  assert.equal(fake.received.at(-1), 'streamoff');
+  assert.equal(drone.snapshot().verified, false);
+});

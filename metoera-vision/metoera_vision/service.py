@@ -25,6 +25,10 @@ class UnknownDrone(KeyError):
     pass
 
 
+class DroneRequired(KeyError):
+    """With several drones every request must name one; there is no default drone."""
+
+
 class Channel:
     """Per-feed state: newest frame, newest result, detection timing."""
 
@@ -74,7 +78,8 @@ class VisionService:
         self.channels = list(channels)
         self._by_id = {c.id: c for c in self.channels}
         self.multi = self.channels[0].id is not None
-        self.frames = self.channels[0].frames  # default (first) feed
+        # The one feed in single-source mode (file, webcam). Several drones have no "the" feed.
+        self.frames: Optional[LatestFrame] = None if self.multi else self.channels[0].frames
         self.detect_fps = detect_fps
         self.jpeg_quality = jpeg_quality
         self._wake = threading.Event()
@@ -91,11 +96,16 @@ class VisionService:
         return [c.id for c in self.channels if c.id is not None]
 
     def channel(self, drone: Optional[str] = None) -> Channel:
-        """The channel for `drone`; the first one when `drone` is None/empty.
-        Raises UnknownDrone for an id that isn't configured."""
-        if not drone:
+        """The channel for `drone`. Single-source mode has one channel and takes no id.
+        With several drones the id is required: DroneRequired when it is missing,
+        UnknownDrone when it isn't configured. There is no default drone."""
+        if not self.multi:
+            if drone:
+                raise UnknownDrone(drone)
             return self.channels[0]
-        c = self._by_id.get(drone) if self.multi else None
+        if not drone:
+            raise DroneRequired()
+        c = self._by_id.get(drone)
         if c is None:
             raise UnknownDrone(drone)
         return c
@@ -115,8 +125,8 @@ class VisionService:
 
     # ---- detection -------------------------------------------------------
     def process(self, frame: Frame, channel: Optional[Channel] = None) -> dict:
-        """Run the model on one frame and publish the result on `channel` (default: first)."""
-        ch = channel or self.channels[0]
+        """Run the model on one frame and publish the result on `channel` (required with several drones)."""
+        ch = channel or self.channel()
         t0 = time.perf_counter()
         boxes = self.detector.detect(frame.image)
         ms = (time.perf_counter() - t0) * 1000
@@ -168,11 +178,7 @@ class VisionService:
                 log.exception("detection failed%s", f" ({ch.id})" if ch.id else "")
             ch.detect_times.append(time.monotonic())
 
-    # ---- backward-compatible single-feed accessors -------------------------
-    @property
-    def fps_detect(self) -> float:
-        return self.channels[0].fps_detect
-
+    # ---- totals over every channel -----------------------------------------
     @property
     def detections_run(self) -> int:
         return sum(c.detections_run for c in self.channels)
@@ -250,14 +256,9 @@ class VisionService:
             out = {"drone": ch.id, **self._channel_health(ch), **common}
             return out
         drones = {c.id: self._channel_health(c) for c in self.channels}
-        first = drones[self.channels[0].id]
         return {
-            # ok: every configured drone has fresh video and no errors
+            # ok: every configured drone has fresh video and no errors; per-drone detail in `drones`
             "ok": all(d["ok"] for d in drones.values()),
-            "default_drone": self.channels[0].id,
-            # flat fields mirror the default (first) drone, for single-drone callers
-            **{k: first[k] for k in ("fps_in", "fps_detect", "last_frame_age_ms", "last_detection_age_ms",
-                                     "frame_size", "frames_dropped")},
             **common,
             "detections_run": self.detections_run,
             "drones": drones,
@@ -277,7 +278,7 @@ class VisionService:
             "ok": bool(ok),
             "source": self.source.description if self.source is not None else None,
             "fps_in": round(ch.frames.fps_in, 1),
-            "fps_detect": round(self.fps_detect, 1),
+            "fps_detect": round(ch.fps_detect, 1),
             "detect_fps_target": self.detect_fps,
             "last_frame_age_ms": age_ms,
             "last_detection_age_ms": None if res is None else round((time.time() - res["timestamp"]) * 1000),

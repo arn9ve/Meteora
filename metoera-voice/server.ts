@@ -35,6 +35,14 @@ async function readVision(id: string): Promise<Detections | null> {
     return Array.isArray(data.objects) ? data : null;
   } catch { return null; }
 }
+// Where each drone stands before its first takeoff, in one room frame shared by both drones:
+// TELLO_START / RMTT_START = "x,y,heading" in cm and degrees (x = toward the wall both face,
+// y = left). Defaults: Black at 0,0 and Red 150 cm to its right, both facing the same way.
+function startOf(prefix: string): {x: number; y: number; heading: number} {
+  const raw = process.env[`${prefix}_START`] ?? (prefix === 'RMTT' ? '0,-150,0' : '0,0,0');
+  const [x, y, heading] = raw.split(',').map((v) => Number(v.trim()));
+  return [x, y, heading].every(Number.isFinite) ? {x, y, heading} : {x:0, y:0, heading:0};
+}
 // The latest camera frame of one drone (with YOLO boxes), as JPEG.
 async function readFrame(id: string): Promise<Buffer | null> {
   try {
@@ -71,7 +79,7 @@ function droneFromEnv(id: string, prefix: string): RealTello | null {
   const host = process.env[`${prefix}_IP`]?.trim();
   if (!host) return null;
   if (!isIpv4(host)) { console.log(`${prefix}_IP must be an IPv4 address (got "${host}"); that drone is off`); return null; }
-  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, mayTalk:() => refusal(id)});
+  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, start:startOf(prefix), mayTalk:() => refusal(id)});
 }
 const drones = new Map<string, RealTello>();
 for (const [id, prefix] of FLEET) {
@@ -356,6 +364,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
       if (!upstream.ok) { json(res, 502, {error:'Unable to obtain an xAI token. Check your key and account.'}); return; }
       json(res, 200, await upstream.json());
     } catch { json(res, 502, {error:'Unable to connect to xAI.'}); }
+    return;
+  }
+  // Top-down room map: every drone flown here, in the shared room frame.
+  if (req.method === 'GET' && path === '/api/map') {
+    json(res, 200, {frame:'cm; x = toward the wall both drones faced at the start, y = left', drones:[...drones].filter(([id]) => refusal(id) === null).map(([id, drone]) => ({id, ...drone.map()}))});
     return;
   }
   if (req.method === 'GET' && path === '/api/drones') { json(res, 200, {drones:droneViews().map((v) => {

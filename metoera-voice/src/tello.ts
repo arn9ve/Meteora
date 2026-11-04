@@ -47,6 +47,8 @@ export type TelloOptions = {
   frame?: () => Promise<Buffer | null>;
   /** Asks Grok vision about one or more JPEG images; returns its text answer. */
   askVision?: (images: Buffer[], prompt: string) => Promise<string | null>;
+  /** Where the drone stands in the shared room frame before its first takeoff. */
+  start?: { x: number; y: number; heading: number };
   /** Pause after each scan rotation before a frame counts, so the image is steady. */
   settleMs?: number;
   /**
@@ -106,7 +108,7 @@ export class RealTello {
   readonly #vision: (() => Promise<Detections | null>) | null;
   readonly #frame: (() => Promise<Buffer | null>) | null;
   readonly #askVision: ((images: Buffer[], prompt: string) => Promise<string | null>) | null;
-  readonly #world = new World();
+  readonly #world: World;
   readonly #settleMs: number;
   readonly #mayTalk: () => string | null;
   #video = false;
@@ -148,6 +150,7 @@ export class RealTello {
     this.#vision = options.vision ?? null;
     this.#frame = options.frame ?? null;
     this.#askVision = options.askVision ?? null;
+    this.#world = new World(options.start);
     this.#settleMs = options.settleMs ?? 700;
     this.#mayTalk = options.mayTalk ?? (() => null);
   }
@@ -155,6 +158,11 @@ export class RealTello {
   /** True while a queued command (takeoff, move, scan…) is running on this drone. */
   get busy(): boolean {
     return this.#busy;
+  }
+
+  /** What the top-down map draws for this drone. */
+  map() {
+    return this.#world.map();
   }
 
   snapshot(): TelloSnapshot {
@@ -545,6 +553,53 @@ export class RealTello {
         travelledCm += Math.round(Math.hypot(x, y));
       }
       return report(true, 'Stopped after the maximum number of steps');
+    }
+
+    // Explore from where the drone is: six photos turning 60° each (the views overlap), YOLO
+    // places what it recognises with a distance, and Grok vision lists the rest with details
+    // (clothes, colours, doors, obstacles). Everything goes into the room map.
+    if (value.action === 'explore') {
+      if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for explore');
+      if (this.#flight !== 'flying') return this.#fail('explore requires a flying drone: take off first');
+      const VIEWS = 6;
+      const photos: Buffer[] = [];
+      const detections: (Detections | null)[] = [];
+      const found: { label: string; description: string | null; x: number; y: number; distanceCm: number | null }[] = [];
+      for (let i = 0; i < VIEWS; i += 1) {
+        if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
+        const view = await this.#freshView(Date.now() + this.#settleMs, 4000);
+        if (!view && i === 0) return this.#fail(this.#visionError());
+        detections.push(view);
+        for (const o of view?.objects ?? []) {
+          if (o.confidence < MIN_CONFIDENCE) continue;
+          const s = this.#world.see(o.label, bearingDeg(o.center.x), o.box ? estimateDistanceCm(o.label, o.box) : null);
+          found.push({ label: s.label, description: null, x: s.x, y: s.y, distanceCm: s.distanceCm });
+        }
+        const image = this.#frame ? await this.#frame() : null;
+        if (image) photos.push(image);
+        const turn = await this.#motion('rotate', `cw ${360 / VIEWS}`, 15000);
+        if (!turn.ok) return turn;
+      }
+      // Back at the starting heading. One vision call over all photos adds what YOLO cannot name.
+      let visionNote: string | null = null;
+      if (this.#askVision && photos.length === VIEWS) {
+        const reply = await this.#askVision(photos, `These ${VIEWS} photos come from an indoor drone camera, taken while turning clockwise ${360 / VIEWS}° each time: photo 1 straight ahead, photo 2 at ${360 / VIEWS}° right, and so on. List up to 12 notable things in the room: people (with clothes and colours), furniture, doors, windows, objects, obstacles. Answer with JSON only: [{"photo": number, "x": horizontal centre from 0 (left) to 1 (right), "label": "one or two English words", "description": "a few words"}].`);
+        try {
+          const list = JSON.parse((reply ?? '').replace(/^[^[]*/, '').replace(/[^\]]*$/, '')) as { photo?: unknown; x?: unknown; label?: unknown; description?: unknown }[];
+          for (const item of Array.isArray(list) ? list.slice(0, 12) : []) {
+            if (typeof item.photo !== 'number' || item.photo < 1 || item.photo > VIEWS || typeof item.label !== 'string') continue;
+            const x = typeof item.x === 'number' && item.x >= 0 && item.x <= 1 ? item.x : 0.5;
+            const near = detections[item.photo - 1]?.objects.filter((o) => o.box && o.confidence >= MIN_CONFIDENCE).sort((a, b) => Math.abs(a.center.x - x) - Math.abs(b.center.x - x))[0];
+            const distanceCm = near && Math.abs(near.center.x - x) < 0.12 ? estimateDistanceCm(near.label, near.box!) : null;
+            const bearing = normalize((item.photo - 1) * (360 / VIEWS) + bearingDeg(x));
+            const description = typeof item.description === 'string' ? item.description.slice(0, 80) : null;
+            const s = this.#world.see(item.label.toLowerCase().slice(0, 30), bearing, distanceCm, description);
+            found.push({ label: s.label, description, x: s.x, y: s.y, distanceCm });
+          }
+        } catch { visionNote = reply ? 'Grok vision did not return a list; only YOLO objects were mapped.' : 'Grok vision did not answer; only YOLO objects were mapped.'; }
+      } else visionNote = 'Grok vision was not available; only YOLO objects were mapped.';
+      this.#world.record('explore', `${found.length} things`);
+      return { ok: true, mode: 'real', action: 'explore', drone: this.snapshot(), pose: this.#world.pose, found, ...(visionNote ? { note: visionNote } : {}) } as TelloResult;
     }
 
     // ---- Memory: where the drone is, what it did, places, things it saw ----

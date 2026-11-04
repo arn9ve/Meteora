@@ -8,7 +8,7 @@
 
 export type Pose = { x: number; y: number; z: number; heading: number };
 export type LogEntry = { at: string; action: string; detail: string; pose: Pose };
-export type Sighting = { label: string; description: string | null; x: number; y: number; distanceCm: number | null; seenAt: string; heading: number };
+export type Sighting = { label: string; description: string | null; x: number; y: number; distanceCm: number | null; seenAt: string; heading: number; approx: boolean };
 
 const rad = (deg: number) => (deg * Math.PI) / 180;
 const round = (p: Pose): Pose => ({ x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z), heading: Math.round(normalize(p.heading)) });
@@ -26,6 +26,16 @@ export class World {
   #places = new Map<string, Pose>();
   #sightings: Sighting[] = [];
   #yawAtStart: number | null = null; // telemetry yaw when the room frame was fixed
+  #path: { x: number; y: number }[] = [{ x: 0, y: 0 }]; // where it has been, for the map
+
+  /**
+   * `start`: where this drone stands in the shared room frame before its first takeoff, so two
+   * drones draw into one map (x = toward the wall both face at the start, y = left, heading + = left).
+   */
+  constructor(start: { x: number; y: number; heading: number } = { x: 0, y: 0, heading: 0 }) {
+    this.#pose = { x: start.x, y: start.y, z: 0, heading: normalize(start.heading) };
+    this.#path = [{ x: Math.round(start.x), y: Math.round(start.y) }];
+  }
 
   get pose(): Pose { return round(this.#pose); }
 
@@ -64,6 +74,8 @@ export class World {
     const h = rad(this.#pose.heading);
     this.#pose.x += forward * Math.cos(h) - left * Math.sin(h);
     this.#pose.y += forward * Math.sin(h) + left * Math.cos(h);
+    this.#path.push({ x: Math.round(this.#pose.x), y: Math.round(this.#pose.y) });
+    if (this.#path.length > 300) this.#path.shift();
   }
 
   record(action: string, detail: string): void {
@@ -92,15 +104,16 @@ export class World {
    */
   see(label: string, bearingDeg: number, distanceCm: number | null, description: string | null = null): Sighting {
     const heading = normalize(this.#pose.heading - bearingDeg);
-    const d = distanceCm ?? 0;
+    // Without a distance it is drawn 150 cm along the bearing and flagged approx.
+    const d = distanceCm ?? 150;
     const sighting: Sighting = {
-      label, description, distanceCm, heading: Math.round(heading), seenAt: new Date().toISOString(),
+      label, description, distanceCm, heading: Math.round(heading), seenAt: new Date().toISOString(), approx: distanceCm === null,
       x: Math.round(this.#pose.x + d * Math.cos(rad(heading))), y: Math.round(this.#pose.y + d * Math.sin(rad(heading))),
     };
     // The same thing seen again near the same spot replaces the older sighting.
     this.#sightings = this.#sightings.filter((s) => !(s.label === label && (description === null || s.description === description) && Math.hypot(s.x - sighting.x, s.y - sighting.y) < 60));
     this.#sightings.push(sighting);
-    if (this.#sightings.length > 40) this.#sightings.shift();
+    if (this.#sightings.length > 80) this.#sightings.shift();
     return sighting;
   }
 
@@ -131,6 +144,11 @@ export class World {
       log: this.#log.slice(-lastLog),
       sightings: this.#sightings.slice(-15),
     };
+  }
+
+  /** Everything the top-down map in the page draws. */
+  map() {
+    return { pose: this.pose, path: this.#path.slice(), places: Object.fromEntries(this.#places), sightings: this.#sightings.slice() };
   }
 
   /** One short line for the voice model. */

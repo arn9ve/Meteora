@@ -447,3 +447,31 @@ test('find uses Grok vision on four photos, turns to the match, and approach the
   const left = room.distanceNow();
   assert.ok(left >= 90 && left <= 135, `ended ${Math.round(left)} cm away`);
 });
+
+test('explore turns all the way round in six steps and maps YOLO and Grok vision finds', async (t) => {
+  const fake = await fakeDrone();
+  const room = fakeRoom(fake, { distanceCm: 250, angleDeg: 120 }); // a person behind-right
+  let photos = 0;
+  const drone = tello(fake, {
+    settleMs: 10, vision: room, frame: async () => Buffer.from('jpeg'), start: { x: 0, y: -150, heading: 0 },
+    askVision: async (images) => { photos = images.length; return '[{"photo": 3, "x": 0.5, "label": "door", "description": "white door"}, {"photo": 9, "label": "bad"}]'; },
+  });
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const result = await drone.execute({ droneId: 'tello', action: 'explore' });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(photos, 6);
+  assert.equal(fake.received.filter((c) => c === 'cw 60').length, 6);
+  assert.equal(result.pose.heading, 0); // back to where it faced
+  const person = result.found.find((f) => f.label === 'person');
+  assert.ok(person, JSON.stringify(result.found));
+  // 250 cm away, 120° to the right of the start heading, from the start point (0,-150).
+  const ex = 250 * Math.cos(-120 * Math.PI / 180), ey = -150 + 250 * Math.sin(-120 * Math.PI / 180);
+  assert.ok(Math.hypot(person.x - ex, person.y - ey) < 60, `person at (${person.x},${person.y}), expected near (${Math.round(ex)},${Math.round(ey)})`);
+  const door = result.found.find((f) => f.label === 'door');
+  assert.equal(door.description, 'white door');
+  assert.equal(result.found.some((f) => f.label === 'bad'), false);
+  const map = drone.map();
+  assert.ok(map.sightings.length >= 2);
+  assert.deepEqual(map.path[0], { x: 0, y: -150 });
+});

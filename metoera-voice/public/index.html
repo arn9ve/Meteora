@@ -5,7 +5,7 @@
 <main class="voice">
   <div id="pattern" aria-hidden="true"></div>
   <header><span class="wordmark">metoera</span><div class="header-actions"><button id="dronesButton" class="drones-button" aria-haspopup="dialog">Drones <span>↗</span></button><span id="connection" role="status">READY TO CONNECT</span></div></header>
-  <div class="safety" role="group" aria-label="Emergency controls"><span id="safetyStatus" role="status"></span><button id="switchOff" class="switch-off" title="Cancel all commands and land now">Switch off · land</button><button id="killMotors" class="kill-motors" title="Stops the motors at once. The drone drops.">Cut motors</button></div>
+  <div class="safety" role="group" aria-label="Emergency controls"><button id="linkStatus" class="link-status" data-state="checking" title="Open drone details"><span class="dot" aria-hidden="true"></span><span id="linkText">Tello · checking…</span></button><span id="safetyStatus" role="status"></span><button id="switchOff" class="switch-off" title="Cancel all commands and land now">Switch off · land</button><button id="killMotors" class="kill-motors" title="Stops the motors at once. The drone drops.">Cut motors</button></div>
   <section id="emptyState" class="empty-state" aria-label="Suggestions to get started">
     <p class="suggestions-title">TRY ASKING</p>
     <div class="suggestions">

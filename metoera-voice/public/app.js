@@ -185,14 +185,23 @@ function renderDrone() {
   const card = document.createElement('article');
   card.className = 'drone-card';
   card.innerHTML = '<div class="drone-card-head"><h3>Tello EDU</h3><span class="drone-availability"></span></div><p class="drone-position">TELEMETRY</p><div class="drone-coordinates"></div><div class="drone-motion"><span>State</span><strong></strong></div>';
-  card.querySelector('.drone-availability').textContent = !drone ? 'Not configured' : drone.connected ? (drone.verified ? 'Connected · serial verified' : 'Telemetry received') : 'Waiting for first command';
+  card.querySelector('.drone-availability').textContent = !drone ? 'Not configured' : drone.connected ? (drone.verified ? 'Connected · serial verified' : 'Telemetry received') : (drone.linkError || 'Connecting…');
   card.querySelector('.drone-coordinates').textContent = drone?.connected ? `Battery ${drone.battery ?? '–'}% · Height ${drone.heightCm ?? '–'} cm` : 'Unavailable';
   card.querySelector('.drone-motion strong').textContent = drone ? `${drone.flight === 'flying' ? 'Flying' : 'On the ground'}${Number.isFinite(drone.heading) ? ` · ${drone.heading}°` : ''}${drone.lastError ? ` · ${drone.lastError}` : ''}` : 'Unavailable';
   grid.append(card);
-  $('#telemetryNote').textContent = !drone ? 'Set TELLO_IP in .env.tello and restart the server.' : drone.connected ? 'Live telemetry from the drone.' : 'Telemetry starts after the first command.';
+  $('#telemetryNote').textContent = !drone ? 'Set TELLO_IP in .env.tello and restart the server.' : drone.connected ? 'Live telemetry from the drone.' : 'The server checks the drone every 5 seconds.';
 }
 $('#dronesButton').addEventListener('click', () => { renderDrone(); droneDialog.showModal(); });
 droneDialog.querySelector('.dismiss').addEventListener('click', () => droneDialog.close());
+
+// Always-visible link indicator: green connected, amber linked without telemetry, red offline.
+function showLink([state,text,detail]) {
+  const pill=$('#linkStatus');
+  pill.setAttribute('data-state',state);
+  pill.title=`${detail}. Click for details`;
+  $('#linkText').textContent=text;
+}
+$('#linkStatus').addEventListener('click', () => { renderDrone(); droneDialog.showModal(); });
 
 async function refreshDrone() {
   try {
@@ -200,10 +209,12 @@ async function refreshDrone() {
     const data = await response.json();
     if (!response.ok || !('drone' in data)) throw new Error('Invalid status');
     drone = data.drone && data.drone.id === 'tello' ? data.drone : null;
-    $('#droneState').textContent = !drone ? 'Not configured' : drone.connected ? `Connected · ${drone.battery ?? '–'}%` : 'Waiting for first command';
+    $('#droneState').textContent = !drone ? 'Not configured' : drone.connected ? `Connected · ${drone.battery ?? '–'}%` : drone.linkError || 'Connecting…';
+    showLink(!drone ? ['none','No drone configured','Set TELLO_IP in .env.tello'] : drone.connected ? ['connected',`Tello connected · ${drone.battery ?? '–'}%${drone.flight==='flying'?' · flying':''}`,'Live telemetry from the drone'] : drone.verified ? ['waiting','Tello · waiting for telemetry','Linked, no telemetry in the last seconds'] : ['offline','Tello offline',drone.linkError || 'No answer from the drone']);
   } catch {
     drone = null;
     $('#droneState').textContent = 'Server unreachable';
+    showLink(['offline','Server offline','Start the server with npm start']);
   }
   if (droneDialog.open) renderDrone();
 }

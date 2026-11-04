@@ -259,3 +259,32 @@ test('force land before any connection reports it clearly', async (t) => {
   assert.equal((await drone.forceLand()).error, 'The Tello is not connected yet');
   assert.equal((await drone.killMotors()).error, 'The Tello is not connected yet');
 });
+
+test('background probe reports an offline drone and connects when it answers', async (t) => {
+  const offline = new RealTello({ host: '127.0.0.1', port: 9, localPort: 0, statePort: 0, expectedSerial: SERIAL });
+  t.after(() => offline.close());
+  await offline.probe();
+  assert.equal(offline.snapshot().verified, false);
+  assert.match(offline.snapshot().linkError, /does not answer/);
+
+  const fake = await fakeDrone();
+  const drone = tello(fake);
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.probe();
+  assert.equal(drone.snapshot().verified, true);
+  assert.equal(drone.snapshot().linkError, null);
+  assert.deepEqual(fake.received.filter((c) => ['command', 'sn?'].includes(c)), ['command', 'sn?']);
+  assert.equal(fake.received.some((c) => /^(takeoff|land|forward|cw)/.test(c)), false);
+});
+
+test('probe forgets a session whose telemetry stopped and shakes hands again', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake);
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.probe();
+  const realNow = Date.now;
+  Date.now = () => realNow() + 6000; // no telemetry for 6 s
+  try { await drone.probe(); } finally { Date.now = realNow; }
+  assert.equal(fake.received.filter((c) => c === 'command').length, 2);
+  assert.equal(drone.snapshot().verified, true);
+});

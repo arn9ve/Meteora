@@ -99,6 +99,9 @@ const server = http.createServer(async (req, res) => {
   catch { res.writeHead(500).end(); }
 });
 server.listen(port, '127.0.0.1', () => console.log(`Metoera: http://localhost:${port} (${tello ? `Tello at ${process.env.TELLO_IP}` : 'no Tello configured: set TELLO_IP in .env.tello'})`));
+// Check the drone link in the background so the page can show whether it is connected
+// before anyone gives a command. Read-only: command, sn?, streamon.
+if (tello) { void tello.probe(); setInterval(() => { void tello.probe(); }, 5000).unref(); }
 // If the server stops while the real drone is flying, land it first.
 let shuttingDown = false;
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

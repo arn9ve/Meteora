@@ -9,6 +9,8 @@ export type TelloSnapshot = {
   mode: 'real';
   connected: boolean;
   verified: boolean;
+  /** Why the background link check last failed, or null. */
+  linkError: string | null;
   video: boolean;
   flight: 'landed' | 'flying';
   battery: number | null;
@@ -71,6 +73,9 @@ export class RealTello {
   readonly #vision: (() => Promise<Detections | null>) | null;
   readonly #settleMs: number;
   #video = false;
+  #linkError: string | null = null;
+  #probing = false;
+  #verifiedAt = 0;
   #interrupted = false; // true while stop / force land / motor kill own the drone
   #generation = 0; // bumped by force land and motor kill; queued commands from before are cancelled
   #stopDone: Promise<unknown> = Promise.resolve(); // queued work waits for a running stop
@@ -109,6 +114,7 @@ export class RealTello {
       mode: 'real',
       connected: Date.now() - this.#lastStateAt < 3000,
       verified: this.#verified,
+      linkError: this.#linkError,
       video: this.#video,
       flight: this.#flight,
       battery: this.#battery,
@@ -192,9 +198,33 @@ export class RealTello {
     return { ok: true, mode: 'real', action: 'emergency', drone: this.snapshot() };
   }
 
-  close(): void {
+  /**
+   * Background link check, run by the server every few seconds. Read-only: it only sends
+   * `command`, `sn?` and `streamon`. If telemetry stopped (drone rebooted or left the network)
+   * it forgets the old session so the next check shakes hands again.
+   */
+  probe(): Promise<void> {
+    if (this.#probing) return Promise.resolve();
+    this.#probing = true;
+    const run = this.#queue.then(async () => {
+      await this.#stopDone;
+      if (this.#verified && Date.now() - Math.max(this.#lastStateAt, this.#verifiedAt) > 5000) this.#resetSession();
+      if (this.#verified) { this.#linkError = null; return; }
+      this.#linkError = await this.#ensureReady(1, 1500);
+    }).finally(() => { this.#probing = false; });
+    this.#queue = run.catch(() => undefined);
+    return run.catch(() => undefined);
+  }
+
+  #resetSession(): void {
+    this.#verified = false;
+    this.#video = false;
     if (this.#keepalive) clearInterval(this.#keepalive);
     this.#keepalive = null;
+  }
+
+  close(): void {
+    this.#resetSession();
     this.#pending?.resolve(null);
     for (const socket of [this.#command, this.#state]) {
       try { socket?.close(); } catch { /* already closed */ }
@@ -366,7 +396,7 @@ export class RealTello {
     return { ok: false, mode: 'real', error };
   }
 
-  async #ensureReady(): Promise<string | null> {
+  async #ensureReady(attempts = 3, timeoutMs = 3000): Promise<string | null> {
     if (!this.#expectedSerial) return 'TELLO_SETUP_SERIAL is not configured';
     try { await this.#open(); } catch (error) {
       const code = (error as { code?: string }).code ?? 'UDP_ERROR';
@@ -374,11 +404,13 @@ export class RealTello {
     }
     if (this.#verified) return null;
     let ready: string | null = null;
-    for (let attempt = 0; attempt < 3 && !(ready && isOk(ready)); attempt += 1) ready = await this.#request('command', isOk, 3000);
+    for (let attempt = 0; attempt < attempts && !(ready && isOk(ready)); attempt += 1) ready = await this.#request('command', isOk, timeoutMs);
     if (!ready || !isOk(ready)) return 'The Tello does not answer. Check it is on and on the same network';
-    const serial = await this.#request('sn?', (t) => /^[A-Z0-9]{8,}$/i.test(t) && !isOk(t), 3000);
+    const serial = await this.#request('sn?', (t) => /^[A-Z0-9]{8,}$/i.test(t) && !isOk(t), timeoutMs);
     if (serial?.toUpperCase() !== this.#expectedSerial.toUpperCase()) return 'Serial number does not match the configured Tello';
     this.#verified = true;
+    this.#verifiedAt = Date.now();
+    this.#linkError = null;
     // Start the camera stream for metoera-vision (UDP 11111). Flying does not depend on it.
     this.#video = isOk((await this.#request('streamon', isOk, 3000)) ?? '');
     this.#keepalive = setInterval(() => this.#keepaliveTick(), this.#keepaliveMs);

@@ -368,22 +368,40 @@ async function refreshDrone() {
     showLink(parts.map(p => p.text).join(' · '), overall, parts.map(p => p.detail).join('. '));
     $('#droneState').textContent = parts.map(p => p.text).join(' · ');
     for (const [i, p] of parts.entries()) $(`#dot${i}`).setAttribute('data-state', p.state);
+    decideName(data.pilot&&typeof data.pilot.name==='string'?data.pilot.name:'');
   } catch {
     drones = [];
     $('#droneState').textContent = 'Server unreachable';
     showLink('Server offline', 'offline', 'Start the server with npm start');
+    decideName('');
   }
   if (droneDialog.open) updateCards();
 }
-// Each person on the link has a name, so the others see who flies each drone.
+// The name belongs to this browser, shared by its tabs: localStorage and the metoera_pilot cookie.
 let myName='';
-try { myName=localStorage.getItem('metoera_name')||''; } catch {}
+let nameDecided=false;
+function storedName(){
+  try { return localStorage.getItem('metoera_name')||''; } catch { return ''; }
+}
+function rememberName(name){
+  myName=name;
+  try { localStorage.setItem('metoera_name', myName); } catch {}
+  $('#pilotLine').textContent=`You are ${myName}`;
+}
 async function sendName(name){
-  try { const r=await fetch('/api/pilot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}); const j=await r.json(); if(j.ok){myName=j.name; try{localStorage.setItem('metoera_name',myName)}catch{} $('#pilotLine').textContent=`You are ${myName}`;} } catch {}
+  try { const r=await fetch('/api/pilot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}); const j=await r.json(); if(j.ok) rememberName(j.name); } catch {}
+}
+function decideName(serverName){
+  if(nameDecided) return;
+  nameDecided=true;
+  const fromServer=typeof serverName==='string'?serverName.trim():'';
+  if(fromServer){ rememberName(fromServer); return; }
+  const saved=storedName();
+  if(saved){ void sendName(saved); return; }
+  nameDialog.showModal?.();
 }
 const nameDialog=$('#nameDialog');
 nameDialog.addEventListener('close',()=>{ const v=$('#pilotName').value.trim(); if(v) void sendName(v); else if(!myName) setTimeout(()=>nameDialog.showModal?.(),0); });
-if(myName) void sendName(myName); else nameDialog.showModal?.();
 // The lock goes by the name: renaming while flying gives up control of the drone.
 $('#pilotLine').addEventListener('click',()=>{
   $('#pilotName').value=myName;

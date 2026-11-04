@@ -7,7 +7,7 @@ const source = await readFile(new URL('../public/app.js', import.meta.url), 'utf
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // `drones()` makes /api/drones answer with those drones (as this laptop sees them).
-function setup({ drones } = {}) {
+function setup({ drones, pilot, names } = {}) {
   const elements = new Map();
   const created = [];
   class Element {
@@ -33,22 +33,25 @@ function setup({ drones } = {}) {
     constructor(){this.readyState=0;WebSocket.last=this}
     send(message){(this.sent ??= []).push(JSON.parse(message))} close(){this.readyState=3} open(){this.readyState=1;this.onopen()}
   }
+  const store = names ?? new Map();
   const globals = {
     document:{querySelector:element,createElement:()=>{const e=new Element();created.push(e);return e}},
     window:{addEventListener(){},dispatchEvent(){}},
     navigator:{mediaDevices:{getUserMedia:()=>media}}, AudioContext, WebSocket,
+    localStorage:{getItem(key){ return store.has(key) ? store.get(key) : null; }, setItem(key, value){ store.set(key, String(value)); }},
     ResizeObserver:class{observe(){}}, CustomEvent:class{},
     fetch:async (url, options) => {
       fetches.push({url, body:options?.body});
       if (url==='/session') return {ok:true,json:async()=>({value:'test-token'})};
-      if (url==='/api/drones' && drones) return {ok:true,json:async()=>({drones:drones(), me:'Barry', clients:[{name:'Arnove',lastSeen:0}], claimsError:null})};
+      if (url==='/api/drones' && drones) return {ok:true,json:async()=>({drones:drones(), me:'Barry', clients:[{name:'Arnove',lastSeen:0}], claimsError:null, ...(pilot !== undefined ? {pilot:{name:pilot}} : {})})};
+      if (url==='/api/pilot') return {ok:true,json:async()=>({ok:true, name:JSON.parse(options.body).name})};
       if (url==='/api/command' && drones) return {ok:true,json:async()=>({ok:true,mode:'real',action:JSON.parse(options.body).action})};
       return {ok:false,json:async()=>({})};
     },
     innerWidth:390, performance:{now:()=>0},requestAnimationFrame:()=>1,cancelAnimationFrame(){},setInterval(){},setTimeout:()=>0,console,Date,Math,Number,Array,Map,Uint8Array,Int16Array,Promise,Error,
   };
   vm.runInNewContext(source,globals);
-  return {element,resolveMedia,track,get stopped(){return stopped},WebSocket,fetches,created};
+  return {element,resolveMedia,track,get stopped(){return stopped},WebSocket,fetches,created,names:store};
 }
 
 const MINE = {state:'mine', conflict:null};
@@ -245,4 +248,26 @@ test('cut motors needs a second tap', async () => {
   assert.equal(app.fetches.some(f=>f.url==='/api/emergency'),false);
   await app.element('#killMotors').click();
   assert.deepEqual(JSON.parse(app.fetches.find(f=>f.url==='/api/emergency').body),{kind:'motors'});
+});
+
+test('a name saved in this browser is reused and the dialog stays closed', async () => {
+  const app = setup({drones:()=>[], names:new Map([['metoera_name','Amir']])});
+  await tick(); await tick();
+  assert.equal(app.element('#nameDialog').open, false);
+  assert.equal(JSON.parse(app.fetches.find(f=>f.url==='/api/pilot').body).name, 'Amir');
+});
+
+test('a name already on this browser cookie is kept without asking', async () => {
+  const app = setup({drones:()=>[], pilot:'Marco'});
+  await tick(); await tick();
+  assert.equal(app.element('#nameDialog').open, false);
+  assert.equal(app.names.get('metoera_name'), 'Marco');
+  assert.equal(app.fetches.some(f=>f.url==='/api/pilot'), false);
+});
+
+test('a first visit asks for a name', async () => {
+  const app = setup({drones:()=>[], pilot:''});
+  await tick(); await tick();
+  assert.equal(app.element('#nameDialog').open, true);
+  assert.equal(app.names.has('metoera_name'), false);
 });

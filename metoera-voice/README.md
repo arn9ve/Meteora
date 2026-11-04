@@ -91,9 +91,9 @@ Both drone buttons call `POST /api/emergency` with `{kind: "land" | "motors"}`, 
 
 `scan` and `look` need the object-detection service [`../metoera-vision`](../metoera-vision) running on the same computer:
 
-1. After it verifies the serial, the server sends `streamon`, so the Tello streams H.264 video to this computer on UDP 11111.
-2. Start the vision service from macOS Terminal (setup in its README): `.venv/bin/python -m metoera_vision`. It runs YOLO on the stream and serves results on http://127.0.0.1:18790 (`/stream` shows the annotated video).
-3. Say "take off, do a 360 and count the people at the table".
+1. After it verifies each drone's serial, the server sends `streamon`, so every drone streams H.264 video to this computer on UDP 11111.
+2. Start the vision service from macOS Terminal (setup in its README) with the same drones as `.env.tello`: `.venv/bin/python -m metoera_vision --drones tello=<TELLO_IP>,rmtt=<RMTT_IP>`. It separates the streams by sender, runs YOLO on each and serves results per drone on http://127.0.0.1:18790 (`/stream?drone=tello` shows that drone's annotated video).
+3. Say "take off Black, do a 360 and count the people at the table".
 
 `scan` turns clockwise in four 90-degree steps (the Tello camera sees about 82 degrees across). At each stop it waits for a detection made after the drone settled, counts that object class with confidence at least 0.5, and turns again; after the fourth turn it faces where it started. Grok gets the count per view and the total. The total is approximate: someone at the edge between two views can be missed or counted twice, and people outside the camera's vertical view (too close, too low) are not seen. `VISION_URL` changes the service address.
 
@@ -104,7 +104,7 @@ Both drone buttons call `POST /api/emergency` with `{kind: "land" | "motors"}`, 
 - `stop` skips the queue so it reaches the drone during a move; queued commands wait for it.
 - While connected it sends `battery?` every 5 s, so the Tello does not land itself after 15 s of silence.
 - `TELLO_MAX_MOVE_CM` in `.env.tello` raises the move limit (default 100, SDK maximum 500).
-- `GET /api/drones` returns `{drone}` with battery, height, heading, flight state and last error. `POST /api/command` takes `{droneId: "tello", action, ...}` and only accepts requests from the page's own origin.
+- `GET /api/drones` returns `{drones: [...]}`, one entry per configured drone with battery, height, heading, flight state and last error. `POST /api/command` takes `{droneId: "tello" | "rmtt", action, ...}` and only accepts requests from the page's own origin. `POST /api/emergency` answers `{ok, error?, drones: {id: result}}`.
 
 Safety: these limits are enforced on the server, but what Grok decides to call is not. Keep someone next to the drone. Ctrl+C on the server lands it.
 

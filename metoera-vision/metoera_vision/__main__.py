@@ -19,7 +19,7 @@ def env(name: str, default: str) -> str:
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="metoera-vision", description="YOLO object detection for the Tello EDU video stream.")
     p.add_argument("--source", default=env("METOERA_VISION_SOURCE", "udp://0.0.0.0:11111"),
-                   help="udp://HOST:PORT (Tello, default) | path to video/image file | webcam:N or N")
+                   help="udp://HOST:PORT (drones, default; needs --drones) | path to video/image file | webcam:N or N")
     p.add_argument("--drones", default=env("METOERA_VISION_DRONES", ""),
                    help="several drones on one UDP port, routed by sender: id=ip[:port],... "
                         "e.g. tello=192.168.5.137,rmtt=192.168.5.68 (listens on --source's udp address)")
@@ -65,6 +65,11 @@ def main(argv=None) -> int:
         if not a.source.strip().startswith("udp://"):
             log.error("--drones needs a udp:// --source (got %s)", a.source)
             return 2
+    elif a.source.strip().startswith("udp://"):
+        # Every drone that got `streamon` sends to this port: without the list their video would
+        # mix in one decoder. File and webcam sources need no list.
+        log.error("list the drones: --drones tello=IP,rmtt=IP (or METOERA_VISION_DRONES)")
+        return 2
 
     classes = [c for c in a.classes.split(",") if c.strip()] or None
     log.info("loading model %s (device=%s)...", a.model, a.device)
@@ -77,7 +82,7 @@ def main(argv=None) -> int:
         channels = [Channel(d.id, sinks[d.id], stats=lambda i=d.id: source.drone_stats(i), address=d.address)
                     for d in drones]
         service = VisionService(source, detector, detect_fps=a.detect_fps, channels=channels)
-        log.info("drones: %s (default: %s)", ", ".join(f"{d.id}={d.address}" for d in drones), drones[0].id)
+        log.info("drones: %s", ", ".join(f"{d.id}={d.address}" for d in drones))
     else:
         frames = LatestFrame()
         source = make_source(a.source, frames, loop=not a.no_loop)

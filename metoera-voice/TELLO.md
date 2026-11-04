@@ -13,7 +13,7 @@ We confirmed this with a packet capture on the drone's own access point:
 - The Python comparison client saw the same: no reply when bound to 9000, `ok` when bound to 8889.
 - Telemetry (UDP 8890) only started after our first `command`, so the drone was receiving the commands from every port. Only the reply path was the issue.
 
-Rule for every client: **bind the command socket to local port 8889**, and only run one Tello client at a time on a computer, since they all need that port.
+Rule for every client: **bind the command socket to local port 8889**. Only one process per computer can bind it, so the metoera-voice server opens 8889 (and 8890) once and flies every drone through it. Stop the scripts in `tools/` before starting the server.
 
 > `metoera-link/tello-link.mjs` binds its command socket to port `0` (random) in `#open()`. On this drone that means replies never reach it. It should bind 8889. Not changed here; flagging it for the owner.
 
@@ -46,7 +46,7 @@ All scripts run from macOS Terminal with Node 24. None of them flies the drone e
 
 ## Two drones (Tello EDU + RoboMaster TT)
 
-Both drones reply to the computer's UDP 8889 and send telemetry to 8890, so two clients that each bind those ports cannot run together (EADDRINUSE). `src/udp-port.ts` opens each port once per process and routes every datagram by the drone's IP (and, for replies, its port 8889). Set `TELLO_IP`/`TELLO_SETUP_SERIAL` (droneId `tello`) and `RMTT_IP`/`RMTT_SETUP_SERIAL` (droneId `rmtt`) in `.env.tello`. `/api/command` picks the drone by `droneId`, `/api/emergency` lands or cuts every configured drone, and `/api/drones` lists both. The voice tools still send `droneId: 'tello'` only.
+Both drones reply to the computer's UDP 8889 and send telemetry to 8890, so two clients that each bind those ports cannot run together (EADDRINUSE). `src/udp-port.ts` opens each port once per process and routes every datagram by the drone's IP (and, for replies, its port 8889). Set `TELLO_IP`/`TELLO_SETUP_SERIAL` (droneId `tello`) and `RMTT_IP`/`RMTT_SETUP_SERIAL` (droneId `rmtt`) in `.env.tello`. `/api/command` picks the drone by `droneId`, `/api/emergency` lands or cuts every configured drone, and `/api/drones` lists both. Every voice tool names its drone (`black` = `tello`, `red` = `rmtt`).
 
 RoboMaster TT notes (SDK 3.0): `hardware?` answers `RMTT` with the expansion board fitted, `TELLO` without it. With the board fitted, Wi-Fi comes from the board's ESP32 (`RMTT-xxxxxx`); send `ap <ssid> <password>` in direct mode, then move the board switch to router mode. Not yet tried on our RMTT: whether its replies come from port 8889 (the code requires it) and whether they go to local 8889 like the EDU. `tools/diagnose-tello.mjs` checks this, but its MAC check is for our EDU.
 

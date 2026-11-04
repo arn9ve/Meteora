@@ -173,21 +173,20 @@ def test_per_drone_endpoints(multi_api):
     _, _, body = get(base + "/detections?drone=rmtt")
     d = json.loads(body)
     assert d["drone"] == "rmtt" and d["frame_size"] == [480, 360]
-    # no param -> first configured drone (backward compatible)
-    _, hdr, body = get(base + "/detections", {"Origin": "http://localhost:18787"})
-    assert json.loads(body)["drone"] == "tello"
+    _, hdr, body = get(base + "/detections?drone=tello", {"Origin": "http://localhost:18787"})
     assert hdr["Access-Control-Allow-Origin"] == "http://localhost:18787"
 
     _, _, body = get(base + "/find?label=bottle&drone=rmtt")
     f = json.loads(body)
     assert f["drone"] == "rmtt" and f["match"]["label"] == "bottle"
-    _, _, body = get(base + "/find?label=person")
+    _, _, body = get(base + "/find?label=person&drone=tello")
     assert json.loads(body)["drone"] == "tello"
 
     _, _, body = get(base + "/health")
     h = json.loads(body)
-    assert h["ok"] is True and h["default_drone"] == "tello"
-    assert set(h["drones"]) == {"tello", "rmtt"}
+    assert h["ok"] is True and set(h["drones"]) == {"tello", "rmtt"}
+    # No default drone: nothing at the top level stands for one of them.
+    assert "default_drone" not in h and "fps_in" not in h and "frame_size" not in h
     for did, dh in h["drones"].items():
         for k in ("ok", "fps_in", "fps_detect", "last_frame_age_ms", "decode_errors"):
             assert k in dh
@@ -201,7 +200,7 @@ def test_per_drone_endpoints(multi_api):
     _, hdr, body = get(base + "/frame.jpg?drone=rmtt")
     img = cv2.imdecode(np.frombuffer(body, np.uint8), cv2.IMREAD_COLOR)
     assert hdr["Content-Type"] == "image/jpeg" and img.shape[:2] == (360, 480)
-    _, _, body = get(base + "/frame.jpg")
+    _, _, body = get(base + "/frame.jpg?drone=tello")
     assert cv2.imdecode(np.frombuffer(body, np.uint8), cv2.IMREAD_COLOR).shape[:2] == (720, 960)
 
     with urllib.request.urlopen(base + "/stream?drone=rmtt", timeout=5) as r:
@@ -221,6 +220,23 @@ def test_health_not_ok_when_one_drone_silent(multi_api):
     assert h["ok"] is False
     assert h["drones"]["tello"]["ok"] is True and h["drones"]["rmtt"]["ok"] is False
     assert h["drones"]["rmtt"]["last_frame_age_ms"] is None
+
+
+@pytest.mark.parametrize("path", ["/detections", "/find?label=person", "/frame.jpg", "/stream"])
+def test_a_request_without_a_drone_is_400(multi_api, path):
+    base = multi_api[0]
+    with pytest.raises(urllib.error.HTTPError) as e:
+        get(f"{base}{path}")
+    assert e.value.code == 400
+    body = json.loads(e.value.read())
+    assert body["drones"] == ["tello", "rmtt"] and "drone" in body["error"]
+
+
+def test_the_cli_refuses_a_drone_stream_without_the_drone_list(monkeypatch):
+    from metoera_vision.__main__ import main
+
+    monkeypatch.delenv("METOERA_VISION_DRONES", raising=False)
+    assert main(["--source", "udp://127.0.0.1:11111"]) == 2  # exits before loading the model
 
 
 @pytest.mark.parametrize("path", ["/health", "/detections", "/find?label=person", "/frame.jpg", "/stream", "/"])

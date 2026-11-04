@@ -460,7 +460,8 @@ async function renderMap(){
 }
 $('#mapButton').addEventListener('click',()=>{void renderMap();mapDialog.showModal()});
 mapDialog.querySelector('.dismiss').addEventListener('click',()=>mapDialog.close());
-setInterval(()=>{if(mapDialog.open) void renderMap()},1500);
 if (storedName()) rememberName(storedName());
 refreshDrone();
 setInterval(refreshDrone, 1500);
+// The map refreshes on its own timer, registered after the drone poll.
+setInterval(()=>{if(mapDialog.open) void renderMap()},1500);

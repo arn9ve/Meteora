@@ -1,6 +1,8 @@
 # Metoera Voice
 
-A Grok voice interface and local simulator for two independent drones. All movement is virtual. The project does not send commands to physical drones or simulate a real Wi-Fi network.
+A Grok voice interface and local simulator for two independent drones. Voice commands still move virtual drones only.
+
+The `tools` folder holds the scripts we used to put our Tello EDU on the shared network, diagnose its UDP link and run a supervised test flight. Read [TELLO.md](TELLO.md) first: the Tello sends every reply to local UDP port 8889, and a client on any other port gets no answer.
 
 ## Getting started
 

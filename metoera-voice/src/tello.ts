@@ -78,6 +78,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Speed of straight-line go moves (approach, go_to), cm/s. Indoors 60 is brisk but controllable. */
+export const GO_SPEED = 60;
+
 /** Tello move for a drone-frame vector in cm, capped to maxLen; null when every axis is under 20 cm. */
 export function moveSdk(forward: number, left: number, up: number, maxLen: number): string | null {
   const length = Math.hypot(forward, left, up);
@@ -91,7 +94,7 @@ export function moveSdk(forward: number, left: number, up: number, maxLen: numbe
     if (big[1]) return l > 0 ? `left ${l}` : `right ${-l}`;
     return u > 0 ? `up ${u}` : `down ${-u}`;
   }
-  return `go ${f} ${l} ${u} 40`; // Tello go: x forward, y left, z up, speed cm/s
+  return `go ${f} ${l} ${u} ${GO_SPEED}`; // Tello go: x forward, y left, z up, speed cm/s
 }
 
 export class RealTello {
@@ -151,7 +154,7 @@ export class RealTello {
     this.#frame = options.frame ?? null;
     this.#askVision = options.askVision ?? null;
     this.#world = new World(options.start);
-    this.#settleMs = options.settleMs ?? 700;
+    this.#settleMs = options.settleMs ?? 400;
     this.#mayTalk = options.mayTalk ?? (() => null);
   }
 
@@ -530,9 +533,9 @@ export class RealTello {
         }
         const budget = MAX_TRAVEL_CM - travelledCm;
         if (budget < 20) return report(true, `Stopped after ${travelledCm} cm, the most one approach may travel`);
-        // 70% of the way, at most STEP_CM per step, never closer than the stop distance.
-        let x = Math.max(0, ahead) > 60 ? Math.max(0, ahead) * 0.7 : Math.max(0, ahead);
-        let y = Math.abs(side) > 60 ? side * 0.7 : side;
+        // 80% of the way, at most STEP_CM per step, never closer than the stop distance.
+        let x = Math.max(0, ahead) > 60 ? Math.max(0, ahead) * 0.8 : Math.max(0, ahead);
+        let y = Math.abs(side) > 60 ? side * 0.8 : side;
         const length = Math.hypot(x, y);
         const scale = Math.min(1, STEP_CM / length, budget / length);
         x = Math.round(x * scale);
@@ -542,7 +545,7 @@ export class RealTello {
         if (Math.abs(x) >= 20 || Math.abs(y) >= 20) {
           if (Math.abs(x) < 20) sdk = y > 0 ? `right ${Math.abs(y)}` : `left ${Math.abs(y)}`;
           else if (Math.abs(y) < 20) sdk = `forward ${x}`;
-          else sdk = `go ${x} ${-y} 0 40`; // Tello go: x forward, y left, z up, speed cm/s
+          else sdk = `go ${x} ${-y} 0 ${GO_SPEED}`; // Tello go: x forward, y left, z up, speed cm/s
         } else {
           steps.push({ distanceCm, angleDeg, action: 'arrived' });
           return report(true, `About ${distanceCm} cm from the ${label}`);

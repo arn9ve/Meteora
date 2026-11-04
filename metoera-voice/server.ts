@@ -369,9 +369,22 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
       return;
     }
     if (path === '/api/command') {
+      // Every command is timed: the server prints it and the result carries durationMs.
+      const started = Date.now();
+      let asked = {droneId:'?', action:'?'};
+      const timed = (r: http.ServerResponse, status: number, value: unknown) => {
+        const v = value as {ok?: boolean; error?: string};
+        const ms = Date.now() - started;
+        if (status === 200 && v && typeof v === 'object') {
+          console.log(`${new Date().toLocaleTimeString()} ${label(asked.droneId)} · ${asked.action} ${v.ok ? 'ok' : `failed (${v.error ?? ''})`} ${(ms / 1000).toFixed(1)} s`);
+          value = {...v, durationMs:ms};
+        }
+        json(r, status, value);
+      };
       try {
         const body = await readJson(req) as {droneId?: unknown; action?: unknown};
         const id = typeof body?.droneId === 'string' ? body.droneId : '';
+        asked = {droneId:id || '?', action:String(body?.action ?? '?')};
         const action = typeof body?.action === 'string' ? body.action : '';
         const plain = Object.keys(body).length === 2;
         const drone = drones.get(id);
@@ -379,18 +392,18 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
         const ownership = claims?.ownership(id) ?? null;
         const blocked = refusal(id);
         const person = pilots.check(sid, id, action);
-        if (drones.size === 0 && !elsewhere) json(res, 200, {ok:false, mode:'real', error:NO_DRONES});
-        else if (!drone) json(res, 200, {ok:false, mode:'real', error:elsewhere ? describeElsewhere(label(id), elsewhere.owner, elsewhere.drone) : 'Invalid droneId'});
+        if (drones.size === 0 && !elsewhere) timed(res, 200, {ok:false, mode:'real', error:NO_DRONES});
+        else if (!drone) timed(res, 200, {ok:false, mode:'real', error:elsewhere ? describeElsewhere(label(id), elsewhere.owner, elsewhere.drone) : 'Invalid droneId'});
         // Another laptop holds it: its battery and flight come from that laptop's announcements.
         else if (ownership?.state === 'other' && action === 'status' && plain) {
           const {flight, battery, connected} = ownership.drone;
-          json(res, 200, {ok:true, mode:'real', action:'status', drone:{...drone.snapshot(), flight, battery, connected, heightCm:null, heading:null}, note:blocked});
+          timed(res, 200, {ok:true, mode:'real', action:'status', drone:{...drone.snapshot(), flight, battery, connected, heightCm:null, heading:null}, note:blocked});
         }
         // Another laptop's drone (or one not yet confirmed as ours) gets nothing, emergency
         // included. Only a takeoff may ask for it: a landed, idle drone is then handed over.
-        else if (blocked && !(TAKEOFF.has(action) && claims)) json(res, 200, {ok:false, mode:'real', error:blocked});
+        else if (blocked && !(TAKEOFF.has(action) && claims)) timed(res, 200, {ok:false, mode:'real', error:blocked});
         // Someone else here flies it: only status, look and photo.
-        else if (person) json(res, 200, {ok:false, mode:'real', error:person});
+        else if (person) timed(res, 200, {ok:false, mode:'real', error:person});
         else {
           // A takeoff makes this person the pilot before anything is sent, so a second takeoff
           // arriving meanwhile is refused.
@@ -398,15 +411,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
           lockChanged();
           try {
             const handover = blocked ? await claims!.request(id) : null;
-            if (handover) json(res, 200, {ok:false, mode:'real', error:handover});
+            if (handover) timed(res, 200, {ok:false, mode:'real', error:handover});
             // stop must reach the drone while a move is still running, so it skips the queue.
-            else if (action === 'stop' && plain) json(res, 200, await drone.stop());
-            else if (action === 'emergency' && plain) json(res, 200, await drone.killMotors());
-            else if (action === 'photo' && plain) json(res, 200, await takePhoto(id));
+            else if (action === 'stop' && plain) timed(res, 200, await drone.stop());
+            else if (action === 'emergency' && plain) timed(res, 200, await drone.killMotors());
+            else if (action === 'photo' && plain) timed(res, 200, await takePhoto(id));
             // A spoken "land" is always sent to the drone, whatever the server believes about its
             // state (a lost takeoff reply must never block a landing), and it skips the queue.
-            else if (action === 'land' && plain) json(res, 200, await drone.forceLand());
-            else json(res, 200, await drone.execute(body));
+            else if (action === 'land' && plain) timed(res, 200, await drone.forceLand());
+            else timed(res, 200, await drone.execute(body));
           } finally {
             pilots.end(id);
             pilots.settle(id, drone.snapshot().flight, drone.busy);
@@ -414,7 +427,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
           }
         }
       }
-      catch { json(res, 400, {ok:false, mode:'real', error:'Invalid request'}); }
+      catch { timed(res, 400, {ok:false, mode:'real', error:'Invalid request'}); }
       return;
     }
     if (!process.env.XAI_API_KEY) {

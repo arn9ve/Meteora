@@ -346,7 +346,7 @@ test('approach flies a straight line toward a person on the right and stops abou
   assert.equal(result.ok, true, result.error);
   const moves = fake.received.filter((c) => /^(go|forward|left|right|cw|ccw) /.test(c));
   // It moves diagonally (forward and to the right) instead of turning first.
-  assert.match(moves[0], /^go \d+ -\d+ 0 40$/, moves.join(', '));
+  assert.match(moves[0], /^go \d+ -\d+ 0 60$/, moves.join(', '));
   assert.equal(moves.some((c) => /^(cw|ccw) /.test(c)), false, moves.join(', '));
   const left = room.distanceNow();
   assert.ok(left >= 90 && left <= 130, `ended ${Math.round(left)} cm away after ${moves.join(', ')}`);

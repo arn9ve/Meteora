@@ -60,7 +60,9 @@
 .drones-dialog{max-height:92svh;overflow:auto}
 @media(max-width:600px){.drone-grid{grid-template-columns:1fr}}
 /* A drone another laptop flies: see-only here. */
-.drone-card.drone-other{opacity:.55}
-.drone-card.drone-other .drone-availability{color:#555;font-weight:500}
+/* The card fades, but "Connected to <name>" must stay readable on both card colours. */
+.drone-card.drone-other{opacity:.7}
+.drone-card.drone-other .drone-availability{color:#222;font-weight:600}
+.drone-black.drone-other .drone-availability{color:#fff}
 .link-status .dot[data-state=other]{background:#bbb;box-shadow:none}
 .link-status[data-state=other]{color:#777}

@@ -532,7 +532,7 @@ function handleRedzone(rz){
 // ---- Pad-nav (cam1 → Black pad-01→pad-02): claim + fly under this named pilot ----
 // Redzone only triggers (ARM required). This page claims so return-home voice commands work
 // and the 15 s pilot-absent auto-land does not fire while Black waits at pad-02.
-let padMissionBusy=false;
+let padMissionBusy=false, autoDispatching=false;
 let lastPadReportId='';
 async function padPhase(phase, extra={}){
   try {
@@ -569,6 +569,7 @@ async function runPadSteps(mission, steps, {pathOnly=false}={}){
 }
 async function claimAndFlyPadMission(state){
   if(padMissionBusy) return;
+  if(autoDispatching){ log('Pad nav','A drone is already on its way to a red-zone person: pad mission skipped'); return; }
   if(!myName){ log('Pad nav','Set your name first — then the page can claim Black'); return; }
   const black=drones.find(d=>d.id===FLEET.black.id);
   if(!black?.connected || elsewhere(black) || blocked(black)){ log('Pad nav','Black not free on this laptop'); return; }
@@ -620,7 +621,8 @@ function handlePadNav(pad){
   if(state.phase==='triggered' && !padMissionBusy) void claimAndFlyPadMission(state);
 }
 async function onIntrusion(e){
-  const sending=autoSend;
+  // The pad mission flies Black on its own path: no second mission on top of it.
+  const sending=autoSend&&!padMissionBusy&&!['triggered','outbound','awaiting_command'].includes(redzone?.padNav?.state?.phase);
   showZoneAlert(`Person in ${e.name}${sending?' · sending the nearest drone':''}`);
   log(e.name,`Person at ${e.x.toFixed(1)}, ${e.y.toFixed(1)} m`);
   notifyGrok(`${e.name}: a person entered, standing at (${e.x.toFixed(2)}, ${e.y.toFixed(2)}) m on the room plan, which is (${Math.round(e.x*100)}, ${Math.round(e.y*100)}) cm in drone coordinates. ${sending?'The nearest drone is being sent automatically; say so in a few words.':'Tell the person in one short sentence and offer to send a drone (dispatch with those cm coordinates).'}`);
@@ -628,7 +630,7 @@ async function onIntrusion(e){
   try {
     const r=await fetch('/api/redzone/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:e.id})});
     const j=await r.json();
-    if(j.ok) void runDispatch({x:Math.round(j.x*100),y:Math.round(j.y*100),label:'person'},generation);
+    if(j.ok){ autoDispatching=true; try{ await runDispatch({x:Math.round(j.x*100),y:Math.round(j.y*100),label:'person'},generation); } finally { autoDispatching=false; } }
   } catch {}
 }
 async function cameraCommand(slot,command){

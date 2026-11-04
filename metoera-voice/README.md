@@ -12,7 +12,7 @@ export XAI_API_KEY='la-tua-chiave'
 node server.mjs
 ```
 
-Aprire http://localhost:18787 e consentire l'accesso al microfono. Interrompere il server con Ctrl+C. La chiave rimane nel processo locale; il browser riceve un token temporaneo xAI. Non pubblicare la chiave o inserirla nel repository.
+Aprire http://localhost:18787, premere l’ingranaggio e poi «Avvia conversazione», e consentire l'accesso al microfono. Interrompere il server con Ctrl+C. La chiave rimane nel processo locale; il browser riceve un token temporaneo xAI. Non pubblicare la chiave o inserirla nel repository.
 
 ## Collegamento con il team drone
 
@@ -21,3 +21,7 @@ In `public/app.js`, `simulate(name, args)` rappresenta il punto da sostituire co
 Questo progetto non implementa il controllo reale, la validazione di sicurezza, l'armamento, la telemetria o un atterraggio di emergenza. Il backend del team deve applicare autonomamente ogni vincolo e confermare il risultato effettivo. Non collegare direttamente la UI ai motori. La simulazione non rappresenta lo stato di un drone vero.
 
 L'integrazione con l'API xAI e l'audio richiede una prova con credenziali valide e hardware; non è stata verificata con un drone o con lo starter Python non ancora fornito. Il prototipo non include wake word né riconnessione automatica.
+
+## Interfaccia
+
+La schermata mostra la trascrizione dell’utente e la risposta di Grok, con un fondo di simboli geometrici che reagisce al microfono. L’ingranaggio apre avvio voce, stato del simulatore e registro. La tastiera permette di inviare testo nella sessione connessa. La X termina la sessione e rilascia il microfono. I dialoghi si chiudono anche con Esc.

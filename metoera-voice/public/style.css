@@ -263,3 +263,13 @@
 .cal-log:empty{display:none}
 .map-svg .pad{fill:#222;stroke:none}
 .map-svg .pad-label{fill:#fff;font-weight:700}
+/* The selected thing first, then the list. */
+.inspector{border-top:0;padding-top:0;border-bottom:1px solid #eee;padding-bottom:14px}
+.inspector:empty{display:none}
+/* Narrow screens: map on top with a fixed height, details below, the whole panel scrolls. */
+@media(max-width:1100px){
+  .room-panel{overflow:auto}
+  .room-panel .room-body{flex:none;display:flex;flex-direction:column;grid-template-rows:none}
+  .room-panel .map-wrap{height:55svh;min-height:300px;flex:none}
+  .room-panel .room-side{overflow:visible;padding-right:0}
+}

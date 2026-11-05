@@ -781,7 +781,7 @@ async function refreshRoom(){ await loadRoom(); inspectorKey=''; await renderMap
 // ---- what is selected, and the list ----
 function select(kind,id){ sel=kind?{kind,id:String(id)}:null; mode=mode?.kind==='calibrate'&&sel?.kind==='phone'&&sel.id===mode.slot?mode:null; inspectorKey=''; renderSide(); scheduleDraw();
   // Bring the details into view: on a short screen they sit below the list.
-  if(sel){ const side=document.querySelector?.('.room-side'), ins=$('#inspector'); if(side&&ins?.offsetTop!==undefined) side.scrollTo?.({top:Math.max(0,ins.offsetTop-side.offsetTop-8),behavior:'smooth'}); } }
+  if(sel){ const side=document.querySelector?.('.room-side'); side?.scrollTo?.({top:0,behavior:'smooth'}); $('#inspector').scrollIntoView?.({block:'nearest',behavior:'smooth'}); } }
 function startMode(m){ mode=m; inspectorKey=''; mapSvg.classList.toggle('placing',Boolean(m)); renderSide(); scheduleDraw();
   hint(!m?'':m.kind==='place'?`Click on the plan where ${m.label} is. Then drag the round handle to turn it.`:m.kind==='zone'?'Click the corners of the zone. Click the first corner again, or Finish, to close it.':m.kind==='table'?'Click where the centre of the table is.':m.kind==='calibrate'?'Click a floor spot in the phone picture, then the same spot on the plan. Four times.':''); }
 $('#addTable').addEventListener('click',()=>startMode({kind:'table'}));
@@ -886,7 +886,7 @@ function renderInspector(){
     pad.querySelector('select').addEventListener('change',e=>{ const v=Number(e.target.value); if(v>=1&&v<=8) o.pad=v; else delete o.pad; void saveObjects(); });
     box.append(para(o.kind.toUpperCase(),'caption'),field('Name',o.name,set('name'),{type:'text',suffix:''}),kind,pad,
       field('Centre from left',o.x,set('x'),{cm:'x'}),field('Centre from bottom',o.y,set('y'),{cm:'y'}),field('Width',o.w,set('w'),{cm:'size'}),field('Depth',o.d,set('d'),{cm:'size'}),field('Turned',o.rotation,set('rotation'),{step:5,suffix:'°'}),field('Height',o.heightM,set('heightM'),{cm:'size'}),
-      para('Say "go to '+o.name+'": the drone flies around tables and pillars (dashed line on the plan) and stops 60 cm from its edge, not above it.'),
+      para(o.pad?`Pad ${o.pad} lies in the middle, at the table's height (${Math.round((o.heightM??0.75)*100)} cm). Say "go to ${o.name}": the drone flies around the other tables and pillars, goes over this one at least 50 cm above it and centres exactly on the pad.`:'Say "go to '+o.name+'": the drone flies around tables and pillars (dashed line on the plan) and stops 60 cm from its edge, not above it. Put a mission pad in its middle for an exact position.'),
       btn('Duplicate',async()=>{ const c={...o,id:`o${Date.now()}`,name:`${o.kind} ${r.objects.length+1}`,x:o.x+o.w+0.3}; r.objects.push(c); sel={kind:'object',id:c.id}; await saveObjects(); }),
       btn('Delete',()=>void deleteSelected(),'danger'));
   }

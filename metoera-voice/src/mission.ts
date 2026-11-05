@@ -33,7 +33,7 @@ export type MissionDeps = {
   maxSteps?: number;
 };
 
-const LEG_CM = 300; // the Tello's own go accepts up to 500 cm; it flies them with its own sensors
+const LEG_CM = 200; // shorter legs: the position is checked (and the route redone) more often
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function segPointDist(p: Point, a: Point, b: Point): number {
@@ -133,9 +133,13 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
           if (photo.ok && !isIn() && drone.live().flying) await drone.execute({ droneId, action: 'go_to', x: target.x, y: target.y, check: false });
           const inZone = isIn();
           const where = deps.where ? deps.where(drone.live().pose.x, drone.live().pose.y) : '';
+          // Look left, ahead and right with photos, and a report from Grok vision.
+          const pan = drone.live().flying ? await drone.execute({ droneId, action: 'pan_report' }) : { ok: false, error: 'landed' };
+          const report = pan.ok ? String(pan.report ?? '') : '';
+          if (report) deps.onPlan?.(`Report from ${target.name}: ${report}`);
           deps.onPlan?.(inZone ? `I am inside ${target.name}${photo.ok ? ', checked with a photo' : ' (by my position; the photo did not confirm it)'}: ${where}.` : `I could not get inside ${target.name}: I am ${where}.`);
           deps.log?.({ event: 'zone-arrival', zone: target.name, inside: inZone, photo: photo.ok, photoError: photo.ok ? undefined : photo.error });
-          return { ok: inZone, action: 'go_to', reached: inZone, insideZone: inZone, checkedWithPhoto: photo.ok, ...(inZone ? {} : { error: `not inside ${target.name}` }), steps: step, choices, plan };
+          return { ok: inZone, action: 'go_to', reached: inZone, insideZone: inZone, checkedWithPhoto: photo.ok, report: report || null, reportError: pan.ok ? undefined : pan.error, ...(inZone ? {} : { error: `not inside ${target.name}` }), steps: step, choices, plan };
         }
         // Arrived: face what we came to (a table), so the camera looks at it.
         if (target.face) { const turn = turnTo(live.pose, target.face); if (Math.abs(turn) >= 20) await drone.execute({ droneId, action: 'rotate', direction: turn > 0 ? 'counterclockwise' : 'clockwise', degrees: Math.min(180, Math.abs(turn)) }); }

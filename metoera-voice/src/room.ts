@@ -237,15 +237,17 @@ function segDist(p: Point, a: Point, b: Point): number {
  */
 /** How far a drone keeps from walls, pillars and tables in its way (asked: 50 cm). */
 export const CLEARANCE_M = 0.5;
+/** Pillars get more: a drone that drifts 10-15% over a leg hit pillar 3 with 55 cm planned (5 Nov). */
+export const PILLAR_EXTRA_M = 0.3;
 export function planRoute(plan: RoutePlan, objects: RoomObject[], from: Point, to: Point, clearanceM = CLEARANCE_M, cellM = 0.2): Point[] | null {
   const x0 = plan.bounds.min[0], y0 = plan.bounds.min[1];
   const nx = Math.ceil((plan.bounds.max[0] - x0) / cellM) + 1, ny = Math.ceil((plan.bounds.max[1] - y0) / cellM) + 1;
-  const rects = [...objects.map((o) => ({ x: o.x, y: o.y, w: o.w, d: o.d, r: o.rotation })), ...(plan.pillars ?? []).map((p) => ({ ...p, r: 0 }))];
+  const rects = [...objects.map((o) => ({ x: o.x, y: o.y, w: o.w, d: o.d, r: o.rotation, extra: 0 })), ...(plan.pillars ?? []).map((p) => ({ ...p, r: 0, extra: PILLAR_EXTRA_M }))];
   const blockedAt = (p: Point) => {
     for (const r of rects) {
       const a = r.r * Math.PI / 180, dx = p[0] - r.x, dy = p[1] - r.y;
       const u = Math.abs(dx * Math.cos(a) + dy * Math.sin(a)) - r.w / 2, v = Math.abs(-dx * Math.sin(a) + dy * Math.cos(a)) - r.d / 2;
-      if (Math.hypot(Math.max(u, 0), Math.max(v, 0)) < clearanceM) return true;
+      if (Math.hypot(Math.max(u, 0), Math.max(v, 0)) < clearanceM + r.extra) return true;
     }
     for (const w of plan.walls) if (segDist(p, w.a, w.b) < clearanceM) return true;
     return false;

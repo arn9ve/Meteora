@@ -96,3 +96,17 @@ test('survey: climbs, four photos turning on the spot, back to its heading, corr
   assert.deepEqual([d.map().pose.x, d.map().pose.y, d.map().pose.heading], [50, -60, -10]);
   assert.equal(d.surveyedThisFlight, true);
 });
+
+test('pan_report: looks left, ahead and right with a photo each, back to its heading, and Grok reports', async (t) => {
+  const f = await fake();
+  let asked = null;
+  const d = drone(f, { frame: async () => Buffer.from('jpg'), askVision: async (imgs, prompt) => { asked = { n: imgs.length, prompt }; return 'Una persona seduta al tavolo 6, sta usando il portatile.'; } });
+  t.after(() => { d.close(); f.close(); });
+  await d.execute({ droneId: 'tello', action: 'takeoff' });
+  const r = await d.execute({ droneId: 'tello', action: 'pan_report' });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(asked.n, 3);
+  assert.match(asked.prompt, /Answer in Italian/);
+  assert.deepEqual(f.received.filter((c) => /^(cw|ccw) /.test(c)), ['ccw 60', 'cw 60', 'cw 60', 'ccw 60']);
+  assert.match(r.report, /persona seduta/);
+});

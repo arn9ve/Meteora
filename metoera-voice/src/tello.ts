@@ -439,6 +439,33 @@ export class RealTello {
     if (ready) return this.#fail(ready);
     if (['look', 'scan', 'approach', 'explore', 'face', 'describe', 'find'].includes(String(value.action))) await this.#cameraOn();
 
+    // Arrived somewhere to check: look left, ahead and right, one photo each, and a report from Grok vision.
+    if (value.action === 'pan_report') {
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'degrees', 'question'].includes(k))) return this.#fail('Unknown argument for pan_report');
+      if (!this.#frame || !this.#askVision) return this.#fail('Vision is not configured on the server');
+      if (this.#flight !== 'flying') return this.#fail('pan_report requires a flying drone');
+      if (!(await this.#cameraOn())) return this.#fail('The camera did not start');
+      const deg = Math.max(30, Math.min(90, Number.isInteger(value.degrees) ? value.degrees as number : 60));
+      const photos: Buffer[] = [];
+      const shot = async () => { await new Promise((r) => setTimeout(r, 900)); const img = await this.#frame!(); if (img) photos.push(img); };
+      for (const sdk of [`ccw ${deg}`, `cw ${deg}`, `cw ${deg}`]) {
+        if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
+        const t = await this.#motion('pan_report', sdk, 15000); if (!t.ok) return t;
+        await shot();
+      }
+      await this.#motion('pan_report', `ccw ${deg}`, 15000); // back to where it faced
+      if (!photos.length) return this.#fail('No pictures from the camera');
+      const question = typeof value.question === 'string' && value.question.trim() ? value.question.trim().slice(0, 300) : 'Is there anyone here? How many people, what are they doing, where are they (left, ahead, right)? Anything unusual?';
+      const awake = setInterval(() => { void this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 2000); }, 5000);
+      let report: string | null;
+      try { report = await this.#askVision(photos, `These ${photos.length} photos come from an indoor security drone that has just arrived at a spot to check it: photo 1 looking ${deg}° to the left, photo 2 straight ahead, photo 3 ${deg}° to the right. Answer in Italian, briefly (two or three short sentences) and only from the photos. ${question}`); }
+      finally { clearInterval(awake); }
+      if (!report) return this.#fail('Grok vision did not answer');
+      this.#world.record('pan_report', report.slice(0, 80));
+      this.#flightLog?.({ event: 'pan-report', report });
+      return { ok: true, mode: 'real', action: 'pan_report', drone: this.snapshot(), report, photos: photos.length } as TelloResult;
+    }
+
     // Look around before going: climb, 4 photos turning on the spot, position and heading from the plan.
     if (value.action === 'survey') {
       if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for survey');

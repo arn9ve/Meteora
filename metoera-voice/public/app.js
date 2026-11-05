@@ -139,7 +139,18 @@ const longTask={};
 let responding=false, wantResponse=false;
 function requestResponse(){ if(muted) return; if(responding){wantResponse=true;return} wantResponse=false; send({type:'response.create'}) }
 // speak=false: Grok learns the result but stays silent (a finished action needs no comment).
-function notifyGrok(text,speak=true){
+// Without an open voice session Grok cannot speak: the browser's own voice says the key moments.
+function sayAloud(text){
+  try {
+    if(typeof speechSynthesis==='undefined'||!text) return;
+    const u=new SpeechSynthesisUtterance(text); u.lang='it-IT'; u.rate=1.05;
+    const v=speechSynthesis.getVoices?.().find(x=>/^it/i.test(x.lang)); if(v) u.voice=v;
+    speechSynthesis.speak(u);
+  } catch {}
+}
+const voiceOpen=()=>typeof WebSocket!=='undefined'&&socket?.readyState===WebSocket.OPEN;
+function notifyGrok(text,speak=true,fallback=''){
+  if(speak&&fallback&&!voiceOpen()) sayAloud(fallback);
   send({type:'conversation.item.create',item:{type:'message',role:'user',content:[{type:'input_text',text:`(automatic drone update, not said by the person${speak?'':'; do not reply to this'}) ${text}`}]}});
   if(speak) requestResponse();
 }
@@ -651,7 +662,8 @@ async function onIntrusion(e){
   const sending=autoSend&&!autoDispatching;
   showZoneAlert(`Person in ${e.name}${sending?' · sending the nearest drone':''}`);
   log(e.name,`Person at ${e.x.toFixed(1)}, ${e.y.toFixed(1)} m`);
-  notifyGrok(`${e.name}: phone ${e.slot||''} sees a person. ${sending?`Say right now, in the person's language, in one short sentence: you saw a person in ${e.name} and you are going to check. The nearest drone is taking off by itself.`:`Tell the person in one short sentence and offer to send a drone (go_to place "${e.name}").`}`);
+  const zoneIt=String(e.name).replace(/^zone\b/i,'zona');
+  notifyGrok(`${e.name}: phone ${e.slot||''} sees a person. ${sending?`Say right now, in the person's language, in one short sentence: you saw a person in ${e.name} and you are going to check. The nearest drone is taking off by itself.`:`Tell the person in one short sentence and offer to send a drone (go_to place "${e.name}").`}`,true,sending?`Ho visto una persona nella ${zoneIt}. Vado a controllare.`:`C'è una persona nella ${zoneIt}.`);
   if(!sending) return;
   try {
     const r=await fetch('/api/redzone/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:e.id})});
@@ -672,7 +684,9 @@ async function runZoneMission(e,run){
     if(!pick.flying){ const up=await runOnDrone(id,'takeoff',{}); if(!up.ok){ notifyGrok(`${e.name}: ${name} could not take off: ${up.error}`); return; } }
     const r=await runOnDrone(id,'go_to',{place:e.name});
     void refreshDrone();
-    notifyGrok(r.insideZone?`${name} is inside ${e.name}${r.checkedWithPhoto?', confirmed with a photo':''}. Say it in a few words.`:`${name} did not get inside ${e.name}: ${r.error||'unknown'}${r.where?` (it is ${r.where})`:''}. Say it in one short sentence.`);
+    const zoneIt=String(e.name).replace(/^zone\b/i,'zona');
+    notifyGrok(r.insideZone?`${name} is inside ${e.name}${r.checkedWithPhoto?', confirmed with a photo':''}.${r.report?` It looked left, ahead and right; Grok vision reports: ${r.report} Tell the person this report in two short sentences.`:' Say it in a few words.'}`:`${name} did not get inside ${e.name}: ${r.error||'unknown'}${r.where?` (it is ${r.where})`:''}. Say it in one short sentence.`,true,
+      r.insideZone?`${nameOf(id).replace(/^Drone \d · /,'')} è nella ${zoneIt}. ${r.report||''}`:`${nameOf(id).replace(/^Drone \d · /,'')} non è riuscito a entrare nella ${zoneIt}.`);
   } finally { if(longTask[id]==='go_to') delete longTask[id]; }
 }
 async function cameraCommand(slot,command){

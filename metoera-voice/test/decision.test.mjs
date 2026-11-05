@@ -52,7 +52,7 @@ test('mission flying low: legs of at most 300 cm around the table; nobody asked 
   assert.ok(Math.hypot(pose.x - 900, pose.y - 300) < 30, JSON.stringify(pose));
   let at = [100, 300];
   for (const c of sent.filter((c) => c.action === 'go_to')) {
-    assert.ok(Math.hypot(c.x - at[0], c.y - at[1]) <= 301, `leg too long: ${JSON.stringify(c)}`);
+    assert.ok(Math.hypot(c.x - at[0], c.y - at[1]) <= 201, `leg too long: ${JSON.stringify(c)}`);
     assert.equal(c.check, false);
     for (let t = 0; t <= 1; t += 0.05) { const x = (at[0] + (c.x - at[0]) * t) / 100, y = (at[1] + (c.y - at[1]) * t) / 100; assert.ok(Math.abs(x - 5) > 0.9 || Math.abs(y - 3) > 0.9, 'through the table'); }
     at = [c.x, c.y];
@@ -67,7 +67,7 @@ test('mission flying above the tables: straight over them, few legs', async () =
   assert.equal(r.ok, true, r.error);
   const legs = sent.filter((c) => c.action === 'go_to');
   assert.ok(legs.every((c) => c.y === 300), JSON.stringify(legs)); // a straight line, over the table
-  assert.equal(legs.length, 3); // 800 cm in legs of at most 300
+  assert.equal(legs.length, 4); // 800 cm in legs of at most 200
   assert.ok(Math.hypot(pose.x - 900, pose.y - 300) < 30);
 });
 

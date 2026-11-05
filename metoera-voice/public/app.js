@@ -647,11 +647,11 @@ function handlePadNav(pad){
 async function onIntrusion(e){
   // A person in a red zone, seen by a phone with ARM on: the nearest drone takes off (if needed)
   // and flies INTO the zone with the full mission: look around, reason, route, enter, check.
-  const armed=redzone?.slots?.find(s=>s.id===e.slot)?.armed!==false;
-  const sending=autoSend&&armed&&!autoDispatching;
+  // Automatic: the phone's own ARM switch (which it resets when it reconnects) no longer blocks it.
+  const sending=autoSend&&!autoDispatching;
   showZoneAlert(`Person in ${e.name}${sending?' · sending the nearest drone':''}`);
   log(e.name,`Person at ${e.x.toFixed(1)}, ${e.y.toFixed(1)} m`);
-  notifyGrok(`${e.name}: a person entered. ${sending?'The nearest drone takes off by itself and flies into the zone; say so in a few words.':`Tell the person in one short sentence and offer to send a drone (go_to place "${e.name}").`}`);
+  notifyGrok(`${e.name}: phone ${e.slot||''} sees a person. ${sending?`Say right now, in the person's language, in one short sentence: you saw a person in ${e.name} and you are going to check. The nearest drone is taking off by itself.`:`Tell the person in one short sentence and offer to send a drone (go_to place "${e.name}").`}`);
   if(!sending) return;
   try {
     const r=await fetch('/api/redzone/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:e.id})});

@@ -502,15 +502,29 @@ async function pollRedzone() {
     }
   }
   redzone.people = people;
+  // A phone that sees someone triggers the zone it watches straight away (no need to place the
+  // person on the plan): its own zone if set, the only zone, or the zone nearest to the phone.
+  const zoneOfPhone = (slotId: string): string | null => {
+    const cam = room.cameras[slotId] as {zone?: string; x?: number; y?: number} | undefined;
+    if (cam?.zone && room.zones.some((z) => z.id === cam.zone)) return cam.zone;
+    if (room.zones.length === 1) return room.zones[0].id;
+    if (typeof cam?.x !== 'number' || typeof cam?.y !== 'number') return room.zones[0]?.id ?? null;
+    const c = (z: typeof room.zones[number]) => [z.points.reduce((a, q) => a + q[0], 0) / z.points.length, z.points.reduce((a, q) => a + q[1], 0) / z.points.length];
+    return room.zones.reduce((best, z) => (Math.hypot(c(z)[0] - cam.x!, c(z)[1] - cam.y!) < Math.hypot(c(best)[0] - cam.x!, c(best)[1] - cam.y!) ? z : best)).id;
+  };
+  const seenBy = redzone.slots.filter((sl) => sl.online && (sl.people?.length ?? 0) > 0);
   for (const zone of room.zones) {
-    const who = people.find((p) => inside([p.x, p.y], zone.points));
+    const camera = seenBy.find((sl) => zoneOfPhone(sl.id) === zone.id);
+    const onPlan = people.find((p) => inside([p.x, p.y], zone.points));
+    const goal0 = zoneTarget(zone, plan, room.objects);
+    const who = onPlan ?? (camera ? {slot:camera.id, x:goal0?.[0] ?? 0, y:goal0?.[1] ?? 0, approx:true} : undefined);
     const state = zoneState.get(zone.id) ?? {occupied:false, lastEventAt:0};
     if (who && !state.occupied && Date.now() - state.lastEventAt > ZONE_REPEAT_MS) {
       state.lastEventAt = Date.now();
       const goal = zoneTarget(zone, plan, room.objects);
       redzone.events.push({id:`${zone.id}-${state.lastEventAt}`, zone:zone.id, name:zone.name, at:state.lastEventAt, x:who.x, y:who.y, claimedBy:null, slot:who.slot, target:goal ? {x:goal[0], y:goal[1]} : null});
       if (redzone.events.length > 20) redzone.events.shift();
-      console.log(`${new Date().toLocaleTimeString()} ${zone.name}: person at (${who.x.toFixed(2)}, ${who.y.toFixed(2)}) m, seen by phone ${who.slot}${who.approx ? ' (estimate, phone not calibrated)' : ''}`);
+      console.log(`${new Date().toLocaleTimeString()} ${zone.name}: person seen by phone ${who.slot}${onPlan ? ` at (${who.x.toFixed(2)}, ${who.y.toFixed(2)}) m` : ' (in its camera)'}`);
     }
     state.occupied = Boolean(who);
     zoneState.set(zone.id, state);

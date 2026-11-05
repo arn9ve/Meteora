@@ -25,7 +25,7 @@ test('pad-nav maps cam1 to Black pad-01 → pad-02 (2.0 m, describe, wait)', asy
   assert.equal(config.missions.cam1.targetPad, 'pad-02');
   assert.equal(config.missions.cam1.droneId, 'tello');
   assert.equal(config.missions.cam1.distanceCm, 200);
-  assert.equal(config.missions.cam1.executePath, false);
+  assert.equal(config.missions.cam1.executePath, true);
   assert.equal(missionForSlot(config, '1')?.key, 'cam1');
   assert.equal(missionForSlot(config, '2'), null);
 
@@ -34,9 +34,9 @@ test('pad-nav maps cam1 to Black pad-01 → pad-02 (2.0 m, describe, wait)', asy
   assert.equal(mission.homePad, 'pad-01');
   assert.equal(mission.targetPad, 'pad-02');
   assert.equal(mission.distanceCm, 200);
-  assert.equal(mission.executePath, false);
+  assert.equal(mission.executePath, true);
   assert.ok(mission.steps.some((s) => s.action === 'takeoff'));
-  assert.ok(mission.steps.some((s) => s.action === 'move' && s.centimeters === 200));
+  assert.ok(mission.steps.some((s) => s.action === 'pad_hop' && s.maxCentimeters === 400));
   assert.ok(mission.steps.some((s) => s.action === 'describe'));
   assert.ok(mission.steps.some((s) => s.action === 'wait'));
   assert.ok(!mission.steps.some((s) => s.action === 'land'));

@@ -88,6 +88,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Speed of straight-line go moves (approach, go_to), cm/s. Indoors 60 is brisk but controllable. */
 export const GO_SPEED = 60;
+const PAD_HOP_MAX_CM = Number(process.env.PAD_HOP_MAX_CM ?? 400);
+const PAD_HOP_STEP_CM = 30;
+const PAD_HOVER_CM = 80;
 
 /** Tello move for a drone-frame vector in cm, capped to maxLen; null when every axis is under 20 cm. */
 export function moveSdk(forward: number, left: number, up: number, maxLen: number): string | null {
@@ -145,6 +148,11 @@ export class RealTello {
   #heightCm: number | null = null;
   #heading: number | null = null;
   #lastStateAt = 0;
+  // Mission pads (Tello EDU / RoboMaster TT read them with the downward sensor after `mon`).
+  #padsOn = false;
+  #pad = -1;
+  #padAt = 0;
+  #padsSeen: Set<number> | null = null;
   #lastError: string | null = null;
 
   constructor(options: TelloOptions) {
@@ -686,6 +694,51 @@ export class RealTello {
       return { ok: true, mode: 'real', action: 'go_to', drone: this.snapshot(), pose: this.#world.pose, note: 'Position is dead reckoning: expect some tens of cm of drift.' } as TelloResult;
     }
 
+    // Pad to pad without the map: fly straight ahead until the downward sensor sees a mission pad
+    // other than the one the drone started over, then centre over it. Stops after maxCentimeters.
+    if (value.action === 'pad_hop') {
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'maxCentimeters', 'land'].includes(k))) return this.#fail('Unknown argument for pad_hop');
+      const max = value.maxCentimeters === undefined ? PAD_HOP_MAX_CM : value.maxCentimeters;
+      if (typeof max !== 'number' || !Number.isInteger(max) || max < 20 || max > 800) return this.#fail('maxCentimeters must be an integer from 20 to 800');
+      if (value.land !== undefined && typeof value.land !== 'boolean') return this.#fail('land must be true or false');
+      if (this.#flight !== 'flying') return this.#fail('pad_hop requires a flying drone: take off first');
+      if (!this.#padsOn) {
+        for (const sdk of ['mon', 'mdirection 0']) {
+          const reply = await this.#request(sdk, isOk, 5000);
+          if (!reply || !isOk(reply)) return this.#fail(`This drone did not turn on mission pad detection (${sdk}: ${reply ?? 'no reply'})`);
+        }
+        this.#padsOn = true;
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      }
+      const fresh = () => Date.now() - this.#padAt < 800;
+      const from = fresh() ? this.#pad : -1;
+      let travelled = 0;
+      let found = -1;
+      while (travelled < max && found < 0) {
+        if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
+        const step = Math.max(20, Math.min(PAD_HOP_STEP_CM, max - travelled));
+        this.#padsSeen = new Set();
+        const move = await this.#motion('pad_hop', `forward ${step}`, 15000);
+        if (!move.ok) { this.#padsSeen = null; return move; }
+        travelled += step;
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        const seen = [...this.#padsSeen, ...(fresh() ? [this.#pad] : [])].filter((m) => m > 0 && m !== from);
+        this.#padsSeen = null;
+        if (seen.length) found = fresh() && seen.includes(this.#pad) ? this.#pad : seen[seen.length - 1];
+      }
+      if (found < 0) return this.#fail(`No new pad within ${travelled} cm${from > 0 ? ` (started over pad ${from})` : ''}: hovering here`);
+      // Centre over the pad. Relative to the pad, not to the room, so the room map is not moved.
+      const centre = await this.#request(`go 0 0 ${PAD_HOVER_CM} 30 m${found}`, isOk, 15000);
+      const centred = Boolean(centre && isOk(centre));
+      this.#world.record('pad_hop', `pad ${from > 0 ? from : '?'} -> pad ${found} (${travelled} cm)`);
+      this.#world.mark(`pad_${found}`);
+      if (value.land === true) {
+        const down = await this.#motion('land', 'land', 20000, () => { this.#flight = 'landed'; });
+        if (!down.ok) return down;
+      }
+      return { ok: true, mode: 'real', action: 'pad_hop', drone: this.snapshot(), pad: found, fromPad: from > 0 ? from : null, travelledCm: travelled, centred, landed: value.land === true } as TelloResult;
+    }
+
     // ---- Grok vision: look at real camera images ----
     if (value.action === 'describe') {
       if (Object.keys(value).some((k) => !['droneId', 'action', 'question'].includes(k))) return this.#fail('Unknown argument for describe');
@@ -896,6 +949,8 @@ export class RealTello {
     }
     this.#heading = read('yaw');
     this.#world.applyTelemetry(this.#heightCm, this.#heading);
+    const mid = read('mid');
+    if (mid !== null && mid > 0) { this.#pad = mid; this.#padAt = Date.now(); this.#padsSeen?.add(mid); }
     this.#lastStateAt = Date.now();
   }
 

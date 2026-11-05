@@ -1,0 +1,10 @@
+{
+  "name": "pad-hop",
+  "serve": { "drift": 0, "seed": 6, "imuZeroAtStart": true, "phones": false },
+  "steps": [
+    { "do": ["tello", "takeoff"] },
+    { "do": ["tello", "pad_hop"] },
+    { "do": ["tello", "land"] }
+  ],
+  "expect": { "ok": ["pad_hop"], "maxSeconds": 180 }
+}

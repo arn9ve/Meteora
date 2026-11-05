@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -74,10 +75,14 @@ def sim_env(path: Path = SIM_ENV) -> dict[str, str]:
 
 
 def data_dir(env: Optional[dict] = None) -> Path:
-    """The voice server's data folder: METOERA_DATA_DIR from sim.env, relative to metoera-voice/."""
-    env = sim_env() if env is None else env
-    value = env.get("METOERA_DATA_DIR", "../metoera-sim/voice-data")
-    return (REPO / "metoera-voice" / value).resolve()
+    """The voice server's data folder. A set METOERA_DATA_DIR wins, so a scenario can use a fresh folder."""
+    if env is None and os.environ.get("METOERA_DATA_DIR"):
+        value = os.environ["METOERA_DATA_DIR"]
+    else:
+        env = sim_env() if env is None else env
+        value = env.get("METOERA_DATA_DIR", "../metoera-sim/voice-data")
+    path = Path(value)
+    return path.resolve() if path.is_absolute() else (REPO / "metoera-voice" / value).resolve()
 
 
 def load_plan(path: Path = PLAN) -> dict:

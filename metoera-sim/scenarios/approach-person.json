@@ -1,0 +1,8 @@
+{
+  "name": "approach-person",
+  "serve": { "drift": 0, "seed": 5, "imuZeroAtStart": true, "phones": false },
+  "steps": [
+    { "say": "Black, take off and approach the man in the beige coat, then land" }
+  ],
+  "expect": { "endNear": { "drone": "tello", "x": 6.2, "y": 3.6, "withinM": 1.4, "minM": 0.8 }, "maxSeconds": 240 }
+}

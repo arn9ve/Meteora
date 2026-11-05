@@ -1,0 +1,9 @@
+{
+  "name": "lost-and-drifting",
+  "serve": { "drift": 0.1, "seed": 2, "imuZeroAtStart": true, "phones": false },
+  "steps": [
+    { "say": "Black, take off and go to table 1" },
+    { "say": "Black, land" }
+  ],
+  "expect": { "endNear": { "drone": "tello", "x": 0.41, "y": -0.66, "withinM": 2.5 }, "maxSeconds": 300, "maxDecisionSteps": 40 }
+}

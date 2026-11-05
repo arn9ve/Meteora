@@ -1,0 +1,11 @@
+{
+  "name": "one-landmark",
+  "serve": { "drift": 0, "seed": 3, "imuZeroAtStart": true, "phones": false },
+  "drones": { "rmtt": { "x": 5.4, "y": -1.3, "heading": 60, "facingConfirmed": true } },
+  "steps": [
+    { "do": ["rmtt", "takeoff"] },
+    { "do": ["rmtt", "look_around"] },
+    { "do": ["rmtt", "land"] }
+  ],
+  "expect": { "ok": ["look_around"], "fixWithinM": { "drone": "rmtt", "withinM": 0.3 }, "maxSeconds": 120 }
+}

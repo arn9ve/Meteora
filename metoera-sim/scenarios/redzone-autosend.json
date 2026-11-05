@@ -1,0 +1,10 @@
+{
+  "name": "redzone-autosend",
+  "known": "dispatch skips go_to",
+  "serve": { "drift": 0, "seed": 7, "phones": true },
+  "steps": [
+    { "wait": 2 },
+    { "say": "send a drone to the entrance" }
+  ],
+  "expect": { "maxSeconds": 120 }
+}

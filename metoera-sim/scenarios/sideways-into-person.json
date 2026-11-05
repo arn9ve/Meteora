@@ -1,0 +1,13 @@
+{
+  "name": "sideways-into-person",
+  "serve": { "drift": 0, "seed": 4, "imuZeroAtStart": true, "phones": false },
+  "people": [
+    { "name": "man in a beige coat", "photo": { "image": "bus.jpg", "box": [47, 399, 239, 904] }, "path": [[7.2, -3.0]] }
+  ],
+  "steps": [
+    { "do": ["tello", "takeoff"] },
+    { "do": ["tello", "move", { "direction": "right", "centimeters": 100 }] },
+    { "do": ["tello", "land"] }
+  ],
+  "expect": { "refused": ["move"], "maxSeconds": 90 }
+}

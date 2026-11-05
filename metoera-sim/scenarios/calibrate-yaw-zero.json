@@ -1,0 +1,9 @@
+{
+  "name": "calibrate-yaw-zero",
+  "known": "the odometry can't tell readings apart at yaw 0",
+  "serve": { "drift": 0, "seed": 8, "imuZeroAtStart": true, "phones": false },
+  "steps": [
+    { "do": ["tello", "calibrate"] }
+  ],
+  "expect": { "maxSeconds": 180 }
+}

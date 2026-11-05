@@ -299,6 +299,7 @@ const buildTools=()=>[
   droneTool('face','Turn this drone to face a point of the room map (x,y from memory)',{x:{type:'integer'},y:{type:'integer'}},['x','y']),
   droneTool('mark','Save the current position under a name (ricorda questo punto come …)',{name:{type:'string'}},['name']),
   droneTool('go_to','Fly to a table or object of the room plan by its name (table 1 … table 6), or to a remembered place: home (where it took off), last_landing, previous, a name saved with mark, or room coordinates x,y in cm from memory. The server plans a way around tables, pillars and walls and stops next to a table, not above it. Drone must be flying',{place:{type:'string'},x:{type:'integer'},y:{type:'integer'}},[]),
+  droneTool('localize','Check where the drone really is: one photo, Grok vision recognises the pillars and tables of the room plan in it, and the position is corrected (dove sei esattamente, controlla la posizione, ricalibra la posizione). Must be flying; it is also done by itself at the end of a go_to when the position is in doubt'),
   droneTool('photo','Take a photo with the camera of this drone (with the object boxes) and show it on the page (fai una foto, scatta)'),
   droneTool('flip','Flip in a direction; needs at least 50% battery',{direction:dir(['left','right','forward','back'])},['direction']),
   droneTool('speed','Set the speed used by later moves',{cmPerSecond:{type:'integer',minimum:10,maximum:100}},['cmPerSecond']),

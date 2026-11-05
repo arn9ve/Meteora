@@ -78,6 +78,16 @@ export type TelloOptions = {
   onOdometryFit?: (fit: unknown) => void;
   /** Every telemetry sample and command of a flight, for the flight log. */
   flightLog?: (event: Record<string, unknown>) => void;
+  /**
+   * The camera is off unless something needs it (saves battery): on for camera actions, off again
+   * after `cameraIdleMs` without use. `cameraAlwaysOn` keeps the old behaviour.
+   */
+  cameraAlwaysOn?: boolean;
+  cameraIdleMs?: number;
+  /** Time for the video to reach the vision service after streamon. */
+  cameraWarmMs?: number;
+  /** Where am I really: a photo, the plan and Grok vision (the server does it). Pose and result in room cm. */
+  localize?: (pose: { x: number; y: number; heading: number }) => Promise<{ ok: true; x: number; y: number; seen: string[]; residualCm: number; note: string } | { ok: false; error: string }>;
 };
 
 export type Detection = { label: string; confidence: number; center: { x: number; y: number }; box?: Box };
@@ -175,6 +185,16 @@ export class RealTello {
   #takingOff = false;
   #attitude = { pitch: 0, roll: 0, vgx: 0, vgy: 0, vgz: 0 };
   readonly #onFit: ((fit: unknown) => void) | null;
+  #cameraUntil = 0;
+  #cameraHolds = 0;
+  readonly #cameraAlwaysOn: boolean;
+  readonly #cameraIdleMs: number;
+  readonly #cameraWarmMs: number;
+  readonly #localize: TelloOptions['localize'] | null;
+  // When to look: after the drone could not see the floor, after an aborted route, or when the
+  // position comes from commands only, the next route starts (and every route ends) with a photo fix.
+  #needFix = false;
+  #flownAtFix = 0;
   readonly #flightLog: ((event: Record<string, unknown>) => void) | null;
   // Start surface: the plan gives a first guess at takeoff; the ToF confirms or corrects it once
   // the drone is over a spot whose height the plan knows (ToF + that height - telemetry h).
@@ -209,6 +229,10 @@ export class RealTello {
     this.#odo.fit = options.odometryFit ?? null;
     this.#onFit = options.onOdometryFit ?? null;
     this.#flightLog = options.flightLog ?? null;
+    this.#cameraAlwaysOn = options.cameraAlwaysOn ?? false;
+    this.#cameraIdleMs = options.cameraIdleMs ?? 30000;
+    this.#cameraWarmMs = options.cameraWarmMs ?? 2500;
+    this.#localize = options.localize ?? null;
     this.#depth = options.depth ?? null;
     this.#settleMs = options.settleMs ?? 400;
     this.#mayTalk = options.mayTalk ?? (() => null);
@@ -396,6 +420,13 @@ export class RealTello {
     if (!isRecord(value) || value.droneId !== this.#id) return this.#fail('Invalid droneId');
     const ready = await this.#ensureReady();
     if (ready) return this.#fail(ready);
+    if (['look', 'scan', 'approach', 'explore', 'face', 'describe', 'find'].includes(String(value.action))) await this.#cameraOn();
+
+    // Where am I really: one photo, the plan, Grok vision.
+    if (value.action === 'localize') {
+      if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for localize');
+      return this.#photoFix();
+    }
 
     if (value.action === 'takeoff') {
       if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for takeoff');
@@ -744,6 +775,8 @@ export class RealTello {
         if (target.z !== undefined && target.z !== 0) target.z = Math.max(target.z, value.minHeightCm);
       }
       const stops: { x: number; y: number; z?: number }[] = [...(via as [number, number][]).map(([x, y]) => ({ x, y, ...(target!.z !== undefined ? { z: target!.z } : {}) })), target];
+      // In doubt about where it is (see #inDoubt): look before going.
+      if (this.#needFix && this.#localize) await this.#photoFix();
       // Never chase the estimate: if the telemetry reading changes on the way, the position may
       // jump, so stop and hover. Each stop gets its legs plus at most 2 short corrections.
       const reading = this.#odo.version;
@@ -751,15 +784,26 @@ export class RealTello {
         let last = Infinity;
         for (let leg = 0; leg < 8; leg += 1) {
           if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
-          if (this.#odo.version !== reading) return this.#fail('Stopped and hovering: the position from the telemetry was re-estimated on the way, so the rest of the route is not safe. Ask again.');
+          if (this.#odo.version !== reading) { this.#needFix = true; return this.#fail('Stopped and hovering: the position from the telemetry was re-estimated on the way, so the rest of the route is not safe. Ask again.'); }
           const v = this.#world.vectorTo(stop);
           if (v.distance < 25 && Math.abs(v.up) < 20) break;
+          if (leg > 0 && v.distance > last + 30) this.#needFix = true;
           if (leg > 0 && v.distance > last + 30) return this.#fail(`Stopped and hovering: after the last move the drone is farther from the target (${v.distance} cm) than before (${last} cm). It may not see the floor well.`);
           last = v.distance;
           const sdk = moveSdk(v.forward, v.left, v.up, 200);
           if (!sdk) break;
           const move = await this.#motion('go_to', sdk, 20000);
           if (!move.ok) return move;
+        }
+      }
+      // Arrived, as far as it knows. In doubt: one photo fix, and one short correction if needed.
+      let check: TelloResult | null = null;
+      if (this.#inDoubt()) {
+        check = await this.#photoFix();
+        const v = this.#world.vectorTo(target);
+        if (check.ok && v.distance >= 40 && v.distance <= 150) {
+          const sdk = moveSdk(v.forward, v.left, 0, 200);
+          if (sdk) { const fix = await this.#motion('go_to', sdk, 20000); if (!fix.ok) return fix; }
         }
       }
       if (target.heading !== undefined) {
@@ -770,7 +814,7 @@ export class RealTello {
         }
       }
       this.#world.record('go_to', typeof value.place === 'string' ? value.place : `(${value.x},${value.y})`);
-      return { ok: true, mode: 'real', action: 'go_to', drone: this.snapshot(), pose: this.#world.pose, note: 'Position is dead reckoning: expect some tens of cm of drift.' } as TelloResult;
+      return { ok: true, mode: 'real', action: 'go_to', drone: this.snapshot(), pose: this.#world.pose, ...(check ? { checkedWithPhoto: check.ok ? { shiftCm: (check as { shiftCm?: number }).shiftCm, seen: (check as { seen?: string[] }).seen } : { failed: (check as { error?: string }).error } } : {}), note: check?.ok ? 'Position checked with a photo of the room.' : 'Position from telemetry and moves: expect some tens of cm of drift.' } as TelloResult;
     }
 
     // Pad to pad without the map: fly straight ahead until the downward sensor sees a mission pad
@@ -898,6 +942,7 @@ export class RealTello {
       if (!before && this.#odo.calibrated) this.#world.followTelemetry(true);
     }
     if (reply === null) return this.#fail(this.#interrupted ? `${action} interrupted` : `No reply to ${action}`);
+    if (/no valid imu/i.test(reply)) this.#needFix = true;
     if (/no valid imu/i.test(reply)) return this.#fail(`${action} refused: the drone cannot see the floor well enough to hold its position (more light, or a floor with marks). It may have moved anyway`);
     if (!isOk(reply)) return this.#fail(`Drone rejected ${action}: ${reply.slice(0, 60)}`);
     onOk?.();
@@ -969,8 +1014,8 @@ export class RealTello {
     this.#verified = true;
     this.#verifiedAt = Date.now();
     this.#linkError = null;
-    // Start the camera stream for metoera-vision (UDP 11111). Flying does not depend on it.
-    this.#video = isOk((await this.#request('streamon', isOk, 3000)) ?? '');
+    // The camera stream (UDP 11111, for metoera-vision) starts only when something needs it.
+    if (this.#cameraAlwaysOn) this.#video = isOk((await this.#request('streamon', isOk, 3000)) ?? '');
     this.#keepalive = setInterval(() => this.#keepaliveTick(), this.#keepaliveMs);
     this.#keepalive.unref();
     return null;
@@ -984,6 +1029,11 @@ export class RealTello {
       await this.#stopDone;
       const level = await this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 3000);
       if (level !== null && /^\d{1,3}$/.test(level)) this.#battery = Number(level);
+      // Camera not needed any more: off, to save battery.
+      if (this.#video && !this.#cameraAlwaysOn && this.#cameraHolds === 0 && Date.now() > this.#cameraUntil) {
+        const off = await this.#request('streamoff', isOk, 2000);
+        if (off && isOk(off)) this.#video = false;
+      }
     });
     this.#queue = run.catch(() => undefined);
   }
@@ -1018,6 +1068,62 @@ export class RealTello {
     if (port !== this.#port || !this.#pending) return;
     const text = payload.replaceAll('\0', '').trim();
     if (this.#pending.accept(text) || /^error\b/i.test(text)) this.#pending.resolve(text);
+  }
+
+  /** Camera on (if it is not) and kept on for a while; waits for the first frames after switching on. */
+  async #cameraOn(): Promise<boolean> {
+    this.#cameraUntil = Date.now() + this.#cameraIdleMs;
+    if (this.#video) return true;
+    const on = await this.#request('streamon', isOk, 3000);
+    this.#video = Boolean(on && isOk(on));
+    if (this.#video && this.#cameraWarmMs) await new Promise((r) => setTimeout(r, this.#cameraWarmMs));
+    this.#cameraUntil = Date.now() + this.#cameraIdleMs;
+    return this.#video;
+  }
+
+  /** For a photo or the live video on the page: camera on through the command queue. */
+  ensureCamera(): Promise<boolean> {
+    const run = this.#queue.then(async () => (await this.#ensureReady(1, 1500)) === null && this.#cameraOn());
+    this.#queue = run.catch(() => undefined);
+    return run.catch(() => false);
+  }
+
+  /** Someone watches the live video: keep the camera on until the returned function is called. */
+  holdCamera(): () => void {
+    this.#cameraHolds += 1;
+    void this.ensureCamera();
+    let done = false;
+    return () => { if (done) return; done = true; this.#cameraHolds = Math.max(0, this.#cameraHolds - 1); this.#cameraUntil = Date.now() + this.#cameraIdleMs; };
+  }
+
+  /**
+   * One photo fix: the server asks Grok vision which pillars and tables of the plan are in the
+   * picture and where, and works out where the drone must be. A fix that would move the drone more
+   * than 3 m is not believed. The Tello lands after 15 s without commands, so it is kept awake.
+   */
+  async #photoFix(): Promise<TelloResult> {
+    if (!this.#localize) return this.#fail('Position from photos is not configured on the server');
+    if (this.#flight !== 'flying') return this.#fail('Take off first: the camera must see the room from the air');
+    if (!(await this.#cameraOn())) return this.#fail('The camera did not start');
+    const p = this.#world.pose;
+    const awake = setInterval(() => { void this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 2000); }, 5000);
+    let r: Awaited<ReturnType<NonNullable<TelloOptions['localize']>>>;
+    try { r = await this.#localize({ x: p.x, y: p.y, heading: p.heading }); } finally { clearInterval(awake); }
+    if (!r.ok) { this.#flightLog?.({ event: 'fix', ok: false, error: r.error }); return this.#fail(r.error); }
+    const dx = r.x - p.x, dy = r.y - p.y, shift = Math.round(Math.hypot(dx, dy));
+    this.#flightLog?.({ event: 'fix', ok: true, from: p, to: { x: r.x, y: r.y }, shift, seen: r.seen, residualCm: r.residualCm, note: r.note });
+    if (shift > 300) return this.#fail(`The photo puts the drone ${(shift / 100).toFixed(1)} m from where it thinks it is: not believed, position unchanged (${r.note})`);
+    this.#world.setXY(r.x, r.y);
+    this.#odo.shift(dx, dy);
+    this.#needFix = false;
+    this.#flownAtFix = this.#odo.stats.flownCm;
+    this.#world.record('localize', `moved the estimate ${shift} cm (${r.seen.join(', ')})`);
+    return { ok: true, mode: 'real', action: 'localize', drone: this.snapshot(), pose: this.#world.pose, shiftCm: shift, seen: r.seen, residualCm: r.residualCm, note: r.note } as TelloResult;
+  }
+
+  /** Is a photo fix worth it now? Doubt = could not see the floor, route aborted, no telemetry, or 3 m since the last fix. */
+  #inDoubt(): boolean {
+    return Boolean(this.#localize) && (this.#needFix || !(this.#odoActive && this.#odo.calibrated) || this.#odo.stats.flownCm - this.#flownAtFix > 300);
   }
 
   #stopOdometry(): void {

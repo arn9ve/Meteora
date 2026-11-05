@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { RealTello, type Detections, type DepthView } from './src/tello.ts';
 import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, planRoute, type Point, type RoomConfig } from './src/room.ts';
+import { landmarksOf, expectedInView, bearingOfX, solvePose, localizePrompt, parseSeen } from './src/landmarks.ts';
 import { Claims, CLAIMS_PORT, describeElsewhere, parsePeers, udpTransport } from './src/claims.ts';
 import { Pilots, TAKEOFF } from './src/pilots.ts';
 
@@ -106,6 +107,36 @@ setInterval(() => {
     void mkdir(flightsDir, {recursive:true}).then(() => appendFile(join(flightsDir, `${id}-${new Date().toISOString().slice(0, 10)}.jsonl`), text)).catch(() => undefined);
   }
 }, 1000).unref();
+/**
+ * Where is the drone really: one photo, the pillars and tables of the plan that should be in view
+ * from the estimated pose, Grok vision saying which it sees and where in the picture, the depth
+ * model (when running) for how far. Pose and result in room cm.
+ */
+async function localizeFrom(id: string, pose: {x: number; y: number; heading: number}) {
+  const image = await readFrame(id);
+  if (!image) return {ok:false as const, error:'No photo from the camera (is metoera-vision running?)'};
+  const expected = expectedInView(landmarksOf(plan, room.objects), {x:pose.x / 100, y:pose.y / 100, heading:pose.heading}).slice(0, 8);
+  if (!expected.length) return {ok:false as const, error:'From here no pillar or table of the plan should be in view: turn toward the room and try again'};
+  const answer = await askVision([image], localizePrompt(expected));
+  const seen = parseSeen(answer, expected);
+  if (!seen) return {ok:false as const, error:'Grok vision did not answer'};
+  const note = /"note"\s*:\s*"([^"]{0,160})"/.exec(answer ?? '')?.[1] ?? '';
+  const depth = await readDepth(id);
+  const obs = seen.filter((s) => s.confidence >= 0.5).flatMap((s) => {
+    const l = expected.find((e) => e.id === s.id)!;
+    const bearing = bearingOfX(s.x);
+    if (Math.abs(bearing - l.bearingDeg) > 25) return []; // too far from where it should be: likely another one
+    const col = depth?.columns?.length ? depth.columns.reduce((a, c) => (Math.abs(c.bearing_deg - bearing) < Math.abs(a.bearing_deg - bearing) ? c : a)) : null;
+    // The depth is to the near face; the plan has the centre.
+    const distanceM = col && col.depth_m > 0.3 ? col.depth_m + Math.min(l.w, l.d) / 2 : null;
+    return [{x:l.x, y:l.y, bearingDeg:bearing, distanceM, id:l.id}];
+  });
+  const sol = solvePose(pose.heading, obs);
+  if (!sol) return {ok:false as const, error:obs.length ? `Saw only ${obs[0].id} and no distance: not enough to tell the position` : `Grok vision saw none of the expected pillars or tables${note ? ` (${note})` : ''}`};
+  if (sol.residualM > 0.6) return {ok:false as const, error:'What Grok saw does not fit together: position unchanged'};
+  return {ok:true as const, x:Math.round(sol.x * 100), y:Math.round(sol.y * 100), seen:obs.map((o) => o.id), residualCm:Math.round(sol.residualM * 100), note};
+}
+
 // Each drone is enabled only when its IP is set (in .env or .env.tello):
 // TELLO_IP + TELLO_SETUP_SERIAL is droneId 'tello', RMTT_IP + RMTT_SETUP_SERIAL is droneId 'rmtt'.
 // Both share local ports 8889 and 8890 (UdpPort routes replies by sender IP), so they need different IPs.
@@ -117,7 +148,7 @@ function droneFromEnv(id: string, prefix: string): RealTello | null {
   const host = process.env[`${prefix}_IP`]?.trim();
   if (!host) return null;
   if (!isIpv4(host)) { console.log(`${prefix}_IP must be an IPv4 address (got "${host}"); that drone is off`); return null; }
-  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, start:startOf(prefix), depth:() => readDepth(id), mayTalk:() => mayTalk(id), surfaceAt:(x, y) => surfaceHeightAt(room.objects, x / 100, y / 100), odometryFit:odometryFits[id], onOdometryFit:(fit) => saveOdometryFit(id, fit), flightLog:(event) => flightLog(id, event)});
+  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, start:startOf(prefix), depth:() => readDepth(id), mayTalk:() => mayTalk(id), surfaceAt:(x, y) => surfaceHeightAt(room.objects, x / 100, y / 100), odometryFit:odometryFits[id], onOdometryFit:(fit) => saveOdometryFit(id, fit), flightLog:(event) => flightLog(id, event), cameraAlwaysOn:process.env.CAMERA_ALWAYS_ON === '1', localize:(pose) => localizeFrom(id, pose)});
 }
 const drones = new Map<string, RealTello>();
 for (const [id, prefix] of FLEET) {
@@ -270,6 +301,7 @@ function sameKey(a: string, b: string): boolean {
 const photosDir = join(root, 'photos');
 async function takePhoto(id: string) {
   try {
+    await drones.get(id)?.ensureCamera(); // the camera is off by default
     const frame = await fetch(`${visionUrl}/frame.jpg?drone=${encodeURIComponent(id)}`, {signal:AbortSignal.timeout(3000)});
     if (!frame.ok) return {ok:false, mode:'real', error:'No camera image. Is metoera-vision running?'};
     const name = `${id}-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
@@ -284,6 +316,9 @@ async function takePhoto(id: string) {
 
 // Live annotated video of one drone, passed through from metoera-vision.
 async function proxyVideo(id: string, res: http.ServerResponse) {
+  // The camera is off by default: on while somebody watches.
+  const release = drones.get(id)?.holdCamera();
+  res.on('close', () => release?.());
   await proxyStream(`${visionUrl}/stream?drone=${encodeURIComponent(id)}`, res);
 }
 async function proxyStream(source: string, res: http.ServerResponse) {

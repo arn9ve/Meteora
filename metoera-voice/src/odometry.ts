@@ -55,6 +55,9 @@ export class Odometry {
     const dt = (s.t - prev.t) / 1000; this.#speed = dt > 0 ? d / dt : this.#speed;
   }
 
+  /** A photo fix moved the position: the telemetry carries on from there. */
+  shift(dx: number, dy: number): void { this.#pos.x += dx; this.#pos.y += dy; }
+
   /** A move command is about to start: returns its handle. */
   beginMove(): number { this.#open = this.#samples.length; return this.#open; }
 

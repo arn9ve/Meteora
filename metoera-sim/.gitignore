@@ -6,6 +6,7 @@ scenes/
 renders/
 .ultralytics/
 weights/
+datasets/
 runs/
 voice-data/
 redzone-data/

@@ -111,9 +111,10 @@ class _Cloud:
         self.pts: list[np.ndarray] = []
         self.cols: list[np.ndarray] = []
         self.sizes: list[np.ndarray] = []
+        self.labels: list[int | None] = []  # COCO or venue class of each chunk; None is background
         self.rng = rng
 
-    def surface(self, origin, u, v, colour, step: float = STEP, noise: float = 0.04, band=None) -> None:
+    def surface(self, origin, u, v, colour, step: float = STEP, noise: float = 0.04, band=None, label: int | None = None) -> None:
         """A flat parallelogram origin + a*u + b*v (a, b in 0..1), Gaussians `step` apart.
         `band` = (height_m, colour): below that height (along v) the colour changes."""
         origin, u, v = (np.asarray(a, dtype=np.float32) for a in (origin, u, v))
@@ -130,9 +131,19 @@ class _Cloud:
         self.pts.append(pts)
         self.cols.append(cols)
         self.sizes.append(np.full(len(pts), step * 0.6, dtype=np.float32))
+        self.labels.append(label)
+
+    def labeled_points(self) -> dict[int, np.ndarray]:
+        """World points of each labelled object class. Background chunks are left out."""
+        groups: dict[int, list[np.ndarray]] = {}
+        for pts, label in zip(self.pts, self.labels):
+            if label is None:
+                continue
+            groups.setdefault(label, []).append(pts)
+        return {label: np.concatenate(chunks) for label, chunks in groups.items()}
 
     def box(self, centre, w: float, d: float, h: float, rotation_deg: float, colour, bottom: float = 0.0,
-            step: float = STEP, top: bool = True) -> None:
+            step: float = STEP, top: bool = True, label: int | None = None) -> None:
         """A box standing on z = bottom: w along its x, d along its y, turned rotation_deg."""
         a = math.radians(rotation_deg)
         ex = np.array([math.cos(a), math.sin(a), 0.0]) * w
@@ -140,9 +151,9 @@ class _Cloud:
         ez = np.array([0.0, 0.0, h])
         o = np.array([centre[0], centre[1], bottom]) - ex / 2 - ey / 2
         for origin, u, v in ((o, ex, ez), (o + ey, ex, ez), (o, ey, ez), (o + ex, ey, ez)):
-            self.surface(origin, u, v, colour, step)
+            self.surface(origin, u, v, colour, step, label=label)
         if top:
-            self.surface(o + ez, ex, ey, colour, step)
+            self.surface(o + ez, ex, ey, colour, step, label=label)
 
     def splats(self, device: str):
         import torch
@@ -165,6 +176,9 @@ def object_height(o: dict) -> float:
     return TABLE_HEIGHT_M if o.get("kind") == "table" else BOX_HEIGHT_M
 
 
+PERSON, TABLE, PILLAR, PAD = 0, 60, 80, 81  # COCO person and dining table; the two venue classes
+
+
 def furniture(cloud: _Cloud, objects: list[dict]) -> None:
     for o in objects:
         try:
@@ -174,19 +188,19 @@ def furniture(cloud: _Cloud, objects: list[dict]) -> None:
         h = object_height(o)
         if o.get("kind") == "table":
             top = 0.04
-            cloud.box((x, y), w, d, top, rot, TABLE_TOP, bottom=h - top, step=0.04)
+            cloud.box((x, y), w, d, top, rot, TABLE_TOP, bottom=h - top, step=0.04, label=TABLE)
             a = math.radians(rot)
             for sx in (-1, 1):
                 for sy in (-1, 1):
                     lx, ly = sx * (w / 2 - 0.08), sy * (d / 2 - 0.08)
                     cx, cy = x + lx * math.cos(a) - ly * math.sin(a), y + lx * math.sin(a) + ly * math.cos(a)
-                    cloud.box((cx, cy), 0.05, 0.05, h - top, rot, TABLE_LEG, step=0.025, top=False)
+                    cloud.box((cx, cy), 0.05, 0.05, h - top, rot, TABLE_LEG, step=0.025, top=False, label=TABLE)
         else:
             cloud.box((x, y), w, d, h, rot, BOX)
 
 
-def build(plan: dict, objects: list[dict], mission_pads: Optional[dict] = None, device: str = "cuda", seed: int = 0):
-    """The venue's splats. `mission_pads` = {number: (x, y, z)}, z the surface they lie on."""
+def build_cloud(plan: dict, objects: list[dict], mission_pads: Optional[dict] = None, seed: int = 0) -> _Cloud:
+    """The venue's points, tagged with their class. `mission_pads` = {number: (x, y, z)}."""
     rng = np.random.default_rng(seed)
     c = _Cloud(rng)
     height = float(plan.get("height_m", 4.3))
@@ -201,7 +215,7 @@ def build(plan: dict, objects: list[dict], mission_pads: Optional[dict] = None, 
             continue
         c.surface((ax, ay, 0.0), (bx - ax, by - ay, 0), (0, 0, height), WALL, band=(0.10, SKIRTING))
     for p in plan.get("pillars", []):
-        c.box((p["x"], p["y"]), p["w"], p["d"], height, 0.0, CONCRETE, top=False)
+        c.box((p["x"], p["y"]), p["w"], p["d"], height, 0.0, CONCRETE, top=False, label=PILLAR)
     for a in plan.get("above", []):
         z = float(a["z_m"])
         if z < height - 0.05:
@@ -210,10 +224,15 @@ def build(plan: dict, objects: list[dict], mission_pads: Optional[dict] = None, 
     furniture(c, objects)
     for (px, py, pz) in (mission_pads or {}).values():
         h = PAD_SIDE_M / 2
-        c.surface((px - h, py - h, pz + 0.003), (PAD_SIDE_M, 0, 0), (0, PAD_SIDE_M, 0), PAD, step=0.01, noise=0)
+        c.surface((px - h, py - h, pz + 0.003), (PAD_SIDE_M, 0, 0), (0, PAD_SIDE_M, 0), PAD, step=0.01, noise=0, label=PAD)
         # A light arrow towards the pad's +x (the rocket on a real pad), so its heading shows.
-        c.surface((px - 0.06, py - 0.012, pz + 0.004), (0.12, 0, 0), (0, 0.024, 0), PAD_MARK, step=0.01, noise=0)
-    return c.splats(device)
+        c.surface((px - 0.06, py - 0.012, pz + 0.004), (0.12, 0, 0), (0, 0.024, 0), PAD_MARK, step=0.01, noise=0, label=PAD)
+    return c
+
+
+def build(plan: dict, objects: list[dict], mission_pads: Optional[dict] = None, device: str = "cuda", seed: int = 0):
+    """The venue's splats. `mission_pads` = {number: (x, y, z)}, z the surface they lie on."""
+    return build_cloud(plan, objects, mission_pads, seed).splats(device)
 
 
 def surface_height(objects: list[dict], x: float, y: float) -> float:

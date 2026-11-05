@@ -1,21 +1,21 @@
-# Connect Tello + laptop Wi‑Fi at the same time
+# Connect the drone and the laptop to the same Wi-Fi
 
-Goal: Mac and Tello both on **`hackathon` / `hackathon`**, so you keep **internet (Grok)** and **drone control** (and video).
+Goal: the Mac and the drone both on **`<venue Wi-Fi>`**, so you keep **internet (Grok)** and **drone control** (and video).
 
-Related: [`metoera-link`](../metoera-link) is the AP-mode ground check / UDP driver (`TELLO-…` at `192.168.10.1`). It does **not** send `ap`. This guide is the STA step that puts the Edu on the shared LAN.
+Related: [`metoera-link`](../../metoera-link) is the ground check and UDP driver on the drone's own access point (`TELLO-XXXXXX` at `192.168.10.1`). It does **not** send `ap`. This guide is the station-mode step that puts the drone on the shared LAN.
 
 ## Important facts
 
-- A **USB cable does not put Tello EDU on Wi‑Fi**. USB is basically **charging** (flight SDK stays on Wi‑Fi).
-- You configure STA mode **once** by briefly talking to the drone’s own AP (`TELLO-XXXXXX`), then both join `hackathon`.
-- STA does **not** disable video: after `streamon`, frames still come from the LAN IP (confirmed on hackathon Wi‑Fi).
+- A **USB cable does not put the Tello EDU on Wi-Fi**. USB only charges it; the flight SDK works over Wi-Fi.
+- You set station mode **once**, by briefly joining the drone's own access point (`TELLO-XXXXXX`). Then both the Mac and the drone join `<venue Wi-Fi>`.
+- Station mode does **not** turn off video: after `streamon`, frames still come from the drone's LAN IP (confirmed at the venue).
 
 ## Best method (keep internet while configuring)
 
-If you have an **Ethernet cable** to the router/switch:
+If you have an **Ethernet cable** to the router or switch:
 
-1. Plug Mac into Ethernet → internet stays up.
-2. Mac **Wi‑Fi** → join `TELLO-XXXXXX` (drone hotspot).
+1. Plug the Mac into Ethernet, so internet stays up.
+2. Mac **Wi-Fi** → join `TELLO-XXXXXX` (the drone's hotspot).
 3. On the Mac, in this folder:
 
    ```bash
@@ -23,11 +23,11 @@ If you have an **Ethernet cable** to the router/switch:
    python3 -m venv venv && source venv/bin/activate
    pip install -r requirements.txt
    cp -n .env.example .env
-   python set_sta_mode.py   # type the SSID and password; this lab is hackathon / hackathon
+   python set_sta_mode.py   # type the network name and password
    ```
 
-4. Wait **30–60s** for the drone to reboot onto the Wi‑Fi you entered.
-5. Wi‑Fi → join the network you entered (this lab: **`hackathon`**). Ethernet can stay connected.
+4. Wait **30–60 s** for the drone to reboot onto the Wi-Fi you entered.
+5. Wi-Fi → join the network you entered (`<venue Wi-Fi>`). Ethernet can stay connected.
 6. Find the drone:
 
    ```bash
@@ -36,7 +36,7 @@ If you have an **Ethernet cable** to the router/switch:
    # LOCAL_SUBNET=192.168.x.0/24 python find_tello.py
    ```
 
-   Or check the router’s DHCP client list for a new device.
+   Or look for a new device in the router's DHCP client list.
 7. Put the IP in `.env`:
 
    ```env
@@ -49,22 +49,18 @@ If you have an **Ethernet cable** to the router/switch:
    python -c "from djitellopy import Tello; t=Tello('YOUR_IP'); t.connect(); print('battery', t.get_battery()); t.end()"
    ```
 
-Now Mac is on `hackathon` (internet + drone). Grok API and Tello work together.
+Now the Mac is on `<venue Wi-Fi>` with internet and the drone. Grok and the drone work together.
 
 ## Method without Ethernet
 
-Same steps, but during step 2–3 the Mac has **no internet** (only `TELLO-…`). That is fine — `set_sta_mode.py` does not need Grok. After step 5 you get internet back.
+The same steps, but during steps 2–3 the Mac has **no internet** (it is only on `TELLO-XXXXXX`). That is fine: `set_sta_mode.py` does not need Grok. After step 5 internet comes back.
 
-## If STA fails / drone “disappears”
+## If station mode fails or the drone "disappears"
 
-- SSID/password must match exactly: `hackathon` / `hackathon` (case-sensitive).
-- 2.4 GHz Wi‑Fi (Tello does not do 5 GHz).
-- Factory-reset Tello to bring back `TELLO-XXXXXX` AP (check your EDU manual: usually power on + hold button ~5s until LEDs change), then retry STA.
+- The network name and password must match exactly (case-sensitive) and contain no spaces.
+- The Wi-Fi must be 2.4 GHz WPA2-Personal (the Tello does not do 5 GHz).
+- Reset the drone to bring back its `TELLO-XXXXXX` access point: power on and hold the power button about 5 s, until the light flashes yellow. Then try station mode again.
 
-## After you’re connected
+## After you're connected
 
-```bash
-python main.py --text          # real drone + Grok
-# or
-python main.py --text --dry-run
-```
+Put the drone's IP and serial in `metoera-voice/.env.tello` (`TELLO_IP` / `TELLO_SETUP_SERIAL`, or `RMTT_IP` / `RMTT_SETUP_SERIAL`) and start `metoera-voice` (see its [README](../../metoera-voice/README.md)).

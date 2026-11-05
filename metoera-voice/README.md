@@ -23,9 +23,9 @@ The xAI key stays on the server; the browser gets a temporary token.
 | Drone 1 · Black | Tello EDU | `TELLO_IP`, `TELLO_SETUP_SERIAL` | `tello` |
 | Drone 2 · Red | RoboMaster TT | `RMTT_IP`, `RMTT_SETUP_SERIAL` | `rmtt` |
 
-Set only the IP of a drone you have; the other one stays off the page. Use the serial the drone reports with `sn?` (`tools/check-tello-lan.mjs` prints it), not the label on the box: our RoboMaster's box says `42YF…`, the drone says `0TQZ…`.
+Set only the IP of a drone you have; the other one stays off the page. Use the serial the drone reports with `sn?` (`tools/check-tello-lan.mjs` prints it), not the label on the box: on our RoboMaster the two are different.
 
-Every drone tool takes `drone: black | red`. Grok asks which one when you don't say. "Both" runs the command on Black, then Red. `land` and `stop` with no drone go to every drone you may command on this laptop (the ones you fly and the free ones); so does `emergency`. Switch off and Cut motors act on the same drones.
+Every drone tool takes `drone: black | red`. Grok asks which one when you don't say. "Both" runs the command on Black, then Red. `land` and `stop` with no drone go to every drone you may command on this laptop (the ones you fly and the free ones); so does `emergency`. The **Emergency land** button acts on the same drones.
 
 Both drones reply to the computer's UDP port 8889, so the server opens 8889 and 8890 once and routes each datagram by sender IP (`src/udp-port.ts`). The two drones need different IPs.
 
@@ -42,7 +42,7 @@ TELLO_EXPECT_SERIAL=<serial> node tools/test-flight.mjs <ip>
 Everyone who opens the page (on this laptop or through the phone link) types a name first. The name is what the lock goes by.
 
 - **Taking a drone.** The person whose takeoff (or test flight) is accepted becomes the drone's **pilot**. A second takeoff arriving at the same moment is refused.
-- **While it flies.** Only the pilot can command it. Everyone else gets "Black is flown by Amir. Only Amir can command it until it lands." for move, rotate, flip, speed, scan, **land, stop and emergency** too. Their Switch off and Cut motors buttons skip it. Status, look and photo still work for everyone. The card says "flown by Amir", greyed, and Grok is told it may not command it.
+- **While it flies.** Only the pilot can command it. Everyone else gets "Black is flown by Amir. Only Amir can command it until it lands." for move, rotate, flip, speed, scan, **land, stop and emergency** too. Their **Emergency land** button skips it. Status, look and photo still work for everyone. The card says "flown by Amir", greyed, and Grok is told it may not command it.
 - **Free again.** Once the drone is on the ground and nothing is running on it (after a land, an emergency, a failed takeoff, or a landing on low battery that telemetry reports), anyone can take off with it.
 - **The pilot is gone.** When no page using the pilot's name has been heard from for 15 s (page closed, phone asleep or locked, name changed), the server lands the drone by itself, trying again every 5 s. Nobody else gets control. The pages poll every 1.5 s, so **keep the pilot's screen on**.
 - **Names.** Compared without case or extra spaces: a laptop page and a phone with the same name are the same pilot. Changing your name mid-flight gives up control (the dialog warns you). The name is not a password: anyone who types "Amir" is Amir, so pick distinct names.
@@ -54,7 +54,7 @@ The person standing next to a drone is the only backstop if its pilot does somet
 Every teammate may run this server on their own laptop and list both drones in `.env.tello`. Only one laptop talks to a drone at a time (it **holds** it); the others never send it a packet. The Tello SDK has no owner: one `command` from a second laptop could take the drone's telemetry and video away from the laptop flying it.
 
 - **At start.** A laptop listens 2 s for the others, then claims every listed drone that no laptop holds: it announces the claim and waits 1.5 s. If two laptops claim the same drone at once, the one with the lower id wins.
-- **A flying drone stays where it is.** While a drone flies, has a pilot or runs a command, it is **locked** to its laptop. Every other laptop shows "Flown by Amir · Barry's laptop", greyed, with the battery and flight state that laptop announces and no video. It sends it nothing: no command, not land, Switch off or Cut motors either.
+- **A flying drone stays where it is.** While a drone flies, has a pilot or runs a command, it is **locked** to its laptop. Every other laptop shows "Flown by Amir · Barry's laptop", greyed, with the battery and flight state that laptop announces and no video. It sends it nothing: no command, not land, and not **Emergency land** either.
 - **A landed drone moves on takeoff.** A landed, idle drone held by another laptop shows "On the ground · on Barry's laptop · say take off to fly it here". Saying "take off" on your laptop asks Barry's laptop for it. Barry's laptop stops the video and lets go, your laptop shakes hands with the drone (`command`, `sn?`, `streamon`), and the takeoff runs, in about 2 s in all. You are then its pilot. If the drone took off on Barry's laptop meanwhile, you get "Black is flown by … on Barry's laptop" and nothing moves. Status on such a drone is answered from Barry's announcements; other commands are refused until it is here.
 - **Stopping a server.** Ctrl+C lands what is flying, stops the video and says goodbye, so another laptop takes the drone over about 2 s later. If a laptop goes silent instead (crash, Wi-Fi), the others wait 3.5 s; if its drone was locked they wait 20 s more ("stopped answering · it lands by itself"), because the Tello lands by itself about 15 s after its last command. Nobody else can land it before that, so keep someone next to every drone.
 - **How they find each other.** Each server announces its drones once a second, and at once when a lock changes, on UDP **18789**, as a broadcast to every network the laptop is on. The Drones panel lists **Laptops on this network**. If your teammate is missing there, the Wi-Fi blocks broadcasts: set `METOERA_PEERS` to the other laptop's IP on both laptops.
@@ -83,7 +83,7 @@ Both drones stream video to UDP 11111 on this computer once the server has sent 
 cd ../metoera-vision && .venv/bin/python -m metoera_vision --drones tello=192.168.5.137,rmtt=192.168.5.68
 ```
 
-The Drones panel shows each drone's live video with YOLO boxes (`/video/tello`, `/video/rmtt`, passed through from the vision service). `scan` and `look` read the detections of the drone they are called for.
+The Drones panel shows each drone's live video with YOLO boxes (`/video/tello`, `/video/rmtt`, passed through from the vision service). `scan` and `look` read the detections of the drone they are called for. Before each leg of a mission, the server also asks the vision service for metric depth (`/depth?drone=<id>`); without it the leg is flown in full.
 
 ## Voice commands
 
@@ -104,18 +104,37 @@ Grok calls one tool per action, in the order you say them, and waits for each re
 | "What do you see?" | `look` | none: reads the latest camera detections |
 | "Emergency" / "cut the motors" | `emergency` | `emergency`: motors stop at once, the drone drops |
 | "Stop listening" / "mute" | `mute` | none: turns the microphone off in the page |
+| "Go to table 3" / "go to Zone 1" / "go home" | `go_to` | a planned route of moves and turns (see [Room, routes and missions](#room-routes-and-missions)) |
+| "Where are you exactly?" | `localize` | none: one photo, Grok vision finds pillars and tables of the plan |
+| "Can you fly to table 3?" | `preflight` | none: says what is ready, what is missing and how long it takes |
+| "Run the calibration test" | `calibrate` | a fixed pattern of moves from a table, then back and land |
+| "Describe what you see" / "find the person in green" | `describe` / `find` | none / turns until Grok vision finds it |
+| "Come closer to the person" | `approach` | short moves toward the object, stops about 1 m away |
+| "Explore the room" | `explore` | turns on the spot with photos, Grok vision lists what it sees |
+| "Take a photo" | `photo` | none: saves the latest frame in `photos/` |
 
 A sequence such as "take off, go up 50 centimeters, turn left 180, land" runs step by step. If a step fails, the rest is skipped and Grok says why; `stop` and `land` still go through.
+
+## Room, routes and missions
+
+The room plan (`room/capannone-gragnani.json`, or `ROOM_PLAN`) has the walls and pillars of the venue. The page adds the tables, red zones, phones and where each drone starts; these are saved in `.room.json`.
+
+- `go_to` with a table, a zone or `home` becomes a route (`src/room.ts`): A* on a 20 cm grid, 50 cm from walls and tables, 80 cm from pillars, shortened to straight legs.
+- In the air, `go_to` runs a mission (`src/mission.ts`): a survey on the first flight after takeoff, then legs of at most 2 m, each one checked with the camera's depth first. The fixed rules choose each step; Grok is asked only when something is off (`DECISION_MODE=0` turns that off).
+- A person seen by a phone in a red zone sends the nearest drone into the zone, where it looks left, ahead and right and Grok reports. The page does this when **auto-send** is on (the default).
+- If the Wi-Fi drops in flight, the drone backs up along its own path, flies home and lands when the link returns, or lands after 12 s.
+
+The full sequence, the coordinate frames and the safety layers are in [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
 
 ## Emergency controls
 
 Always on screen, even without a voice session. They act on the drones this laptop holds that you fly or that nobody flies; a drone someone else flies is skipped and the button says so.
 
-- **Switch off · land**: cancels every queued command, interrupts the one running, sends `land` (up to 3 tries) and ends the voice session.
-- **Cut motors**: sends `emergency` three times; the motors stop and the drone drops. The button needs a second tap within 2 s so a stray click cannot drop the drone. Saying "emergency" acts at once.
+- **Emergency land**: cancels every queued command, interrupts the one running, sends `land` (up to 3 tries) and ends the voice session.
+- **Cutting the motors** has no button. Say "emergency" or "cut the motors": the server sends `emergency` three times, the motors stop and the drone drops.
 - **Microphone button** (centre, during a session): turns the microphone off. No audio reaches Grok, what it already heard is cleared, its reply is cancelled, and any tool call that still arrives is ignored except `stop`, `land` and `emergency`. Tap again to turn it back on. Saying "stop listening" does the same; turning it back on needs the button.
 
-Both drone buttons call `POST /api/emergency` with `{kind: "land" | "motors"}`, which skips the command queue.
+**Emergency land** calls `POST /api/emergency` with `{kind: "land"}`; the spoken emergency uses `{kind: "motors"}`. Both skip the command queue.
 
 ## Camera: counting and looking
 
@@ -148,7 +167,7 @@ Safety: these limits are enforced on the server, but what Grok decides to call i
 - **The laptop protocol (`test/claims.test.mjs`):** claiming, the tie-break, silent holders, goodbye, malformed and older announcements, and the handover: a landed drone moves, a locked one never, a stale "locked" is not trusted, two requests at once, a holder that never lets go, and real UDP between two instances.
 
 Run end to end as well: two servers on one computer (`METOERA_PORT`, `METOERA_CLAIMS_PORT`, `METOERA_PEERS`, `TELLO_LOCAL_PORT`, `TELLO_STATE_PORT`), one fake drone, and three people (cookies).
-- Amir takes off. Marco's move, land, stop, emergency, Switch off and Cut motors are refused, and so are takeoff and land from the other laptop.
+- Amir takes off. Marco's move, land, stop, emergency and Emergency land are refused, and so are takeoff and land from the other laptop.
 - Amir lands. The other laptop's takeoff moves the drone over in 2.4 s: the drone saw `streamoff` from the first laptop, nothing more from it, then `command`, `sn?`, `streamon` and `takeoff` from the second.
 - That pilot's page went silent, and the server landed the drone after about 16 s.
 

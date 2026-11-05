@@ -1,7 +1,7 @@
 /**
  * Metoera red-zone: up to 3 phone sessions + Mac console.
  * Phones do on-device person detection; Mac oversees via snapshots + remote commands.
- * ARM takeoff defaults OFF; resets OFF on process start.
+ * ARM is on by default (REDZONE_ARM_DEFAULT=0 starts every phone disarmed).
  */
 import http from 'node:http';
 import https from 'node:https';
@@ -842,7 +842,7 @@ if (phone) {
       console.log(`  Phone 2: ${base}&slot=2`);
       console.log(`  Phone 3: ${base}&slot=3`);
       console.log('  Or open without slot= and pick A/B/C on the phone.');
-      console.log('  Self-signed cert: Advanced → Proceed once. ARM defaults OFF.');
+      console.log(`  Self-signed cert: Advanced → Proceed once. ARM defaults ${ARM_DEFAULT ? 'ON' : 'OFF'}.`);
     });
 } else {
   console.log('Phone HTTPS not started (no LAN IPv4 or PHONE_ACCESS=off).');

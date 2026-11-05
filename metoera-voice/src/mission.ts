@@ -77,7 +77,7 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
     const route = planRoute(deps.plan, blocking, at, [target.x / 100, target.y / 100]);
     // The first route point at least 30 cm away (closer ones are skipped: too short to fly).
     const next: Point | null = route && route.length ? (route.find((q) => Math.hypot(q[0] - at[0], q[1] - at[1]) >= 0.3) ?? route[route.length - 1]) : null;
-    // A leg goes to that point, at most 150 cm (under 20 cm the drone would not move at all).
+    // A leg goes to that point, at most 200 cm (under 20 cm the drone would not move at all).
     const legEnd: Point | null = next ? (() => { const d = Math.hypot(next[0] - at[0], next[1] - at[1]); if (d < 0.2) return null; const k = Math.min(1, (LEG_CM / 100) / d); return [at[0] + (next[0] - at[0]) * k, at[1] + (next[1] - at[1]) * k] as Point; })() : null;
     // People at the destination are why it goes (a person in the red zone): only people on the
     // way, not in the target zone and not within 1.5 m of the target point, make it wait.

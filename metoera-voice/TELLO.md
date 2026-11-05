@@ -1,6 +1,6 @@
 # Tello EDU: connection notes and tools
 
-Status on 4 November 2026: our Tello EDU (`TELLO-62A591`) is on the `hackathon` network at `192.168.5.137`. It answers the SDK over the LAN (SDK 30), its serial matches, and it completed a supervised test flight: takeoff, 5 s hover, land. Grok Voice flies it: a voice test flight worked, and the full command set is in the README.
+Status on 4 November 2026: our Tello EDU (access point `TELLO-XXXXXX`) is on the venue Wi-Fi at `192.168.5.137` (DHCP; yours will differ). It answers the SDK over the LAN (SDK 30), its serial matches, and it completed a supervised test flight: takeoff, 5 s hover, land. Grok Voice flies it: a voice test flight worked, and the full command set is in the README.
 
 ## The one thing to know: the Tello replies to local port 8889
 
@@ -31,7 +31,7 @@ We tested one Tello EDU on SDK 30. A RoboMaster TT may behave differently; run `
 
 ## Tools (`metoera-voice/tools`)
 
-All scripts run from macOS Terminal with Node 24. None of them flies the drone except `test-flight.mjs`.
+Run the scripts from macOS Terminal (Node 24 for `.mjs`, Python 3 for `.py`). None of them flies the drone except `test-flight.mjs`.
 
 | Script | Network | What it does |
 | --- | --- | --- |
@@ -41,8 +41,12 @@ All scripts run from macOS Terminal with Node 24. None of them flies the drone e
 | `connect-tello.mjs` | Drone AP | Confirms the serial with `sn?`, then sends `ap <ssid> <password>` to join the shared network. Reads `.env.tello` |
 | `check-tello-lan.mjs [ip]` | Shared network | Read-only: `command`, `battery?`, `sdk?`, `sn?`. Default IP `192.168.5.137` |
 | `test-flight.mjs [ip]` | Shared network | Supervised flight: checks serial and battery (≥ 30%), asks you to type `FLY`, takes off, hovers 5 s, lands. Any key lands immediately, `x` stops the motors (the drone drops) |
+| `diagnose-tello.command` | Drone AP | Double-click wrapper: runs `diagnose-tello.mjs` and `check-tello-python.py` |
+| `capture-tello.py` | Drone AP | The packet-summary capture used by `capture-tello.command` |
+| `step-to-plan.py FILE.step OUT_DIR [HEIGHT_MM]` | none | Cuts the venue's STEP model at a height (default 1 m) into wall segments: `floorplan.json` and `floorplan.svg` |
+| `apply-measurements.py room/capannone-gragnani.json` | none | Applies the measured room sizes to the plan: 4 pillars of 1.20 × 0.70 m, 3.60 m apart, ceiling 4.30 m |
 
-`.env.tello` (local, git-ignored) holds the setup values. Copy `.env.tello.example` and fill it in. `connect-tello.mjs` only accepts `hackathon` as the SSID; change that check if you use another network.
+`.env.tello` (local, git-ignored) holds the setup values. Copy `.env.tello.example` and fill it in. `connect-tello.mjs` only accepts the venue network name written in the script (and in `.env.tello.example`); change that check if you use another network.
 
 ## Two drones (Tello EDU + RoboMaster TT)
 
@@ -67,7 +71,8 @@ RoboMaster TT notes (SDK 3.0): `hardware?` answers `RMTT` with the expansion boa
 - Flat surface, textured floor and good light: the Tello holds position with its downward camera and drifts over shiny or plain floors.
 - If the computer loses the link mid-flight, the Tello lands by itself after about 15 s without commands.
 
-## Next
+## Since then
 
-- Voice commands beyond the test flight (move, rotate, flip, speed, stop) are tested against a fake drone only; try them on the real drone one at a time.
-- Camera: `scan` (360° count) and `look` use `metoera-vision` (YOLO). Not yet tried with the real drone video.
+- On 5 November Black flew real missions from the voice server (for example table 1 to table 3, and calibration tests). A recorded flight log is kept as a test fixture: `test/fixtures/flight-2026-11-05-black.jsonl`.
+- The automated tests run against fake drones only. Try any new command on the real drone one at a time, with someone next to it.
+- Still open: the RoboMaster TT checks listed above, and the two-laptop handover test.

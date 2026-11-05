@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+# Scans are 50-300 MB each and stay on the laptop; renders are throwaway.
+scenes/
+renders/

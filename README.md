@@ -168,6 +168,8 @@ Five folders, each one a small program that runs on its own and talks to the oth
 | [meteora-share-wifi](meteora-share-wifi) | Puts a drone on the venue Wi-Fi and finds its address | **Once per drone** |
 | [meteora-link](meteora-link) | Checks that the laptop reaches a drone and the internet | Only to troubleshoot |
 
+Two more folders sit next to them: [`pitch/`](pitch) holds the presentation (open `pitch/index.html` in a browser; arrows or the dots on the right move between slides, G shows all slides), and [`design-system/`](design-system) holds the Meteora look (colours, type, icons, tokens) that the app, the pitch and the videos share.
+
 ### Scripts
 
 | Script | What it is for | When |

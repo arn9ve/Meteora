@@ -1,0 +1,97 @@
+/* Meteora design system — the look of the Meteora app, for the app, the pitch and the videos.
+   One world: white paper, ink grey, one red for alarms and live voice, a grid of small grey
+   marks as the ground. Regular weight only, square corners, 1 px lines. Circles are kept for
+   state dots and nothing else. */
+
+:root {
+  /* colour */
+  --m-paper: #ffffff;        /* the page */
+  --m-soft: #f6f6f5;         /* quiet fills, inputs */
+  --m-line: #e6e6e6;         /* every border and rule */
+  --m-ink: #202020;          /* text, primary buttons, "on" dots */
+  --m-muted: #8b8b8b;        /* secondary text, captions */
+  --m-faint: #b5b5b5;        /* tertiary text, off states */
+  --m-mark: #e4e4e4;         /* the dot grid at rest */
+  --m-mark-live: #5b5b5b;    /* the dot grid when something happens */
+  --m-red: #c62828;          /* alarm, red zones, Grok speaking, Emergency land */
+  --m-red-deep: #a51f1f;     /* red pressed */
+  --m-red-soft: #fbeceb;     /* red zone fill */
+  --m-black-drone: #111111;  /* drone Black */
+  --m-red-drone: #c62828;    /* drone Red */
+
+  /* type: one family, regular weight, size does the hierarchy */
+  --m-font: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  --m-caption: 400 10px/1.4 var(--m-font);   /* + uppercase, letter-spacing .12em */
+  --m-small: 400 12px/1.45 var(--m-font);
+  --m-body: 400 16px/1.5 var(--m-font);
+  --m-lead: 400 22px/1.4 var(--m-font);
+  --m-title: 400 clamp(32px, 4.2vw, 64px)/1.08 var(--m-font);
+  --m-display: 400 clamp(44px, 7vw, 112px)/1.02 var(--m-font);
+  --m-tight: -0.035em;       /* letter-spacing for title and display, as Grok's transcript */
+  --m-caps: 0.12em;          /* letter-spacing for captions */
+
+  /* space: 4 px steps */
+  --m-1: 4px; --m-2: 8px; --m-3: 12px; --m-4: 16px; --m-6: 24px; --m-8: 32px; --m-12: 48px; --m-16: 64px;
+
+  /* the dot grid: 18 px apart, 1 px marks */
+  --m-dots: radial-gradient(var(--m-mark) 1px, transparent 1.3px) 0 0 / 18px 18px;
+
+  /* motion */
+  --m-ease: cubic-bezier(.2, .7, .2, 1);
+  --m-fast: 150ms;
+  --m-slow: 600ms;
+}
+
+/* ---------- components ---------- */
+.m-caption { font: var(--m-caption); letter-spacing: var(--m-caps); text-transform: uppercase; color: var(--m-muted); }
+.m-caption.is-red { color: var(--m-red); }
+
+.m-dots { background: var(--m-paper) var(--m-dots); }
+
+/* State dot: filled = on, hollow = off, red = alarm */
+.m-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; border: 1px solid #c8c8c8; background: transparent; flex: none; }
+.m-dot.is-on { background: var(--m-ink); border-color: var(--m-ink); }
+.m-dot.is-alarm { background: var(--m-red); border-color: var(--m-red); }
+.m-dot.is-black { border-color: var(--m-black-drone); }
+.m-dot.is-black.is-on { background: var(--m-black-drone); }
+.m-dot.is-red { border-color: var(--m-red-drone); }
+.m-dot.is-red.is-on { background: var(--m-red-drone); }
+
+/* Tab / status label: a dot and a spaced capital word */
+.m-tab { display: inline-flex; align-items: center; gap: 8px; font: var(--m-caption); font-size: 11px; letter-spacing: var(--m-caps); text-transform: uppercase; color: var(--m-muted); background: none; border: 0; padding: 6px 0; cursor: pointer; }
+.m-tab[aria-selected="true"], .m-tab.is-active { color: var(--m-ink); }
+.m-tab[aria-selected="true"] .m-dot, .m-tab.is-active .m-dot { background: var(--m-ink); border-color: var(--m-ink); }
+
+/* Buttons: square, 1 px line */
+.m-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 16px; font: var(--m-caption); font-size: 11px; letter-spacing: var(--m-caps); text-transform: uppercase; border: 1px solid var(--m-line); background: var(--m-paper); color: var(--m-ink); cursor: pointer; transition: background var(--m-fast), color var(--m-fast), border-color var(--m-fast); }
+.m-btn:hover { background: var(--m-ink); color: var(--m-paper); border-color: var(--m-ink); }
+.m-btn.is-primary { background: var(--m-ink); color: var(--m-paper); border-color: var(--m-ink); }
+.m-btn.is-danger { background: var(--m-red); color: #fff; border-color: var(--m-red); }
+.m-btn.is-danger:hover { background: var(--m-red-deep); border-color: var(--m-red-deep); }
+.m-btn:focus-visible, .m-tab:focus-visible { outline: 2px solid var(--m-ink); outline-offset: 3px; }
+
+/* Chip: an object that is on (drone, phone, zone) */
+.m-chip { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; border: 1px solid var(--m-line); background: var(--m-paper); font: var(--m-small); font-size: 12px; color: var(--m-ink); white-space: nowrap; }
+.m-chip small { color: var(--m-faint); font-size: 12px; }
+.m-chip.is-alarm { border-color: var(--m-red); color: var(--m-red); }
+
+/* Card: a line, no radius, no shadow */
+.m-card { border: 1px solid var(--m-line); background: var(--m-paper); padding: var(--m-6); }
+
+/* Switch: square track, square knob */
+.m-switch { appearance: none; width: 34px; height: 18px; border: 1px solid #cfcfcf; background: var(--m-paper); position: relative; cursor: pointer; margin: 0; }
+.m-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; background: #cfcfcf; transition: left var(--m-fast); }
+.m-switch:checked { background: var(--m-ink); border-color: var(--m-ink); }
+.m-switch:checked::after { left: 18px; background: var(--m-paper); }
+
+/* Grok: who speaks, then the words, large and light */
+.m-grok { display: flex; flex-direction: column; gap: var(--m-3); }
+.m-grok__who { font: var(--m-caption); letter-spacing: var(--m-caps); text-transform: uppercase; color: var(--m-muted); }
+.m-grok__words { font: var(--m-title); letter-spacing: var(--m-tight); color: var(--m-ink); text-wrap: balance; }
+.m-grok.is-you .m-grok__words::before { content: "\201C"; }
+.m-grok.is-you .m-grok__words::after { content: "\201D"; }
+
+/* Icons: 24 px line icons, 1.5 stroke, colour from the text */
+.m-icon { width: 24px; height: 24px; stroke: currentColor; stroke-width: 1.5; fill: none; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

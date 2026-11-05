@@ -10,9 +10,9 @@
     <p class="suggestions-title">TRY ASKING</p>
     <div class="suggestions">
       <div class="suggestion"><span aria-hidden="true">↗</span><p>Nero,<br>decolla</p></div>
-      <div class="suggestion"><span aria-hidden="true">⌁</span><p>Rosso,<br>vai a destra</p></div>
-      <div class="suggestion"><span aria-hidden="true">↻</span><p>Quante persone<br>vedi?</p></div>
-      <div class="suggestion"><span aria-hidden="true">↘</span><p>Nero,<br>fai una foto</p></div>
+      <div class="suggestion"><span aria-hidden="true">⌁</span><p>Nero, vai al<br>prossimo pad</p></div>
+      <div class="suggestion"><span aria-hidden="true">↻</span><p>Black, hop to<br>the next pad</p></div>
+      <div class="suggestion"><span aria-hidden="true">↘</span><p>Nero,<br>atterra</p></div>
     </div>
   </section>
   <section class="conversation" id="conversation" aria-label="Conversation" hidden><span id="headline" class="caption">Grok</span><div id="transcript" aria-live="polite">I'm listening.</div></section>
@@ -26,8 +26,8 @@
 </main>
 <section class="dashboard" aria-label="Control panel">
   <div class="safety dash-bar" role="group" aria-label="Emergency controls"><button id="linkStatus" class="link-status" data-state="checking" title="Open drone details"><span id="dot0" class="dot dot-black" aria-hidden="true"></span><span id="dot1" class="dot dot-red" aria-hidden="true"></span><span id="linkText">Black · Red · checking…</span></button><button id="pilotLine" class="pilot-line" title="Change your name">Set your name</button><span id="safetyStatus" role="status"></span><button id="switchOff" class="switch-off" title="Cancel all commands and land now">Switch off · land</button><button id="killMotors" class="kill-motors" title="Stops the motors at once. The drone drops.">Cut motors</button></div>
-  <nav class="tabs" role="tablist" aria-label="Panels"><button id="mapButton" class="tab" role="tab" data-panel="mapDialog" aria-selected="true">Room</button><button id="dronesButton" class="tab" role="tab" data-panel="dronesDialog" aria-selected="false">Drones</button><button id="camerasButton" class="tab" role="tab" data-panel="camerasDialog" aria-selected="false">Phones</button></nav>
-  <section id="mapDialog" class="panel room-panel" role="tabpanel" aria-label="Room">
+  <nav class="tabs" role="tablist" aria-label="Panels"><button id="mapButton" class="tab" role="tab" data-panel="mapDialog" aria-selected="false" hidden title="Solo pad-hop: Room map disabled">Room</button><button id="dronesButton" class="tab" role="tab" data-panel="dronesDialog" aria-selected="true">Drones</button><button id="camerasButton" class="tab" role="tab" data-panel="camerasDialog" aria-selected="false">Phones</button></nav>
+  <section id="mapDialog" class="panel room-panel" role="tabpanel" aria-label="Room" hidden>
     <div class="room-tools" role="toolbar" aria-label="Room setup">
       <button data-tool="view" class="tool active">View</button>
       <button data-tool="place:tello" class="tool">Place Black</button>
@@ -53,8 +53,8 @@
     <div class="room-actions"><button id="zoneFinish" hidden>Finish zone</button><button id="zoneCancel" hidden>Cancel zone</button><button id="zonesClear">Delete all zones</button><label class="autosend"><input type="checkbox" id="autoSend"> Send the nearest drone when a person enters a zone</label></div>
     <p class="telemetry-note" id="mapNote">Waiting for the server.</p>
   </section>
-  <section id="dronesDialog" class="panel" role="tabpanel" aria-label="Drones" hidden><div class="drone-grid" id="droneGrid"></div><p class="telemetry-note" id="telemetryNote">Waiting for the server.</p><p class="telemetry-note" id="clientsLine"></p></section>
-  <section id="camerasDialog" class="panel" role="tabpanel" aria-label="Phones" hidden><p class="drone-intro">Open a link on each phone (same Wi-Fi). Then, on the Room tab, place the phone and calibrate it with 4 clicks. Zones are drawn on the Room plan.</p><div id="cameraGrid" class="camera-grid"></div><p class="telemetry-note" id="camerasNote">Waiting for the camera service.</p></section>
+  <section id="dronesDialog" class="panel" role="tabpanel" aria-label="Drones"><div class="drone-grid" id="droneGrid"></div><p class="telemetry-note" id="telemetryNote">Waiting for the server.</p><p class="telemetry-note" id="clientsLine"></p></section>
+  <section id="camerasDialog" class="panel" role="tabpanel" aria-label="Phones" hidden><p class="drone-intro">Solo pad-hop: open the redzone phone link (slot 1) on the same Wi-Fi. No Room map or phone calibration needed for Black pad-01 → pad-02.</p><div id="cameraGrid" class="camera-grid"></div><p class="telemetry-note" id="camerasNote">Waiting for the camera service.</p></section>
 </section>
 </div>
 <div id="photoView" class="photo-view" hidden role="dialog" aria-label="Photo from the drone"><img alt="Photo from the drone"><p></p></div>

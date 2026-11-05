@@ -841,4 +841,4 @@ refreshDrone();
 setInterval(refreshDrone, 1500);
 // The map refreshes on its own timer, registered after the drone poll.
 setInterval(()=>{if(mapDialog.open) void renderMap()},1500);
-showPanel('mapDialog');
+showPanel('dronesDialog'); // solo pad-hop: skip Room map extras

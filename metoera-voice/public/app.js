@@ -869,21 +869,23 @@ function renderInspector(){
   if(sel.kind==='phone') return phoneInspector(box,sel.id);
   if(sel.kind==='zone'){
     const z=r.zones.find(q=>q.id===sel.id); if(!z){ sel=null; return renderInspector(); }
-    box.append(para('RED ZONE','caption'),field('Name',z.name,v=>{ z.name=v||z.name; void saveZones(); },{type:'text',suffix:''}),
+    box.append(para('RED ZONE','caption'),field('Name',z.name,v=>{ const c=R().zones.find(q=>q.id===z.id); if(c){ c.name=v||c.name; void saveZones(); } },{type:'text',suffix:''}),
       para(`${z.points.length} corners · ${fmt(area(z.points),1)} m². Drag a corner on the plan to change the shape. A person seen inside it by a phone is an alert; with auto-send on, the nearest drone goes there.`),
       btn('Delete zone',()=>void deleteSelected(),'danger'));
     return;
   }
   if(sel.kind==='object'){
     const o=r.objects.find(q=>q.id===sel.id); if(!o){ sel=null; return renderInspector(); }
-    const set=(k)=>v=>{ if(k==='name'||k==='kind'||Number.isFinite(v)){ o[k]=v; void saveObjects(); } };
+    // The room is reloaded every 1.5 s: always change the current copy, not the one shown when the panel was built.
+    const cur=()=>R().objects.find(q=>q.id===o.id);
+    const set=(k)=>v=>{ const c=cur(); if(c&&(k==='name'||k==='kind'||Number.isFinite(v))){ c[k]=v; void saveObjects(); } };
     const kind=document.createElement('label'); kind.className='field'; kind.innerHTML='<span>Kind</span><select></select><small></small>';
     for(const k of OBJECT_KINDS){ const op=document.createElement('option'); op.value=k; op.textContent=k; op.selected=o.kind===k; kind.querySelector('select').append(op); }
     kind.querySelector('select').addEventListener('change',e=>set('kind')(e.target.value));
     // A Tello mission pad (1-8) in the middle of this table: exact positions over it.
     const pad=document.createElement('label'); pad.className='field'; pad.innerHTML='<span>Mission pad</span><select></select><small></small>';
     for(const v of ['',1,2,3,4,5,6,7,8]){ const op=document.createElement('option'); op.value=String(v); op.textContent=v===''?'none':`pad ${v}`; op.selected=(o.pad??'')===v; pad.querySelector('select').append(op); }
-    pad.querySelector('select').addEventListener('change',e=>{ const v=Number(e.target.value); if(v>=1&&v<=8) o.pad=v; else delete o.pad; void saveObjects(); });
+    pad.querySelector('select').addEventListener('change',e=>{ const c=cur(); if(!c) return; const v=Number(e.target.value); if(v>=1&&v<=8) c.pad=v; else delete c.pad; void saveObjects(); });
     box.append(para(o.kind.toUpperCase(),'caption'),field('Name',o.name,set('name'),{type:'text',suffix:''}),kind,pad,
       field('Centre from left',o.x,set('x'),{cm:'x'}),field('Centre from bottom',o.y,set('y'),{cm:'y'}),field('Width',o.w,set('w'),{cm:'size'}),field('Depth',o.d,set('d'),{cm:'size'}),field('Turned',o.rotation,set('rotation'),{step:5,suffix:'°'}),field('Height',o.heightM,set('heightM'),{cm:'size'}),
       para(o.pad?`Pad ${o.pad} lies in the middle, at the table's height (${Math.round((o.heightM??0.75)*100)} cm). Say "go to ${o.name}": the drone flies around the other tables and pillars, goes over this one at least 50 cm above it and centres exactly on the pad.`:'Say "go to '+o.name+'": the drone flies around tables and pillars (dashed line on the plan) and stops 60 cm from its edge, not above it. Put a mission pad in its middle for an exact position.'),
@@ -898,7 +900,7 @@ function droneInspector(box,id){
   if(p) box.append(calibrationBox(id));
   if(!p){ box.append(para('Not on the plan: the drone does not know where it is, so "go to table 1" and the nearest-drone choice cannot use it.'),btn('Place on the plan',()=>startMode({kind:'place',what:'drone',id,label:DRONE_LABEL[id]||id}),'dark')); updateInspectorLive(); return; }
   // Typing one number moves the drone from where it is now (not from where it was first placed).
-  const set=k=>v=>{ if(Number.isFinite(v)){ const at=posOf('drone',id)||p; R().drones[id]={...p,x:at.x,y:at.y,heading:at.heading,[k]:v}; void saveDrone(id,k==='heading'||Boolean(p.facingConfirmed)); } };
+  const set=k=>v=>{ if(Number.isFinite(v)){ const now=R().drones[id]||p, at=posOf('drone',id)||now; R().drones[id]={...now,x:at.x,y:at.y,heading:at.heading,[k]:v}; void saveDrone(id,k==='heading'||Boolean(now.facingConfirmed)); } };
   const now=posOf('drone',id)||p;
   if(!p.facingConfirmed){
     const warn=document.createElement('div'); warn.className='facing-warn';
@@ -952,7 +954,7 @@ function phoneInspector(box,slot){
   box.append(ctr);
   if(!c||typeof c.x!=='number'){ box.append(para('Not on the plan: place it where it stands and turn it the way it looks, so the people it sees appear on the plan.'),btn('Place on the plan',()=>startMode({kind:'place',what:'phone',id:slot,label:`phone ${slot}`}),'dark')); }
   else {
-    const set=k=>v=>{ if(Number.isFinite(v)){ c[k]=v; void savePhone(slot); } };
+    const set=k=>v=>{ const cam=R().cameras[slot]; if(cam&&Number.isFinite(v)){ cam[k]=v; void savePhone(slot); } };
     box.append(field('From left wall',c.x,set('x'),{cm:'x'}),field('From bottom wall',c.y,set('y'),{cm:'y'}),field('Looks at',c.heading,set('heading'),{step:5,suffix:'°'}),
       field('Height',c.z,set('z'),{cm:'size'}),field('Tilt down',c.tilt,set('tilt'),{step:1,suffix:'°'}),
       para('Height = from the floor to the phone. Tilt down = 0° looking level, 90° looking straight at the floor. With both set, people are placed where the line from the phone through their feet meets the floor.'),

@@ -22,7 +22,10 @@ ground speed of moves).
 Ground speed (`vgx vgy vgz`) is given the way metoera-voice measured it on the real Tello EDU
 (flight log of 5 Nov 2026, src/odometry.ts): in compass axes (x where the IMU yaw is 0, y 90
 degrees clockwise from it), with the opposite sign, 12.2 cm/s per unit, in whole units. The IMU
-yaw is 0 where the drone faced when it was switched on (the simulator's start), clockwise.
+yaw is 0 where the drone faced when it was switched on, clockwise: by default where it starts,
+or `switched_on_yaw` (serve.py: a random heading, as when a drone is switched on and then put
+down on its spot; with yaw 0 at takeoff and no turn, compass and drone axes read the same and
+metoera-voice cannot tell them apart).
 
 With `imu_errors`, a move sometimes answers `error No valid imu` (the drone cannot see the floor
 well): half the time without moving, half the time after moving anyway, as on 5 Nov.
@@ -131,7 +134,8 @@ def _int_arg(args: list[str], low: int, high: int) -> Optional[int]:
 class SimTello:
     def __init__(self, name: str, serial: str, start: Pose, obstacles: ObstacleCheck,
                  clock: Callable[[], float] = time.monotonic, battery: float = 90.0, drift: float = 0.0,
-                 seed: Optional[int] = None, mission_pads: Optional[dict] = None, imu_errors: float = 0.0) -> None:
+                 seed: Optional[int] = None, mission_pads: Optional[dict] = None, imu_errors: float = 0.0,
+                 switched_on_yaw: Optional[float] = None) -> None:
         self.name = name
         self.drift = drift
         self.imu_errors = imu_errors
@@ -140,7 +144,8 @@ class SimTello:
         self._slide_rng = random.Random(None if seed is None else seed + 1000)
         self._imu_rng = random.Random(None if seed is None else seed + 2000)
         self._slide = (0.0, 0.0)  # hover slide, world m/s
-        self._yaw0 = start.yaw  # the IMU's yaw 0: where it faced when switched on
+        # The IMU's yaw 0: where it faced when switched on (world yaw); by default where it starts.
+        self._yaw0 = start.yaw if switched_on_yaw is None else switched_on_yaw
         self.mission_pads = {int(k): tuple(v) for k, v in (mission_pads or {}).items()}
         self.pads_on = False  # `mon` / `moff`
         self.serial = serial

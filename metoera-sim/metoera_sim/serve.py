@@ -270,17 +270,19 @@ def venue_changed(world: World) -> Optional[World]:
         return None
 
 
-def follow_room(world: World, drones: list[Drone], margin: float, crowd, since_start):
+def follow_room(world: World, previous: dict, drones: list[Drone], margin: float, crowd, since_start):
     """The Room panel changed .room.json (the venue was rebuilt with its furniture): carry a
-    landed drone to the spot it was moved to on the plan, as a person would."""
+    landed drone whose spot was changed on the plan (`previous`: the spots before) to it, as a
+    person would. A drone whose spot did not change stays where it really is."""
     from .people import Composer, WithPeople
 
     obstacles = WithPeople(Obstacles(world.splats, margin=margin), crowd, since_start)
     for d in drones:
         d.sim.obstacles = obstacles
         x, y, z, heading = world.starts[d.name]
-        p = d.sim.pose
-        if not d.sim.flying and not d.sim.busy and (abs(p.x - x) > 0.02 or abs(p.y - y) > 0.02 or abs(p.yaw - heading) > 1):
+        px, py, _, ph = previous.get(d.name, (None, None, None, None))
+        moved = px is None or abs(px - x) > 0.02 or abs(py - y) > 0.02 or abs(ph - heading) > 1
+        if moved and not d.sim.flying and not d.sim.busy:
             d.sim.carry(Pose(x, y, z, heading))
             log(d.name, f"carried to ({x:+.2f}, {y:+.2f}), facing {heading:.0f} deg (moved on the Room panel)")
             d.flight_log.write(d.name, "event", text=f"carried to {x:.2f},{y:.2f} facing {heading:.0f}")
@@ -301,6 +303,8 @@ def main(argv=None) -> int:
     p.add_argument("--verbose", action="store_true", help="also log the `battery?` keep-alives")
     p.add_argument("--drift", type=float, default=0.03, help="how far moves come out off, as a fraction (default 0.03)")
     p.add_argument("--seed", type=int, default=None, help="repeatable drift")
+    p.add_argument("--imu-zero-at-start", action="store_true",
+                   help="the IMU yaw reads 0 at the start (default: switched on facing some other way, as usual)")
     p.add_argument("--imu-errors", type=float, default=0.0,
                    help="chance that a move answers `error No valid imu` (default 0; half of those move anyway)")
     p.add_argument("--no-log", action="store_true", help="no flight log in runs/")
@@ -337,13 +341,23 @@ def main(argv=None) -> int:
         print(f"  person: {w.name}, " + (f"standing at {w.path[0]}" if len(w.path) == 1 else
                                          f"walking {len(w.path)} points at {w.speed} m/s from {w.start_after:.0f} s"))
 
+    # Where each drone faced when it was switched on: its IMU yaw is 0 there. A real drone is
+    # usually switched on and then put down on its spot, so by default somewhere else (seeded).
+    import random
+
+    switched_on = {}
+    for i, name in enumerate(DRONES):
+        heading = world.starts[name][3]
+        turn = 0.0 if a.imu_zero_at_start else random.Random(None if a.seed is None else a.seed * 7 + i).uniform(-180, 180)
+        switched_on[name] = heading + turn
+
     drones: list[Drone] = []
     for i, name in enumerate(names):
         spec = DRONES[name]
         x, y, z, heading = world.starts[name]
         sim = SimTello(name, spec["serial"], Pose(x, y, z, heading), obstacles, battery=a.battery,
                        drift=a.drift, seed=None if a.seed is None else a.seed + i, mission_pads=mission_pads,
-                       imu_errors=a.imu_errors)
+                       imu_errors=a.imu_errors, switched_on_yaw=switched_on[name])
         try:
             drone = Drone(name, sim, spec["state_port"], a.reply_port, _udp(a.bind, spec["command_port"]),
                           _udp(a.bind, spec["video_port"]), _udp(a.bind, 0), verbose=a.verbose, flight_log=flight_log)
@@ -351,7 +365,8 @@ def main(argv=None) -> int:
             print(f"{name}: cannot open its UDP ports ({e}); is another simulator running?")
             return 1
         drones.append(drone)
-        print(f"  {name:5} at ({x:+.2f}, {y:+.2f}) m, {z - LANDED_Z:.2f} m up, facing {heading:.0f} deg: "
+        print(f"  {name:5} at ({x:+.2f}, {y:+.2f}) m, {z - LANDED_Z:.2f} m up, facing {heading:.0f} deg "
+              f"(switched on facing {switched_on[name] % 360:.0f}): "
               f"commands on {a.bind}:{spec['command_port']} (replies to :{a.reply_port}), "
               f"telemetry to :{spec['state_port']}, video from :{spec['video_port']} to :{VIDEO_PORT}, serial {spec['serial']}")
     print(f"  moves drift {a.drift:.0%}; mission pads {', '.join(sorted(map(str, mission_pads))) or 'none (mark them in the viewer: m)'}"
@@ -412,7 +427,7 @@ def main(argv=None) -> int:
                 changed = venue_changed(world)
                 if changed:
                     with scene_lock:
-                        world, obstacles, current["composer"] = follow_room(changed, drones, a.margin, crowd, since_start)
+                        world, obstacles, current["composer"] = follow_room(changed, world.starts, drones, a.margin, crowd, since_start)
                     if phones:
                         from . import venue
 

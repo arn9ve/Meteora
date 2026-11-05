@@ -251,3 +251,5 @@
 .map-wrap.is3d .map-zoom,.map-wrap.is3d .map-scale{display:none}
 .map-svg .route{fill:none;stroke:#111;stroke-opacity:.55;stroke-linecap:round;stroke-linejoin:round}
 .map-svg .route-dot{fill:#111;fill-opacity:.55}
+.map-svg .trail{fill:none;stroke-opacity:.45;stroke-linecap:round;stroke-linejoin:round}
+.inspector .flight-data{color:#222}

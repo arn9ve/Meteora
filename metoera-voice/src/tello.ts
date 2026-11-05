@@ -6,6 +6,7 @@
 import { UdpPort, type Datagram } from './udp-port.ts';
 import { estimateDistanceCm, bearingDeg, type Box } from './distance.ts';
 import { World, normalize } from './world.ts';
+import { Odometry } from './odometry.ts';
 
 export type TelloSnapshot = {
   id: string;
@@ -25,6 +26,9 @@ export type TelloSnapshot = {
   startSurface: { heightCm: number; source: 'plan' | 'sensor' | 'assumed' };
   /** Height above the room floor = start surface + telemetry height. */
   heightAboveFloorCm: number | null;
+  /** Real-time position from the telemetry: calibration, distance flown, drift from take-off. */
+  odometry: Odometry['stats'];
+  positionFrom: 'telemetry' | 'commands';
   lastError: string | null;
   /** Short memory line: position, last actions, recent sightings. */
   memory: string;
@@ -69,6 +73,11 @@ export type TelloOptions = {
    * (a table), null = near an edge, not sure. From the room plan.
    */
   surfaceAt?: (x: number, y: number) => number | null;
+  /** How this drone's telemetry reads (from an earlier flight), and where to keep a new one. */
+  odometryFit?: unknown;
+  onOdometryFit?: (fit: unknown) => void;
+  /** Every telemetry sample and command of a flight, for the flight log. */
+  flightLog?: (event: Record<string, unknown>) => void;
 };
 
 export type Detection = { label: string; confidence: number; center: { x: number; y: number }; box?: Box };
@@ -160,6 +169,13 @@ export class RealTello {
   #heading: number | null = null;
   #lastStateAt = 0;
   #tof: number | null = null;
+  // Real-time position from the telemetry (see odometry.ts), active from take-off to landing.
+  readonly #odo = new Odometry();
+  #odoActive = false;
+  #takingOff = false;
+  #attitude = { pitch: 0, roll: 0, vgx: 0, vgy: 0, vgz: 0 };
+  readonly #onFit: ((fit: unknown) => void) | null;
+  readonly #flightLog: ((event: Record<string, unknown>) => void) | null;
   // Start surface: the plan gives a first guess at takeoff; the ToF confirms or corrects it once
   // the drone is over a spot whose height the plan knows (ToF + that height - telemetry h).
   #base: { heightCm: number; source: 'plan' | 'sensor' | 'assumed' } = { heightCm: 0, source: 'assumed' };
@@ -190,6 +206,9 @@ export class RealTello {
     this.#askVision = options.askVision ?? null;
     this.#world = new World(options.start);
     this.#surfaceAt = options.surfaceAt ?? null;
+    this.#odo.fit = options.odometryFit ?? null;
+    this.#onFit = options.onOdometryFit ?? null;
+    this.#flightLog = options.flightLog ?? null;
     this.#depth = options.depth ?? null;
     this.#settleMs = options.settleMs ?? 400;
     this.#mayTalk = options.mayTalk ?? (() => null);
@@ -231,6 +250,8 @@ export class RealTello {
       heading: this.#heading,
       tofCm: this.#tof,
       startSurface: { ...this.#currentBase() },
+      odometry: this.#odo.stats,
+      positionFrom: this.#odoActive && this.#odo.calibrated ? 'telemetry' : 'commands',
       heightAboveFloorCm: this.#heightCm === null ? null : this.#heightCm + this.#currentBase().heightCm,
       lastError: this.#lastError,
       memory: this.#world.summary(),
@@ -385,7 +406,15 @@ export class RealTello {
       this.#battery = battery;
       if (battery < this.#minTakeoffBattery) return this.#fail(`Battery ${battery}% is below ${this.#minTakeoffBattery}%`);
       this.#guessBase();
-      return this.#motion('takeoff', 'takeoff', 20000, () => { this.#flight = 'flying'; });
+      // Telemetry odometry from the moment the motors start: the drift of the take-off counts too.
+      const p = this.#world.pose;
+      this.#odo.reset({ x: p.x, y: p.y }); this.#odoActive = true; this.#takingOff = true;
+      this.#flightLog?.({ event: 'takeoff', pose: p, startSurface: this.#base });
+      try {
+        const up = await this.#motion('takeoff', 'takeoff', 20000, () => { this.#flight = 'flying'; });
+        if (!up.ok) this.#stopOdometry();
+        return up;
+      } finally { this.#takingOff = false; }
     }
 
     // Same as tools/test-flight.mjs: take off, hover, land, as one action.
@@ -848,7 +877,18 @@ export class RealTello {
   }
 
   async #motion(action: string, sdk: string, timeoutMs: number, onOk?: () => void): Promise<TelloResult> {
+    // A move the drone confirms is what the odometry learns the telemetry's units and axes from.
+    const step = this.#odoActive ? this.#world.stepFor(sdk) : null;
+    const handle = step ? this.#odo.beginMove() : null;
+    const before = this.#odo.calibrated;
+    this.#flightLog?.({ event: 'command', sdk });
     const reply = await this.#request(sdk, isOk, timeoutMs);
+    if (reply && isOk(reply) && step && handle !== null) {
+      const fit = JSON.stringify(this.#odo.fit);
+      this.#odo.endMove(handle, step[0], step[1]);
+      if (JSON.stringify(this.#odo.fit) !== fit) { this.#onFit?.(this.#odo.fit); this.#flightLog?.({ event: 'calibrated', fit: this.#odo.fit, stats: this.#odo.stats }); }
+      if (!before && this.#odo.calibrated) this.#world.followTelemetry(true);
+    }
     if (reply === null) return this.#fail(this.#interrupted ? `${action} interrupted` : `No reply to ${action}`);
     if (!isOk(reply)) return this.#fail(`Drone rejected ${action}: ${reply.slice(0, 60)}`);
     onOk?.();
@@ -971,6 +1011,24 @@ export class RealTello {
     if (this.#pending.accept(text) || /^error\b/i.test(text)) this.#pending.resolve(text);
   }
 
+  #stopOdometry(): void {
+    if (!this.#odoActive) return;
+    this.#odoActive = false;
+    this.#world.followTelemetry(false);
+    this.#flightLog?.({ event: 'landed', pose: this.#world.pose, stats: this.#odo.stats });
+  }
+
+  /** What the live map needs, 10 times a second. */
+  live() {
+    const p = this.#world.pose, base = this.#currentBase();
+    return {
+      id: this.#id, flying: this.#flight === 'flying', connected: Date.now() - this.#lastStateAt < 3000,
+      pose: { x: p.x, y: p.y, heading: p.heading, zFloor: (this.#flight === 'flying' ? p.z : 0) + base.heightCm },
+      source: this.#odoActive && this.#odo.calibrated ? 'telemetry' : 'commands',
+      odometry: this.#odo.stats, attitude: { ...this.#attitude }, tofCm: this.#tof, startSurface: base,
+    };
+  }
+
   /** At takeoff: on a table of the plan, or on the floor. The sensor may correct it later. */
   #guessBase(): void {
     this.#baseSamples = [];
@@ -1032,6 +1090,18 @@ export class RealTello {
     }
     this.#heading = read('yaw');
     this.#world.applyTelemetry(this.#heightCm, this.#heading);
+    // Attitude and ground speed, and the odometry step for this sample.
+    this.#attitude = { pitch: read('pitch') ?? 0, roll: read('roll') ?? 0, vgx: read('vgx') ?? 0, vgy: read('vgy') ?? 0, vgz: read('vgz') ?? 0 };
+    if (this.#odoActive) {
+      if (this.#flight === 'landed' && !this.#takingOff) this.#stopOdometry();
+      else {
+        const sample = { t: Date.now(), vgx: this.#attitude.vgx, vgy: this.#attitude.vgy, vgz: this.#attitude.vgz, heading: this.#world.pose.heading };
+        this.#odo.add(sample);
+        const at = this.#odo.position;
+        if (at) { this.#world.followTelemetry(true); this.#world.setXY(at.x, at.y); }
+        this.#flightLog?.({ event: 'sample', ...sample, h: this.#heightCm, yaw: this.#heading, tof: read('tof'), pitch: this.#attitude.pitch, roll: this.#attitude.roll, x: at ? Math.round(at.x) : null, y: at ? Math.round(at.y) : null });
+      }
+    }
     const tof = read('tof');
     this.#tof = tof !== null && tof >= 10 && tof < 800 ? tof : null;
     this.#learnBase();

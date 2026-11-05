@@ -18,3 +18,5 @@ __pycache__/
 photos/
 .redzone-zones.json
 .room.json
+.odometry.json
+flights/

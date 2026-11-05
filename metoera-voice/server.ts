@@ -4,7 +4,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { networkInterfaces } from 'node:os';
 import net from 'node:net';
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod, appendFile } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
@@ -88,6 +88,24 @@ async function askVision(images: Buffer[], prompt: string): Promise<string | nul
     return data.choices?.[0]?.message?.content?.trim() || null;
   } catch { return null; }
 }
+// How each drone's telemetry reads (units and axes, learned in flight; see src/odometry.ts), kept
+// across restarts so the next flight is tracked from its first second.
+const odometryPath = join(root, '.odometry.json');
+const odometryFits: Record<string, unknown> = await readFile(odometryPath, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => ({}));
+function saveOdometryFit(id: string, fit: unknown) { odometryFits[id] = fit; void writeFile(odometryPath, JSON.stringify(odometryFits, null, 2)).catch(() => undefined); }
+// Flight log: every telemetry sample and command, one JSON line each, in flights/<drone>-<day>.jsonl.
+const flightsDir = join(root, 'flights');
+const flightBuffers = new Map<string, string[]>();
+function flightLog(id: string, event: Record<string, unknown>) {
+  const lines = flightBuffers.get(id) ?? []; lines.push(JSON.stringify({at:new Date().toISOString(), ...event})); flightBuffers.set(id, lines);
+}
+setInterval(() => {
+  for (const [id, lines] of flightBuffers) {
+    if (!lines.length) continue;
+    const text = lines.splice(0).join('\n') + '\n';
+    void mkdir(flightsDir, {recursive:true}).then(() => appendFile(join(flightsDir, `${id}-${new Date().toISOString().slice(0, 10)}.jsonl`), text)).catch(() => undefined);
+  }
+}, 1000).unref();
 // Each drone is enabled only when its IP is set (in .env or .env.tello):
 // TELLO_IP + TELLO_SETUP_SERIAL is droneId 'tello', RMTT_IP + RMTT_SETUP_SERIAL is droneId 'rmtt'.
 // Both share local ports 8889 and 8890 (UdpPort routes replies by sender IP), so they need different IPs.
@@ -99,7 +117,7 @@ function droneFromEnv(id: string, prefix: string): RealTello | null {
   const host = process.env[`${prefix}_IP`]?.trim();
   if (!host) return null;
   if (!isIpv4(host)) { console.log(`${prefix}_IP must be an IPv4 address (got "${host}"); that drone is off`); return null; }
-  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, start:startOf(prefix), depth:() => readDepth(id), mayTalk:() => mayTalk(id), surfaceAt:(x, y) => surfaceHeightAt(room.objects, x / 100, y / 100)});
+  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, start:startOf(prefix), depth:() => readDepth(id), mayTalk:() => mayTalk(id), surfaceAt:(x, y) => surfaceHeightAt(room.objects, x / 100, y / 100), odometryFit:odometryFits[id], onOdometryFit:(fit) => saveOdometryFit(id, fit), flightLog:(event) => flightLog(id, event)});
 }
 const drones = new Map<string, RealTello>();
 for (const [id, prefix] of FLEET) {
@@ -502,6 +520,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
       if (!upstream.ok) { res.writeHead(404).end(); return; }
       res.writeHead(200, {'Content-Type':'image/jpeg', 'Cache-Control':'no-store'}).end(Buffer.from(await upstream.arrayBuffer()));
     } catch { res.writeHead(503).end(); }
+    return;
+  }
+  // The drones live, 10 times a second, for the map (server-sent events).
+  if (req.method === 'GET' && path === '/api/live') {
+    res.writeHead(200, {'Content-Type':'text/event-stream', 'Cache-Control':'no-store', Connection:'keep-alive'});
+    const send = () => res.write(`data: ${JSON.stringify({t:Date.now(), drones:[...drones].filter(([id]) => refusal(id) === null).map(([, d]) => d.live())})}\n\n`);
+    send();
+    const timer = setInterval(send, 100);
+    req.on('close', () => clearInterval(timer));
     return;
   }
   // Preview of the way a drone would fly to a table or place (nothing moves).

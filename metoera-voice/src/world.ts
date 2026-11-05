@@ -52,6 +52,26 @@ export class World {
     this.#yawAtStart = null;
   }
 
+  /** Where a move would take it in the room (cm), from the current heading, without moving. */
+  stepFor(sdk: string): [number, number] | null {
+    let m: RegExpExecArray | null;
+    let f = 0, l = 0;
+    if ((m = /^(forward|back|left|right) (\d+)$/.exec(sdk))) { const d = Number(m[2]); f = m[1] === 'forward' ? d : m[1] === 'back' ? -d : 0; l = m[1] === 'left' ? d : m[1] === 'right' ? -d : 0; }
+    else if ((m = /^go (-?\d+) (-?\d+) (-?\d+) \d+$/.exec(sdk))) { f = Number(m[1]); l = Number(m[2]); }
+    else return null;
+    const h = rad(this.#pose.heading);
+    return [f * Math.cos(h) - l * Math.sin(h), f * Math.sin(h) + l * Math.cos(h)];
+  }
+
+  /** Telemetry odometry knows where it is: x,y follow it, and moves no longer add their own step. */
+  #fromTelemetry = false;
+  followTelemetry(on: boolean): void { this.#fromTelemetry = on; }
+  setXY(x: number, y: number): void {
+    this.#pose.x = x; this.#pose.y = y;
+    const last = this.#path[this.#path.length - 1];
+    if (!last || Math.hypot(last.x - x, last.y - y) >= 5) { this.#path.push({ x: Math.round(x), y: Math.round(y) }); if (this.#path.length > 2000) this.#path.shift(); }
+  }
+
   /** Applies a Tello SDK move that the drone confirmed with "ok". */
   applySdk(sdk: string): void {
     const p = this.#pose;
@@ -69,9 +89,9 @@ export class World {
       const d = Number(m[2]);
       if (m[1] === 'up') p.z += d;
       else if (m[1] === 'down') p.z = Math.max(0, p.z - d);
-      else this.#step(m[1] === 'forward' ? d : m[1] === 'back' ? -d : 0, m[1] === 'left' ? d : m[1] === 'right' ? -d : 0);
+      else if (!this.#fromTelemetry) this.#step(m[1] === 'forward' ? d : m[1] === 'back' ? -d : 0, m[1] === 'left' ? d : m[1] === 'right' ? -d : 0);
     } else if ((m = /^go (-?\d+) (-?\d+) (-?\d+) \d+$/.exec(sdk))) {
-      this.#step(Number(m[1]), Number(m[2]));
+      if (!this.#fromTelemetry) this.#step(Number(m[1]), Number(m[2]));
       p.z = Math.max(0, p.z + Number(m[3]));
     } else if ((m = /^(cw|ccw) (\d+)$/.exec(sdk))) {
       p.heading = normalize(p.heading + (m[1] === 'ccw' ? Number(m[2]) : -Number(m[2])));

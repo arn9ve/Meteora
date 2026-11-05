@@ -701,7 +701,25 @@ async function loadRoom(){ try { const r=await fetch('/api/room',{cache:'no-stor
 const R=()=>roomData?.room??{drones:{},cameras:{},zones:[],objects:[]};
 const slotOf=id=>redzone?.slots?.find(s=>s.id===String(id));
 const droneById=id=>drones.find(d=>d.id===id);
-const livePose=id=>mapLive?.drones?.find(d=>d.id===id)?.pose;
+// Live: the server streams each drone 10 times a second (position from its telemetry once the
+// odometry is calibrated). The real track of the current flight is kept here for the map.
+const liveDrones={}, trails={};
+let liveSource=null, last3d=0;
+function startLive(){
+  if(liveSource||typeof EventSource==='undefined') return;
+  liveSource=new EventSource('/api/live');
+  liveSource.onmessage=e=>{
+    let data; try { data=JSON.parse(e.data); } catch { return; }
+    for(const d of data.drones||[]){
+      const was=liveDrones[d.id]; liveDrones[d.id]=d;
+      if(d.flying&&!was?.flying) trails[d.id]=[];
+      if(d.flying){ const t=trails[d.id]||=[]; const q=t[t.length-1]; if(!q||Math.hypot(q[0]-d.pose.x,q[1]-d.pose.y)>=3){ t.push([d.pose.x,d.pose.y]); if(t.length>3000) t.shift(); } }
+    }
+    if(mapDialog.open){ scheduleDraw(); if(sel?.kind==='drone') updateInspectorLive(); if(Date.now()-last3d>500){ last3d=Date.now(); update3d(); } }
+  };
+  liveSource.onerror=()=>{ liveSource?.close(); liveSource=null; setTimeout(startLive,2000); };
+}
+const livePose=id=>liveDrones[id]?.pose??mapLive?.drones?.find(d=>d.id===id)?.pose;
 const fmt=(v,n=2)=>Number.isFinite(v)?v.toFixed(n):'–';
 function hint(text){ $('#roomHint').textContent=text||''; }
 // Everything shown in centimetres from the inside corner of the room: from the left end wall (x)
@@ -792,6 +810,13 @@ function row(kind,id,name,detail,placed){
   return b;
 }
 function group(title,rows){ const g=document.createElement('div'); g.className='room-group'; const h=document.createElement('p'); h.className='caption'; h.textContent=title; g.append(h,...rows); return g; }
+// Flight data from the telemetry, live.
+function flightData(id){
+  const l=liveDrones[id]; if(!l?.connected) return '';
+  const o=l.odometry||{}, a=l.attitude||{};
+  const from=l.source==='telemetry'?`Position from the telemetry (${o.reading}; ${o.fitError}% unexplained)`:o.calibrated?'Position from the telemetry once it takes off':`Position from the commands: the telemetry calibrates after ${Math.max(0,2-(o.moves||0))||1} more move${o.moves>=1?'':'s'} of at least 20 cm`;
+  return [from, l.flying?`flown ${(o.flownCm/100).toFixed(2)} m · ${(o.fromTakeoffCm/100).toFixed(2)} m from take-off · ${o.speedCms} cm/s`:'', l.flying?`tilt ${a.pitch}° / ${a.roll}° · ground speed ${a.vgx}, ${a.vgy}, ${a.vgz}`:''].filter(Boolean).join(' · ');
+}
 function surfaceText(d){ const s=d?.startSurface; if(!s) return ''; const what=s.heightCm>0?`on a ${(s.heightCm/100).toFixed(2)} m surface`:'on the floor'; return d.flight==='flying'?`took off ${what} (${s.source==='sensor'?'confirmed by the infrared sensor':s.source==='plan'?'from the plan, not yet checked':'assumed'})`:`${what} (${s.source==='plan'?'plan':'assumed'})`; }
 function droneDetail(id){ const d=droneById(id); const placed=Boolean(R().drones[id]); if(!placed) return 'not on the plan'; if(!d?.connected) return 'on the plan · not connected'; return `${d.flight==='flying'?`flying · ${Number.isFinite(d.heightAboveFloorCm)?`${(d.heightAboveFloorCm/100).toFixed(2)} m above the floor`:''}`:'on the ground'}${Number.isFinite(d.battery)?` · ${d.battery}%`:''}`; }
 function phoneDetail(slot){ const s=slotOf(slot); const placed=typeof R().cameras[slot]?.x==='number'; const st=!s?.online?'offline':`${s.watching?'watching':'not watching'} · ${s.lens||'normal'} · ${s.peopleCount||0} people`; return placed?st:`not on the plan · ${st}`; }
@@ -859,10 +884,12 @@ function renderInspector(){
 function droneInspector(box,id){
   const r=R(); const p=r.drones[id];
   box.append(para(`DRONE · ${(DRONE_LABEL[id]||id).toUpperCase()}`,'caption'));
-  const live=para('','note live-drone'); box.append(live);
+  const live=para('','note live-drone'); box.append(live,para('','note flight-data'));
   if(!p){ box.append(para('Not on the plan: the drone does not know where it is, so "go to table 1" and the nearest-drone choice cannot use it.'),btn('Place on the plan',()=>startMode({kind:'place',what:'drone',id,label:DRONE_LABEL[id]||id}),'dark')); updateInspectorLive(); return; }
-  const set=k=>v=>{ if(Number.isFinite(v)){ p[k]=v; void saveDrone(id); } };
-  box.append(field('From left wall',p.x,set('x'),{cm:'x'}),field('From bottom wall',p.y,set('y'),{cm:'y'}),field('Facing',p.heading,set('heading'),{step:5,suffix:'°'}),
+  // Typing one number moves the drone from where it is now (not from where it was first placed).
+  const set=k=>v=>{ if(Number.isFinite(v)){ const at=posOf('drone',id)||p; R().drones[id]={x:at.x,y:at.y,heading:at.heading,[k]:v}; void saveDrone(id); } };
+  const now=posOf('drone',id)||p;
+  box.append(field('From left wall',now.x,set('x'),{cm:'x'}),field('From bottom wall',now.y,set('y'),{cm:'y'}),field('Facing',now.heading,set('heading'),{step:5,suffix:'°'}),
     para(`Drawn at real size (${DRONE_SIZE_CM[id]?.join(' × ')||'10 × 10'} cm). Place it where it stands before take-off; it can only be moved while it is on the ground. 0° = facing right on the plan, 90° = up.`),
     btn('Move it on the plan',()=>startMode({kind:'place',what:'drone',id,label:DRONE_LABEL[id]||id})),
     btn('Remove from the plan',()=>void removeFromPlan('drone',id),'danger'));
@@ -911,7 +938,7 @@ function phoneInspector(box,slot){
 }
 function updateInspectorLive(){
   const box=$('#inspector');
-  if(sel?.kind==='drone'){ const el=box.querySelector('.live-drone'); const d=droneById(sel.id); const at=posOf('drone',sel.id); if(el) el.textContent=[at?`${where(at.x,at.y)}${Number.isFinite(d?.heightAboveFloorCm)?` · ${d.heightAboveFloorCm} cm above the floor`:''}`:'',droneDetail(sel.id),surfaceText(d),d?.connected&&Number.isFinite(d.tofCm)?`infrared below: ${d.tofCm} cm`:''].filter(Boolean).join(' · '); }
+  if(sel?.kind==='drone'){ const el=box.querySelector('.live-drone'); const d=droneById(sel.id); const at=posOf('drone',sel.id); const fd=$('#inspector').querySelector('.flight-data'); if(fd) fd.textContent=flightData(sel.id); if(el) el.textContent=[at?`${where(at.x,at.y)}${Number.isFinite(d?.heightAboveFloorCm)?` · ${d.heightAboveFloorCm} cm above the floor`:''}`:'',droneDetail(sel.id),surfaceText(d),d?.connected&&Number.isFinite(d.tofCm)?`infrared below: ${d.tofCm} cm`:''].filter(Boolean).join(' · '); }
   if(sel?.kind==='phone'){
     const s=slotOf(sel.id); const v=box.querySelector('.phone-live'); if(!v) return;
     const img=v.querySelector('img');
@@ -938,8 +965,9 @@ async function askPhoneAI(slot){
 function itemAt(evt){ const t=evt.target.closest?.('[data-kind]'); return t?{kind:t.dataset.kind,id:t.dataset.id,handle:t.dataset.handle,index:Number(t.dataset.index)}:null; }
 function posOf(kind,id){
   const r=R();
-  if(kind==='drone'){ const p=r.drones[id]; const live=livePose(id); const d=droneById(id);
-    if(d?.flight==='flying'&&live) return {x:live.x/100,y:live.y/100,heading:live.heading};
+  // Where the drone really is (also after landing somewhere else); its placement only before any flight.
+  if(kind==='drone'){ const p=r.drones[id]; const live=livePose(id);
+    if(live&&(p||liveDrones[id]?.flying)) return {x:live.x/100,y:live.y/100,heading:live.heading};
     return p?{...p}:null; }
   if(kind==='phone'){ const c=r.cameras[id]; return c&&typeof c.x==='number'?{x:c.x,y:c.y,heading:c.heading??0}:null; }
   if(kind==='object'){ const o=r.objects.find(q=>q.id===id); return o?{x:o.x,y:o.y,heading:o.rotation||0}:null; }
@@ -1094,6 +1122,9 @@ function draw(){
     svg.append(svgEl('polyline',{points:line,class:'route','stroke-width':px(2),'stroke-dasharray':`${px(6)} ${px(5)}`}));
     for(const [x,y] of routePreview.via) svg.append(svgEl('circle',{cx:x,cy:-y,r:px(3.5),class:'route-dot'}));
   }
+  // The real track of the last flight: live points, or the server's when the page was reloaded.
+  const tracks={...Object.fromEntries((mapLive?.drones||[]).filter(d=>d.path?.length>1).map(d=>[d.id,d.path.map(q=>[q.x,q.y])])),...Object.fromEntries(Object.entries(trails).filter(([,t])=>t.length>1))};
+  for(const [id,t] of Object.entries(tracks)) if(t.length>1) svg.append(svgEl('polyline',{points:t.map(([x,y])=>`${x},${-y}`).join(' '),class:'trail','stroke-width':px(2),stroke:DRONE_COLOUR[id]||'#555'}));
   // Drones: real size, plus a marker that stays visible when zoomed out.
   for(const id of ['tello','rmtt']){
     const at=drag?.kind==='drone'&&drag.id===id||drag?.type==='rotate'&&drag.id===id?r.drones[id]:posOf('drone',id);
@@ -1121,7 +1152,7 @@ async function setView3d(on){
   if(on&&!view3d){ try { const m=await import('/room3d.js'); view3d=m.mount($('#map3d')); update3d(); } catch(e){ hint('3D view unavailable in this browser'); $('#map3d').hidden=true; mapSvg.style.visibility=''; } }
   if(!on&&view3d){ view3d.dispose(); view3d=null; }
 }
-function update3d(){ view3d?.update({plan:roomData?.plan,room:R(),live:mapLive,slots:redzone?.slots||[],drones}); }
+function update3d(){ if(!view3d) return; const live=mapLive?{...mapLive,drones:(mapLive.drones||[]).map(d=>({...d,pose:liveDrones[d.id]?.pose?{...d.pose,...liveDrones[d.id].pose}:d.pose}))}:null; view3d.update({plan:roomData?.plan,room:R(),live,slots:redzone?.slots||[],drones}); }
 $('#view2d').addEventListener?.('click',()=>void setView3d(false));
 $('#view3d').addEventListener?.('click',()=>void setView3d(true));
 
@@ -1154,3 +1185,4 @@ setInterval(refreshDrone, 1500);
 // The map refreshes on its own timer, registered after the drone poll.
 setInterval(()=>{if(mapDialog.open) void renderMap()},1500);
 showPanel('mapDialog');
+startLive();

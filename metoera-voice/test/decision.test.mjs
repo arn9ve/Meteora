@@ -28,8 +28,8 @@ test('the model answer is read strictly; the rules choose when there is none', (
 });
 
 // A drone that flies exactly where it is sent (room cm), for the mission loop.
-function fakeDrone({ startX = 0, startY = 0 } = {}) {
-  const pose = { x: startX, y: startY, heading: 0, zFloor: 150 };
+function fakeDrone({ startX = 0, startY = 0, zFloor = 150 } = {}) {
+  const pose = { x: startX, y: startY, heading: 0, zFloor };
   const sent = [];
   const d = {
     generation: 0,
@@ -44,33 +44,45 @@ const box = (x0, y0, x1, y1) => [[[x0, y0], [x1, y0]], [[x1, y0], [x1, y1]], [[x
 const plan = { walls: box(0, 0, 10, 6), bounds: { min: [0, 0], max: [10, 6] }, height_m: 4.3 };
 const table = { id: 't', name: 'table 1', kind: 'table', x: 5, y: 3, w: 1.8, d: 1.8, rotation: 0, heightM: 0.75 };
 
-test('mission: legs of at most 150 cm along the route around the table, model choices logged', async () => {
-  const { d, sent, pose } = fakeDrone({ startX: 100, startY: 300 });
-  const steps = [];
-  const r = await missionGoTo('tello', d, { x: 900, y: 300, name: 'far wall' }, { plan, objects: [table], people: () => [], decide: async () => '{"action":"continue","n":null,"reason":"all normal"}', onStep: (s) => steps.push(s), hoverMs: 1 });
+test('mission flying low: legs of at most 300 cm around the table; nobody asked while all goes well', async () => {
+  const { d, sent, pose } = fakeDrone({ startX: 100, startY: 300, zFloor: 100 });
+  const steps = []; let asked = 0;
+  const r = await missionGoTo('tello', d, { x: 900, y: 300, name: 'far wall' }, { plan, objects: [table], people: () => [], decide: async () => { asked += 1; return '{"action":"continue","n":null,"reason":"all normal"}'; }, onStep: (s) => steps.push(s), hoverMs: 1 });
   assert.equal(r.ok, true, r.error);
   assert.ok(Math.hypot(pose.x - 900, pose.y - 300) < 30, JSON.stringify(pose));
   let at = [100, 300];
   for (const c of sent.filter((c) => c.action === 'go_to')) {
-    assert.ok(Math.hypot(c.x - at[0], c.y - at[1]) <= 151, `leg too long: ${JSON.stringify(c)}`);
+    assert.ok(Math.hypot(c.x - at[0], c.y - at[1]) <= 301, `leg too long: ${JSON.stringify(c)}`);
     assert.equal(c.check, false);
     for (let t = 0; t <= 1; t += 0.05) { const x = (at[0] + (c.x - at[0]) * t) / 100, y = (at[1] + (c.y - at[1]) * t) / 100; assert.ok(Math.abs(x - 5) > 0.9 || Math.abs(y - 3) > 0.9, 'through the table'); }
     at = [c.x, c.y];
   }
-  assert.ok(steps.every((s) => s.by === 'model' || s.action === 'done'));
+  assert.equal(asked, 0);
+  assert.ok(steps.every((s) => s.by === 'rules'));
+});
+
+test('mission flying above the tables: straight over them, few legs', async () => {
+  const { d, sent, pose } = fakeDrone({ startX: 100, startY: 300, zFloor: 155 });
+  const r = await missionGoTo('tello', d, { x: 900, y: 300, name: 'far wall' }, { plan, objects: [table], people: () => [], decide: null, hoverMs: 1 });
+  assert.equal(r.ok, true, r.error);
+  const legs = sent.filter((c) => c.action === 'go_to');
+  assert.ok(legs.every((c) => c.y === 300), JSON.stringify(legs)); // a straight line, over the table
+  assert.equal(legs.length, 3); // 800 cm in legs of at most 300
+  assert.ok(Math.hypot(pose.x - 900, pose.y - 300) < 30);
 });
 
 test('mission: a slow model means hover; a person on the path means hover; stop ends it', async () => {
   const slow = fakeDrone();
   let calls = 0;
-  const r1 = await missionGoTo('tello', slow.d, { x: 300, y: 300, name: 'x' }, { plan, objects: [], people: () => [], decide: () => { calls += 1; return new Promise((res) => setTimeout(() => res('{"action":"continue"}'), 200)); }, timeoutMs: 20, hoverMs: 1, maxSteps: 3 });
+  const r1 = await missionGoTo('tello', slow.d, { x: 300, y: 300, name: 'x' }, { plan, objects: [], people: () => [{ x: 1.5, y: 1.5 }], decide: () => { calls += 1; return new Promise((res) => setTimeout(() => res('{"action":"continue"}'), 200)); }, timeoutMs: 20, hoverMs: 1, maxSteps: 3 });
   assert.equal(r1.ok, false); assert.deepEqual(r1.choices, ['hover', 'hover', 'hover']); assert.equal(slow.sent.length, 0);
   const crowd = fakeDrone({ startX: 100, startY: 100 });
   const r2 = await missionGoTo('tello', crowd.d, { x: 400, y: 100, name: 'x' }, { plan, objects: [], people: () => [{ x: 1.8, y: 1.1 }], decide: async () => '{"action":"continue"}', hoverMs: 1, maxSteps: 2 });
   assert.deepEqual(r2.choices, ['hover', 'hover']);
   const stopped = fakeDrone({ startX: 100, startY: 100 });
   let n = 0;
-  const r3 = await missionGoTo('tello', stopped.d, { x: 900, y: 100, name: 'x' }, { plan, objects: [], people: () => [], decide: async () => { if (++n === 2) stopped.d.generation += 1; return '{"action":"continue"}'; }, hoverMs: 1 });
+  stopped.d.execute = ((orig) => async (c) => { if (++n === 2) stopped.d.generation += 1; return orig(c); })(stopped.d.execute);
+  const r3 = await missionGoTo('tello', stopped.d, { x: 900, y: 100, name: 'x' }, { plan, objects: [], people: () => [], decide: null, hoverMs: 1 });
   assert.equal(r3.ok, false); assert.match(r3.error, /stopped/);
 });
 
@@ -81,4 +93,22 @@ test('mission without a model: the rules look first when the position is only fr
   assert.equal(r.ok, true, r.error);
   assert.equal(sent[0].action, 'localize');
   assert.equal(sent[1].action, 'go_to');
+});
+
+test('a drone that does not move is not left pretending: three useless steps and the mission stops', async () => {
+  const { d } = fakeDrone({ startX: 100, startY: 300 });
+  d.execute = async () => ({ ok: true }); // says ok, does not move
+  const r = await missionGoTo('tello', d, { x: 900, y: 300, name: 'x' }, { plan, objects: [], people: () => [], decide: null, hoverMs: 1 });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /three steps without getting closer/);
+  assert.ok(r.steps <= 4);
+});
+
+test('where the drone is, in words', async () => {
+  const { describePlace } = await import('../src/room.ts');
+  const tables = [{ id: 't1', name: 'table 1', kind: 'table', x: 0.41, y: -0.66, w: 1.8, d: 1.8, rotation: 0 }, { id: 't3', name: 'table 3', kind: 'table', x: 4.21, y: -1.37, w: 1.8, d: 1.8, rotation: 0 }];
+  const pillars = [{ id: 'pillar-3', x: 2.44, y: 0.937, w: 1.2, d: 0.7 }];
+  assert.equal(describePlace(tables, pillars, 41, -66), 'above table 1');
+  assert.equal(describePlace(tables, pillars, 272, -108), 'next to table 3 (59 cm from its edge)');
+  assert.match(describePlace(tables, pillars, 900, 300), /m from /);
 });

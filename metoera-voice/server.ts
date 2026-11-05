@@ -9,8 +9,8 @@ import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { RealTello, type Detections, type DepthView } from './src/tello.ts';
-import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, planRoute, padsOf, type Point, type RoomConfig } from './src/room.ts';
-import { missionGoTo } from './src/mission.ts';
+import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, planRoute, padsOf, describePlace, type Point, type RoomConfig } from './src/room.ts';
+import { missionGoTo, blockingAt } from './src/mission.ts';
 import { runCalibration, summary as calibrationSummary, type CalibrationReport } from './src/calibration.ts';
 import { landmarksOf, expectedInView, bearingOfX, solvePose, localizePrompt, parseSeen } from './src/landmarks.ts';
 import { Claims, CLAIMS_PORT, describeElsewhere, parsePeers, udpTransport } from './src/claims.ts';
@@ -184,8 +184,10 @@ async function localizeFrom(id: string, pose: {x: number; y: number; heading: nu
     const distanceM = col && col.depth_m > 0.3 ? col.depth_m + Math.min(l.w, l.d) / 2 : null;
     return [{x:l.x, y:l.y, bearingDeg:bearing, distanceM, id:l.id}];
   });
+  // One thing seen is not enough: tables and pillars look alike, and the depth to one of them is rough.
+  if (obs.length < 2) return {ok:false as const, error:obs.length ? `Saw only ${obs[0].id}: at least two pillars or tables are needed to trust a photo` : `Grok vision saw none of the expected pillars or tables${note ? ` (${note})` : ''}`};
   const sol = solvePose(pose.heading, obs);
-  if (!sol) return {ok:false as const, error:obs.length ? `Saw only ${obs[0].id} and no distance: not enough to tell the position` : `Grok vision saw none of the expected pillars or tables${note ? ` (${note})` : ''}`};
+  if (!sol) return {ok:false as const, error:'The things seen do not fix the position'};
   if (sol.residualM > 0.6) return {ok:false as const, error:'What Grok saw does not fit together: position unchanged'};
   return {ok:true as const, x:Math.round(sol.x * 100), y:Math.round(sol.y * 100), seen:obs.map((o) => o.id), residualCm:Math.round(sol.residualM * 100), note};
 }
@@ -495,7 +497,10 @@ function routeGoTo(drone: RealTello, body: Record<string, unknown>): Record<stri
   const name = typeof command.place === 'string' ? command.place.trim().toLowerCase() : null;
   const to = name ? map.places[name] : typeof command.x === 'number' && typeof command.y === 'number' ? {x:command.x, y:command.y} : null;
   if (!to) return command;
-  const route = planRoute(plan, room.objects, [map.pose.x / 100, map.pose.y / 100], [to.x / 100, to.y / 100]);
+  // Over the tables when high enough: tables block only a drone within 50 cm of their height.
+  const live = drone.live();
+  const altitude = live.flying ? live.pose.zFloor : live.startSurface.heightCm + 80;
+  const route = planRoute(plan, blockingAt(room.objects, altitude), [map.pose.x / 100, map.pose.y / 100], [to.x / 100, to.y / 100]);
   if (route === null) return {error:'No safe way there: tables, pillars or walls block every path'};
   const via = route.slice(0, -1).map(([x, y]) => [Math.round(x * 100), Math.round(y * 100)]);
   const under = surfaceHeightAt(room.objects, to.x / 100, to.y / 100);
@@ -615,7 +620,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
   // The drones live, 10 times a second, for the map (server-sent events).
   if (req.method === 'GET' && path === '/api/live') {
     res.writeHead(200, {'Content-Type':'text/event-stream', 'Cache-Control':'no-store', Connection:'keep-alive'});
-    const send = () => res.write(`data: ${JSON.stringify({t:Date.now(), drones:[...drones].filter(([id]) => refusal(id) === null).map(([id, d]) => ({...d.live(), decision:decisionsLive.get(id) ?? null}))})}\n\n`);
+    const send = () => res.write(`data: ${JSON.stringify({t:Date.now(), drones:[...drones].filter(([id]) => refusal(id) === null).map(([id, d]) => { const l = d.live(); return {...l, decision:decisionsLive.get(id) ?? null, where:plan ? describePlace(room.objects, plan.pillars ?? [], l.pose.x, l.pose.y) : null}; })})}\n\n`);
     send();
     const timer = setInterval(send, 100);
     req.on('close', () => clearInterval(timer));
@@ -846,9 +851,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
       const timed = (r: http.ServerResponse, status: number, value: unknown) => {
         const v = value as {ok?: boolean; error?: string};
         const ms = Date.now() - started;
+        // Where the drone is, in words from the plan, on every answer (Grok says this, not coordinates).
+        const d = drones.get(asked.droneId);
+        if (d && v && typeof v === 'object' && plan) { const p = d.live().pose; value = {...v, where:describePlace(room.objects, plan.pillars ?? [], p.x, p.y)}; }
         if (status === 200 && v && typeof v === 'object') {
           console.log(`${new Date().toLocaleTimeString()} ${label(asked.droneId)} · ${asked.action} ${v.ok ? 'ok' : `failed (${v.error ?? ''})`} ${(ms / 1000).toFixed(1)} s`);
-          value = {...v, durationMs:ms};
+          value = {...(value as object), durationMs:ms};
         }
         json(r, status, value);
       };

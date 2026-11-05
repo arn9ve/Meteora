@@ -325,3 +325,26 @@ export function clearanceAt(plan: RoutePlan | null, objects: RoomObject[], p: Po
 export function padsOf(objects: RoomObject[]): { pad: number; x: number; y: number; surfaceCm: number; name: string }[] {
   return objects.filter((o) => o.pad).map((o) => ({ pad: o.pad!, x: Math.round(o.x * 100), y: Math.round(o.y * 100), surfaceCm: Math.round((o.heightM ?? (o.kind === 'table' ? 0.75 : 0)) * 100), name: o.name }));
 }
+
+/**
+ * Where a point is, in words, from the room plan: "above table 1", "next to table 3 (40 cm from
+ * its edge)", "between table 1 and pillar 3". For Grok to say, instead of coordinates.
+ */
+export function describePlace(objects: RoomObject[], pillars: { id: string; x: number; y: number; w: number; d: number }[], xCm: number, yCm: number): string {
+  const p: Point = [xCm / 100, yCm / 100];
+  const things = [
+    ...objects.map((o) => ({ name: o.name, x: o.x, y: o.y, w: o.w, d: o.d, r: o.rotation })),
+    ...pillars.map((q) => ({ name: q.id.replace('-', ' '), x: q.x, y: q.y, w: q.w, d: q.d, r: 0 })),
+  ].map((t) => {
+    const a = t.r * Math.PI / 180, dx = p[0] - t.x, dy = p[1] - t.y;
+    const u = Math.abs(dx * Math.cos(a) + dy * Math.sin(a)) - t.w / 2, v = Math.abs(-dx * Math.sin(a) + dy * Math.cos(a)) - t.d / 2;
+    return { ...t, edge: Math.hypot(Math.max(u, 0), Math.max(v, 0)), inside: u <= 0 && v <= 0 };
+  }).sort((a, b) => a.edge - b.edge);
+  if (!things.length) return 'in the room';
+  const [a, b] = things;
+  if (a.inside) return `above ${a.name}`;
+  const cm = Math.round(a.edge * 100);
+  if (cm <= 80) return `next to ${a.name} (${cm} cm from its edge)`;
+  if (b && b.edge < 2.5) return `between ${a.name} and ${b.name} (${(a.edge).toFixed(1)} m from ${a.name})`;
+  return `${a.edge.toFixed(1)} m from ${a.name}, the nearest thing`;
+}

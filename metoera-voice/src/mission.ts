@@ -27,7 +27,7 @@ export type MissionDeps = {
   maxSteps?: number;
 };
 
-const LEG_CM = 150;
+const LEG_CM = 300; // the Tello's own go accepts up to 500 cm; it flies them with its own sensors
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function segPointDist(p: Point, a: Point, b: Point): number {
@@ -42,15 +42,19 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
   if (!drone.live().flying) return { ok: false, error: 'Take off first' };
   const generation = drone.generation;
   const lastSteps: DecisionState['lastSteps'] = [];
-  let safe: Point | null = null, checked = false;
+  let safe: Point | null = null, checked = false, stuck = 0;
   const choices: string[] = [];
   for (let step = 1; step <= maxSteps; step += 1) {
     if (drone.generation !== generation) return { ok: false, error: 'Mission stopped (stop, land or emergency)', steps: step - 1, choices };
     const live = drone.live(), at: Point = [live.pose.x / 100, live.pose.y / 100];
     const remainingCm = Math.round(Math.hypot(target.x - live.pose.x, target.y - live.pose.y));
-    const route = planRoute(deps.plan, deps.objects, at, [target.x / 100, target.y / 100]);
-    const next: Point | null = route && route.length ? route[0] : null;
-    const legEnd: Point | null = next ? (() => { const d = Math.hypot(next[0] - at[0], next[1] - at[1]); const k = d > LEG_CM / 100 ? (LEG_CM / 100) / d : 1; return [at[0] + (next[0] - at[0]) * k, at[1] + (next[1] - at[1]) * k] as Point; })() : null;
+    // Tables are obstacles only when the drone flies lower than 50 cm above them; pillars and walls always.
+    const blocking = blockingAt(deps.objects, live.pose.zFloor);
+    const route = planRoute(deps.plan, blocking, at, [target.x / 100, target.y / 100]);
+    // The first route point at least 30 cm away (closer ones are skipped: too short to fly).
+    const next: Point | null = route && route.length ? (route.find((q) => Math.hypot(q[0] - at[0], q[1] - at[1]) >= 0.3) ?? route[route.length - 1]) : null;
+    // A leg goes to that point, at most 150 cm (under 20 cm the drone would not move at all).
+    const legEnd: Point | null = next ? (() => { const d = Math.hypot(next[0] - at[0], next[1] - at[1]); if (d < 0.2) return null; const k = Math.min(1, (LEG_CM / 100) / d); return [at[0] + (next[0] - at[0]) * k, at[1] + (next[1] - at[1]) * k] as Point; })() : null;
     const nearPerson = legEnd ? deps.people().reduce<number | null>((best, p) => { const d = segPointDist([p.x, p.y], at, legEnd); return best === null || d < best ? d : best; }, null) : null;
     const snap = drone.snapshot();
     const state: DecisionState = {
@@ -72,8 +76,12 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
     }
     // Ask the model; the rules answer if it is not configured, too slow, or makes no sense.
     const t0 = Date.now();
-    let by: 'model' | 'rules' | 'timeout' = 'rules', reason = 'rules', choice: Choice = ruleChoice(state);
-    if (deps.decide) {
+    let by: 'model' | 'rules' | 'timeout' = 'rules', reason = 'on the way', choice: Choice = ruleChoice(state);
+    // The normal case needs nobody to think: distance and direction come from the plan. The model is
+    // asked only when something is off: a failed or useless step, a person on the leg, low battery.
+    const last = state.lastSteps[state.lastSteps.length - 1];
+    const trouble = (last && !last.ok) || state.personOnPathM !== null || (state.battery !== null && state.battery <= 20);
+    if (deps.decide && trouble) {
       const answer = await Promise.race([deps.decide(decisionPrompt(state)).catch(() => null), sleep(timeoutMs).then(() => 'timeout' as const)]);
       if (answer === 'timeout') { by = 'timeout'; choice = { action: 'hover' }; reason = `no answer in ${timeoutMs} ms`; }
       else { const parsed = parseChoice(answer); if (parsed) { by = 'model'; choice = parsed.choice; reason = parsed.reason; } }
@@ -98,9 +106,21 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
       case 'back': r = safe ? await drone.execute({ droneId, action: 'go_to', x: Math.round(safe[0] * 100), y: Math.round(safe[1] * 100), check: false }) : { ok: false, error: 'no safe point' }; break;
       case 'continue': r = legEnd ? await drone.execute({ droneId, action: 'go_to', x: Math.round(legEnd[0] * 100), y: Math.round(legEnd[1] * 100), check: false }) : { ok: true }; break;
     }
+    // A move that did not move the drone is not progress: three in a row and the mission stops.
+    const after = drone.live().pose;
+    if (['continue', 'back'].includes(c.action)) {
+      const moved = Math.hypot(after.x - live.pose.x, after.y - live.pose.y);
+      if (r.ok && moved < 10) { stuck += 1; r = { ok: false, error: 'did not move' }; } else stuck = 0;
+      if (stuck >= 3) return { ok: false, error: 'Stopped and hovering: three steps without getting closer. Tell me where it is, or ask it to look around', steps: step, choices };
+    }
     lastSteps.push({ action: c.action, ok: r.ok, ...(r.ok ? {} : { note: String(r.error ?? '').slice(0, 60) }) });
     // A point with room around it, reached without trouble, is where "back" goes.
     if (r.ok && c.action !== 'hover') { const p = drone.live().pose; const q: Point = [p.x / 100, p.y / 100]; if (clearanceAt(deps.plan, deps.objects, q) > 0.5) safe = q; }
   }
   return { ok: false, error: `Not there after ${maxSteps} steps: hovering`, steps: maxSteps, choices };
+}
+
+/** The objects a drone at `zFloorCm` above the floor must fly around: those within 50 cm of its height. */
+export function blockingAt(objects: RoomObject[], zFloorCm: number): RoomObject[] {
+  return objects.filter((o) => Math.round((o.heightM ?? (o.kind === 'table' ? 0.75 : 2)) * 100) + 50 > zFloorCm);
 }

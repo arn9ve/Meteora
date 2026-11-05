@@ -872,7 +872,7 @@ function para(text,cls='note'){ const p=document.createElement('p'); p.className
 function renderSide(){ renderList(); renderInspector(); }
 function renderInspector(){
   const box=$('#inspector');
-  const key=JSON.stringify([sel,mode?.kind,mode?.points?.length,mode?.img?.length,mode?.plan?.length]);
+  const key=JSON.stringify([sel,mode?.kind,mode?.points?.length,mode?.img?.length,mode?.plan?.length,sel?.kind==='drone'?Boolean(liveDrones[sel.id]?.flying):null]);
   if(key===inspectorKey){ updateInspectorLive(); return; }
   inspectorKey=key; box.replaceChildren();
   const r=R();
@@ -912,7 +912,15 @@ function droneInspector(box,id){
   const r=R(); const p=r.drones[id];
   box.append(para(`DRONE · ${(DRONE_LABEL[id]||id).toUpperCase()}`,'caption'));
   const live=para('','note live-drone'); box.append(live,para('','note flight-data'));
-  if(p) box.append(calibrationBox(id));
+  if(p){
+    // Back to its spot: flying, it flies there; on the ground, the person put it back and says so.
+    const acts=document.createElement('div'); acts.className='drone-actions';
+    const flying=liveDrones[id]?.flying??droneById(id)?.flight==='flying';
+    if(flying) acts.append(btn('Fly back to its spot',()=>{ void runOnDrone(id,'go_to',{place:'home'}).then(r=>hint(r.ok?'Back at its spot':`Not back: ${r.error}`)); },'dark'));
+    else acts.append(btn('It is back on its spot',async()=>{ const j=await post('/api/room/drone',{id,x:p.x,y:p.y,heading:p.heading,facingConfirmed:Boolean(p.facingConfirmed)}); hint(j.ok?`${DRONE_LABEL[id]} is on its spot again: ${where(p.x,p.y)}`:j.error); await refreshRoom(); }));
+    acts.append(btn('Remove from the plan',()=>void removeFromPlan('drone',id),'danger'));
+    box.append(acts, calibrationBox(id));
+  }
   if(!p){ box.append(para('Not on the plan: the drone does not know where it is, so "go to table 1" and the nearest-drone choice cannot use it.'),btn('Place on the plan',()=>startMode({kind:'place',what:'drone',id,label:DRONE_LABEL[id]||id}),'dark')); updateInspectorLive(); return; }
   // Typing one number moves the drone from where it is now (not from where it was first placed).
   const set=k=>v=>{ if(Number.isFinite(v)){ const now=R().drones[id]||p, at=posOf('drone',id)||now; R().drones[id]={...now,x:at.x,y:at.y,heading:at.heading,[k]:v}; void saveDrone(id,k==='heading'||Boolean(now.facingConfirmed)); } };
@@ -924,28 +932,27 @@ function droneInspector(box,id){
   }
   box.append(field('From left wall',now.x,set('x'),{cm:'x'}),field('From bottom wall',now.y,set('y'),{cm:'y'}),field('Facing',now.heading,set('heading'),{step:5,suffix:'°'}),
     para(`Drawn at real size (${DRONE_SIZE_CM[id]?.join(' × ')||'10 × 10'} cm). Place it where it stands before take-off; it can only be moved while it is on the ground. 0° = facing right on the plan, 90° = up.`),
-    btn('Move it on the plan',()=>startMode({kind:'place',what:'drone',id,label:DRONE_LABEL[id]||id})),
-    btn('Remove from the plan',()=>void removeFromPlan('drone',id),'danger'));
+    btn('Move it on the plan',()=>startMode({kind:'place',what:'drone',id,label:DRONE_LABEL[id]||id})));
   updateInspectorLive();
 }
 // Calibration test: take off from the table, a pattern that returns to the start on paper,
 // back to the start with the telemetry, land; then the person measures where it landed.
 let calTimer=0;
 function calibrationBox(id){
-  const box=document.createElement('div'); box.className='cal-test';
-  box.innerHTML='<p class="caption">CALIBRATION TEST</p><p class="note">From its take-off spot: right, left, right, forward, back, forward, then back to the start and landing. Each move is measured with the telemetry. With 50 cm moves a drone in the middle of a table stays above the table. Stay next to Cut motors.</p><div class="cal-row"><label>Moves <select class="cal-size"><option value="30">30 cm</option><option value="50" selected>50 cm</option><option value="80">80 cm</option></select></label><label><input type="checkbox" class="cal-photo"> with a photo check</label></div><div class="cal-actions"></div><pre class="cal-log"></pre><p class="note strong cal-summary"></p><div class="cal-measure" hidden><label>It landed <input type="number" min="0" max="1000" step="1" class="cal-cm"> cm from where it took off</label></div>';
+  const box=document.createElement('details'); box.className='cal-test';
+  box.innerHTML='<summary><span class="caption">CALIBRATION TEST</span> <span class="cal-count note"></span></summary><p class="note">The first times: right, left, right, forward, back, forward (twice by default), back to the start and landing; each move is measured with the telemetry. After a couple of tests the drone knows its telemetry and does not need it. With 50 cm moves a drone in the middle of a table stays above it. Stay next to Cut motors.</p><div class="cal-row"><label>Moves <select class="cal-size"><option value="30">30 cm</option><option value="50" selected>50 cm</option><option value="80">80 cm</option></select></label><label>Rounds <select class="cal-rounds"><option value="1">1</option><option value="2" selected>2</option></select></label><label><input type="checkbox" class="cal-photo"> photo check</label></div><div class="cal-actions"></div><pre class="cal-log"></pre><p class="note strong cal-summary"></p><div class="cal-measure" hidden><label>It landed <input type="number" min="0" max="1000" step="1" class="cal-cm"> cm from where it took off</label></div>';
   const start=btn('Start the test',async()=>{
-    const size=Number(box.querySelector('.cal-size').value), photo=box.querySelector('.cal-photo').checked;
+    const size=Number(box.querySelector('.cal-size').value), photo=box.querySelector('.cal-photo').checked, rounds=Number(box.querySelector('.cal-rounds').value);
     if(!confirm(`${DRONE_LABEL[id]} on its take-off spot (the one on the plan), 2 m around it clear, you next to Cut motors. It takes off, flies ${size}-${2*size} cm moves for about a minute, comes back and lands. Start?`)) return;
     start.disabled=true; box.querySelector('.cal-summary').textContent='Running…';
     pollCalibration(id,box);
-    const r=await runOnDrone(id,'calibrate',{sizeCm:size,photo});
+    const r=await runOnDrone(id,'calibrate',{sizeCm:size,photo,rounds});
     clearInterval(calTimer); start.disabled=false;
     showCalibration(box,r.report||null,r.summary||r.error);
   },'dark');
   box.querySelector('.cal-actions').append(start);
   box.querySelector('.cal-cm').addEventListener('change',async e=>{ const j=await post('/api/calibration/measured',{drone:id,cm:Number(e.target.value)}); showCalibration(box,j.report||null,j.summary||j.error); });
-  void fetch(`/api/calibration?drone=${id}`,{cache:'no-store'}).then(r=>r.json()).then(j=>{ if(j.report) showCalibration(box,j.report,j.summary); if(j.running) pollCalibration(id,box); }).catch(()=>{});
+  void fetch(`/api/calibration?drone=${id}`,{cache:'no-store'}).then(r=>r.json()).then(j=>{ box.querySelector('.cal-count').textContent=j.count?`· ${j.count} done${j.count>=2?', the telemetry is known':''}`:'· never done: do it twice'; box.open=!j.count||Boolean(j.running); if(j.report) showCalibration(box,j.report,j.summary); if(j.running) pollCalibration(id,box); }).catch(()=>{});
   return box;
 }
 function pollCalibration(id,box){ clearInterval(calTimer); calTimer=setInterval(async()=>{ try { const j=await (await fetch(`/api/calibration?drone=${id}`,{cache:'no-store'})).json(); if(j.running) box.querySelector('.cal-log').textContent=j.running.join('\n'); else clearInterval(calTimer); } catch {} },1000); }
@@ -1203,7 +1210,7 @@ function draw(){
     g.append(svgEl('line',{x1:x,y1:y,x2:ax,y2:ay,stroke:col,'stroke-width':px(2.5),'stroke-linecap':'round',...(ok?{}:{'stroke-dasharray':`${px(4)} ${px(4)}`})}));
     g.append(svgEl('polygon',{points:`${ax+Math.cos(a)*hw},${ay-Math.sin(a)*hw} ${ax+Math.cos(a+2.4)*hw},${ay-Math.sin(a+2.4)*hw} ${ax+Math.cos(a-2.4)*hw},${ay-Math.sin(a-2.4)*hw}`,fill:col}));
     if(!ok) g.append(svgEl('text',{x:ax+px(6),y:ay-px(6),'font-size':px(13),'font-weight':700,fill:col},'?'));
-    g.append(svgEl('text',{x:x+px(12),y:y+px(16),'font-size':px(12),'font-weight':600,fill:col},`${DRONE_LABEL[id]}${droneById(id)?.flight==='flying'?' · flying':''}`));
+    g.append(svgEl('text',{x:x+px(12),y:y+px(16),'font-size':px(12),'font-weight':600,fill:col},`${DRONE_LABEL[id]}${liveDrones[id]&&!liveDrones[id].connected?' · not connected':(liveDrones[id]?.flying??droneById(id)?.flight==='flying')?' · flying':''}`));
     svg.append(g);
     if(isSel&&droneById(id)?.flight!=='flying') svg.append(...handle('drone',id,at.x,at.y,at.heading||0,px(40)));
   }

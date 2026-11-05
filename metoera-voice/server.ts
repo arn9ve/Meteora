@@ -4,7 +4,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { networkInterfaces } from 'node:os';
 import net from 'node:net';
-import { readFile, writeFile, mkdir, chmod, appendFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod, appendFile, readdir } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
@@ -134,7 +134,7 @@ const calibrationRunning = new Map<string, string[]>();
 async function calibrate(id: string, drone: RealTello, body: Record<string, unknown>) {
   const lines: string[] = []; calibrationRunning.set(id, lines);
   try {
-    const report = await runCalibration(id, drone, {sizeCm:typeof body.sizeCm === 'number' ? body.sizeCm : 50, photo:body.photo === true, onNote:(l) => { lines.push(l); console.log(`${label(id)} calibration · ${l}`); }});
+    const report = await runCalibration(id, drone, {sizeCm:typeof body.sizeCm === 'number' ? body.sizeCm : 50, rounds:typeof body.rounds === 'number' ? body.rounds : 2, photo:body.photo === true, onNote:(l) => { lines.push(l); console.log(`${label(id)} calibration · ${l}`); }});
     calibrations.set(id, report);
     await saveCalibration(report);
     return {ok:report.ok, mode:'real', action:'calibrate', ...(report.error ? {error:report.error} : {}), summary:calibrationSummary(report), report};
@@ -717,7 +717,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
   if (req.method === 'GET' && path === '/api/calibration') {
     const id = url.searchParams.get('drone') ?? '';
     const r = calibrations.get(id) ?? null;
-    json(res, 200, {running:calibrationRunning.get(id) ?? null, report:r, summary:r ? calibrationSummary(r) : null});
+    // Tests actually flown (landed), not the ones refused before take-off.
+    const files = await readdir(flightsDir).then((f) => f.filter((n) => n.startsWith(`calibration-${id}-`))).catch(() => [] as string[]);
+    const count = (await Promise.all(files.map((f) => readFile(join(flightsDir, f), 'utf8').then((t) => (JSON.parse(t) as {landed?: boolean}).landed === true).catch(() => false)))).filter(Boolean).length;
+    json(res, 200, {running:calibrationRunning.get(id) ?? null, report:r, summary:r ? calibrationSummary(r) : null, count});
     return;
   }
   // Preview of the way a drone would fly to a table or place (nothing moves).

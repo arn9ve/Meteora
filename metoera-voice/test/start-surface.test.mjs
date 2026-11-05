@@ -83,3 +83,24 @@ test('a photo fix that puts the drone over a table while the infrared sees the f
   assert.match(r.error, /infrared sees the floor/);
   assert.equal(d.map().pose.x, 0);
 });
+
+test('landed on a table higher than the take-off spot counts as landed (infrared ~10 cm), even mid-command', async (t) => {
+  const statePort = await freePort();
+  const socket = dgram.createSocket('udp4'); let state = 'ground', closed = false;
+  socket.on('message', (payload, peer) => {
+    const text = payload.toString();
+    const reply = (v) => setTimeout(() => { if (!closed) socket.send(v, peer.port, peer.address); }, 20);
+    if (text === 'command') reply('ok'); else if (text === 'sn?') reply(SERIAL); else if (text === 'battery?') reply('80');
+    else if (text === 'takeoff') { state = 'air'; reply('ok'); } else reply('ok');
+  });
+  await new Promise((r) => socket.bind(0, '127.0.0.1', r));
+  const timer = setInterval(() => { if (!closed) { const h = state === 'air' ? 80 : state === 'table' ? 75 : 0, tof = state === 'air' ? 80 : 10; socket.send(`mid:-1;pitch:0;roll:0;yaw:0;tof:${tof};h:${h};bat:80;`, statePort, '127.0.0.1'); } }, 40);
+  const d = new RealTello({ host: '127.0.0.1', port: socket.address().port, localPort: 0, statePort, expectedSerial: SERIAL });
+  t.after(() => { closed = true; clearInterval(timer); d.close(); socket.close(); });
+  await d.execute({ droneId: 'tello', action: 'takeoff' });
+  await sleep(200);
+  assert.equal(d.snapshot().flight, 'flying');
+  state = 'table'; // landed on a 75 cm table: h says +75, the infrared says ground
+  await sleep(2600);
+  assert.equal(d.snapshot().flight, 'landed');
+});

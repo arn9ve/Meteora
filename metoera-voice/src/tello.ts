@@ -1219,8 +1219,8 @@ export class RealTello {
   /**
    * Survey: up to about 2 m above the floor (sees more of the room), one photo every 90° turning
    * clockwise and back to the start heading, then the server asks Grok vision what of the plan is
-   * in each photo and works out position and heading. A believable result corrects both. Then back
-   * down to the height it had.
+   * in each photo and works out position and heading. A believable result corrects both. It stays
+   * at that height: the flight goes on from there.
    */
   async #survey(generation: number): Promise<TelloResult> {
     if (!this.#surveyCb || !this.#frame) return this.#fail('Survey is not configured on the server');
@@ -1254,7 +1254,7 @@ export class RealTello {
     }
     this.#surveyedFlight = true;
     this.#flightLog?.({ event: 'survey', ok: r.ok, applied, shift, ...(r.ok ? { to: { x: r.x, y: r.y }, deltaHeading: r.deltaHeading, seen: r.seen, residualCm: r.residualCm } : { error: r.error }), note: r.note });
-    if (climb >= 20) await this.#motion('survey', `down ${Math.round(climb)}`, 15000);
+    // It stays up here and leaves from this height (asked: lower was too low).
     return r.ok
       ? { ok: true, mode: 'real', action: 'survey', drone: this.snapshot(), applied, shiftCm: shift, deltaHeading: r.deltaHeading, seen: r.seen, note: r.note, pose: this.#world.pose } as TelloResult
       : this.#fail(`Survey: ${r.error}${r.note ? ` (${r.note})` : ''}`);
@@ -1338,12 +1338,17 @@ export class RealTello {
     this.#heightCm = read('h');
     // Telemetry is the truth about flying: a lost takeoff or land reply must not leave the
     // server thinking the drone is somewhere else.
+    // On the ground the infrared reads ~10 cm whatever it stands on (h alone is wrong after landing
+    // on something higher than the take-off spot), and a landing counts even while a command runs
+    // (a mission sending commands kept a landed drone 'flying' on the map).
     if (this.#heightCm !== null) {
-      if (this.#heightCm >= 20) { this.#flight = 'flying'; this.#groundSince = 0; }
-      else if (this.#heightCm <= 0 && !this.#busy) {
+      const tofNow = read('tof');
+      const onGround = this.#heightCm <= 0 || (tofNow !== null && tofNow > 0 && tofNow <= 15);
+      if (onGround && !this.#takingOff) {
         this.#groundSince ||= Date.now();
         if (Date.now() - this.#groundSince > 2000) this.#flight = 'landed';
-      } else this.#groundSince = 0;
+      } else if (this.#heightCm >= 20) { this.#flight = 'flying'; this.#groundSince = 0; }
+      else this.#groundSince = 0;
     }
     this.#heading = read('yaw');
     this.#world.applyTelemetry(this.#heightCm, this.#heading);

@@ -273,3 +273,7 @@
   .room-panel .map-wrap{height:55svh;min-height:300px;flex:none}
   .room-panel .room-side{overflow:visible;padding-right:0}
 }
+.drone-actions{display:flex;gap:6px;flex-wrap:wrap}
+.cal-test summary{cursor:pointer;list-style:none;display:flex;gap:6px;align-items:baseline}
+.cal-test summary::-webkit-details-marker{display:none}
+.cal-test[open] summary{margin-bottom:4px}

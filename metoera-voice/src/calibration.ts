@@ -33,7 +33,7 @@ export type CalibrationReport = {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export async function runCalibration(droneId: string, drone: CalibrationDrone, opts: { sizeCm?: number; photo?: boolean; pauseMs?: number; hoverMs?: number; onNote?: (line: string) => void } = {}): Promise<CalibrationReport> {
+export async function runCalibration(droneId: string, drone: CalibrationDrone, opts: { sizeCm?: number; rounds?: number; photo?: boolean; pauseMs?: number; hoverMs?: number; onNote?: (line: string) => void } = {}): Promise<CalibrationReport> {
   const S = Math.max(20, Math.min(80, Math.round(opts.sizeCm ?? 50)));
   const pause = opts.pauseMs ?? 1000;
   const live0 = drone.live();
@@ -57,7 +57,9 @@ export async function runCalibration(droneId: string, drone: CalibrationDrone, o
   const up = await drone.execute({ droneId, action: 'takeoff' });
   if (!up.ok) return fail(`take-off: ${up.error}`);
   await sleep(opts.hoverMs ?? 3000);
-  const pattern: [string, number][] = [['right', S], ['left', 2 * S], ['right', S], ['forward', S], ['back', 2 * S], ['forward', S]];
+  // The pattern once or twice: the first times, more moves teach the telemetry reading better.
+  const one: [string, number][] = [['right', S], ['left', 2 * S], ['right', S], ['forward', S], ['back', 2 * S], ['forward', S]];
+  const pattern: [string, number][] = Array.from({ length: Math.max(1, Math.min(3, Math.round(opts.rounds ?? 1))) }, () => one).flat();
   try {
     for (const [direction, cm] of pattern) {
       if (stopped()) return fail('stopped from outside (stop, land or emergency)');

@@ -231,11 +231,13 @@ function segDist(p: Point, a: Point, b: Point): number {
 }
 /**
  * A way from `from` to `to` (m) that keeps `clearanceM` from walls, pillars and objects (tables):
- * A* on a `cellM` grid, then shortened to straight legs. Returns the waypoints after `from`
+ * A* on a `cellM` grid (50 cm from everything by default), then shortened to straight legs. Returns the waypoints after `from`
  * (the last one is `to`), [] when already there, or null when there is no way.
  * A start inside an obstacle (a drone taking off from a table) first leaves it by the shortest way.
  */
-export function planRoute(plan: RoutePlan, objects: RoomObject[], from: Point, to: Point, clearanceM = 0.45, cellM = 0.2): Point[] | null {
+/** How far a drone keeps from walls, pillars and tables in its way (asked: 50 cm). */
+export const CLEARANCE_M = 0.5;
+export function planRoute(plan: RoutePlan, objects: RoomObject[], from: Point, to: Point, clearanceM = CLEARANCE_M, cellM = 0.2): Point[] | null {
   const x0 = plan.bounds.min[0], y0 = plan.bounds.min[1];
   const nx = Math.ceil((plan.bounds.max[0] - x0) / cellM) + 1, ny = Math.ceil((plan.bounds.max[1] - y0) / cellM) + 1;
   const rects = [...objects.map((o) => ({ x: o.x, y: o.y, w: o.w, d: o.d, r: o.rotation })), ...(plan.pillars ?? []).map((p) => ({ ...p, r: 0 }))];

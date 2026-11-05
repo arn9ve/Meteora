@@ -9,14 +9,19 @@ const GREY = {floor:0xf3f3f2, wall:0xd7d7d6, pillar:0xc9c9c8, mezz:0xbdbdbc, tab
 const ROOF = ['Corpo4', 'Corpo16', 'Corpo17'];
 const v3 = (x, y, h = 0) => new THREE.Vector3(x, h, -y);
 
-function label(text, colour = '#333') {
+// A tag above a thing: square, thin border, a dot in its colour, regular weight (the Metoera look).
+// pick = [kind, id]: clicking the tag selects that thing in the settings.
+function label(text, colour = '#333', pick = null) {
   const c = document.createElement('canvas'); const g = c.getContext('2d');
-  const font = '600 44px Arial, Helvetica, sans-serif'; g.font = font;
-  c.width = Math.ceil(g.measureText(text).width) + 24; c.height = 64;
-  g.font = font; g.fillStyle = 'rgba(255,255,255,.85)'; g.fillRect(0, 0, c.width, c.height);
-  g.fillStyle = colour; g.textBaseline = 'middle'; g.fillText(text, 12, 34);
+  const font = '400 38px Arial, Helvetica, sans-serif'; g.font = font;
+  c.width = Math.ceil(g.measureText(text).width) + 74; c.height = 64;
+  g.font = font; g.fillStyle = 'rgba(255,255,255,.94)'; g.fillRect(0, 0, c.width, c.height);
+  g.strokeStyle = pick ? '#cfcfcf' : '#e6e6e6'; g.lineWidth = 2; g.strokeRect(1, 1, c.width - 2, c.height - 2);
+  g.fillStyle = colour; g.beginPath(); g.arc(30, 32, 8, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#202020'; g.textBaseline = 'middle'; g.fillText(text, 52, 34);
   const s = new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c), depthTest:false, transparent:true}));
-  s.scale.set(c.width / c.height * 0.32, 0.32, 1); s.renderOrder = 10;
+  s.scale.set(c.width / c.height * 0.46, 0.46, 1); s.renderOrder = 10;
+  if (pick) s.userData.pick = pick;
   return s;
 }
 function box(w, h, d, colour, opacity = 1) {
@@ -26,10 +31,10 @@ function box(w, h, d, colour, opacity = 1) {
 }
 function clear(group) { for (const c of [...group.children]) { group.remove(c); c.traverse?.((o) => { o.geometry?.dispose?.(); o.material?.map?.dispose?.(); o.material?.dispose?.(); }); } }
 
-export function mount(container) {
-  const renderer = new THREE.WebGLRenderer({antialias:true});
+export function mount(container, {onPick} = {}) {
+  const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
-  renderer.setClearColor(0xffffff);
+  renderer.setClearColor(0xffffff, 0); // the page's dot grid shows around the building
   container.append(renderer.domElement);
   const scene = new THREE.Scene();
   scene.add(new THREE.HemisphereLight(0xffffff, 0xdddddd, 2.2));
@@ -81,7 +86,7 @@ export function mount(container) {
     for (const o of room.objects || []) {
       const h = o.heightM || 0.75;
       const m = box(o.w, h, o.d, GREY.table); m.position.copy(v3(o.x, o.y, h / 2)); m.rotation.y = (o.rotation || 0) * Math.PI / 180; live.add(m);
-      const l = label(o.name, '#555'); l.position.copy(v3(o.x, o.y, h + 0.3)); live.add(l);
+      const l = label(o.name, '#b5b5b5', ['object', o.id]); l.position.copy(v3(o.x, o.y, h + 0.3)); live.add(l);
     }
     for (const z of room.zones || []) {
       const occupied = map?.zones?.find((q) => q.id === z.id)?.occupied;
@@ -89,7 +94,7 @@ export function mount(container) {
       const m = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshBasicMaterial({color:0xc62828, transparent:true, opacity:occupied ? 0.35 : 0.14, side:THREE.DoubleSide, depthWrite:false}));
       m.rotation.x = -Math.PI / 2; m.position.y = 0.01; live.add(m);
       const cx = z.points.reduce((s, p) => s + p[0], 0) / z.points.length, cy = z.points.reduce((s, p) => s + p[1], 0) / z.points.length;
-      const l = label(z.name + (occupied ? ' · person' : ''), '#b3261e'); l.position.copy(v3(cx, cy, 0.4)); live.add(l);
+      const l = label(z.name + (occupied ? ' · person inside' : ''), '#c62828', ['zone', z.id]); l.position.copy(v3(cx, cy, 0.4)); live.add(l);
     }
     for (const [slot, c] of Object.entries(room.cameras || {})) {
       if (typeof c.x !== 'number') continue;
@@ -113,7 +118,7 @@ export function mount(container) {
       live.add(face);
       const down = new THREE.Line(new THREE.BufferGeometry().setFromPoints([at, v3(c.x, c.y, 0)]), new THREE.LineDashedMaterial({color:0x999999, dashSize:0.08, gapSize:0.06}));
       down.computeLineDistances(); live.add(down);
-      const l = label(`Phone ${slot} · ${z.toFixed(2)} m`, on ? '#333' : '#aaa'); l.position.copy(v3(c.x, c.y, z + 0.35)); live.add(l);
+      const l = label(`Phone ${slot}${on ? (s?.watching ? ' · watching' : '') : ' · offline'}`, on ? '#202020' : '#cccccc', ['phone', slot]); l.position.copy(v3(c.x, c.y, z + 0.35)); live.add(l);
     }
     for (const p of map?.people || []) {
       const m = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 1.7, 20), new THREE.MeshLambertMaterial({color:0x222222, transparent:Boolean(p.approx), opacity:p.approx ? 0.45 : 1}));
@@ -125,11 +130,27 @@ export function mount(container) {
       const m = box(0.1, 0.04, 0.1, colour); m.position.copy(v3(d.pose.x / 100, d.pose.y / 100, z)); m.rotation.y = d.pose.heading * Math.PI / 180; live.add(m);
       const ring = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.012, 8, 32), new THREE.MeshBasicMaterial({color:colour}));
       ring.rotation.x = Math.PI / 2; ring.position.copy(m.position); live.add(ring);
-      const l = label(`${d.id === 'rmtt' ? 'Red' : 'Black'} · ${z.toFixed(1)} m`, d.id === 'rmtt' ? '#d32f2f' : '#111'); l.position.copy(v3(d.pose.x / 100, d.pose.y / 100, z + 0.35)); live.add(l);
+      const l = label(`${d.id === 'rmtt' ? 'Red' : 'Black'} · ${z.toFixed(1)} m`, d.id === 'rmtt' ? '#c62828' : '#111', ['drone', d.id]); l.position.copy(v3(d.pose.x / 100, d.pose.y / 100, z + 0.35)); live.add(l);
     }
   }
 
   function resize() { const w = container.clientWidth || 600, h = container.clientHeight || 400; renderer.setSize(w, h, false); renderer.domElement.style.width = '100%'; renderer.domElement.style.height = '100%'; camera.aspect = w / h; camera.updateProjectionMatrix(); }
+  // A click (not a drag) on a tag selects that thing.
+  const ray = new THREE.Raycaster(); let down = null;
+  renderer.domElement.addEventListener('pointerdown', (e) => { down = [e.clientX, e.clientY]; });
+  renderer.domElement.addEventListener('pointerup', (e) => {
+    if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5 || !onPick) return;
+    const r = renderer.domElement.getBoundingClientRect();
+    ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+    const hit = ray.intersectObjects(live.children.filter((o) => o.userData.pick), false)[0];
+    renderer.domElement.style.cursor = '';
+    if (hit) onPick(...hit.object.userData.pick);
+  });
+  renderer.domElement.addEventListener('pointermove', (e) => {
+    const r = renderer.domElement.getBoundingClientRect();
+    ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+    renderer.domElement.style.cursor = ray.intersectObjects(live.children.filter((o) => o.userData.pick), false).length ? 'pointer' : '';
+  });
   const ro = new ResizeObserver(resize); ro.observe(container); resize();
   (function loop() { if (!running) return; controls.update(); renderer.render(scene, camera); requestAnimationFrame(loop); })();
   return {

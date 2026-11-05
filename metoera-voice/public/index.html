@@ -25,34 +25,49 @@
   </nav>
 </main>
 <section class="dashboard" aria-label="Control panel">
-  <div class="safety dash-bar" role="group" aria-label="Emergency controls"><button id="linkStatus" class="link-status" data-state="checking" title="Open drone details"><span id="dot0" class="dot dot-black" aria-hidden="true"></span><span id="dot1" class="dot dot-red" aria-hidden="true"></span><span id="linkText">Black · Red · checking…</span></button><button id="pilotLine" class="pilot-line" title="Change your name">Set your name</button><span id="safetyStatus" role="status"></span><button id="switchOff" class="switch-off" title="Cancel all commands and land now">Switch off · land</button><button id="killMotors" class="kill-motors" title="Stops the motors at once. The drone drops.">Cut motors</button></div>
-  <nav class="tabs" role="tablist" aria-label="Panels"><button id="mapButton" class="tab" role="tab" data-panel="mapDialog" aria-selected="true">Room</button><button id="dronesButton" class="tab" role="tab" data-panel="dronesDialog" aria-selected="false">Drones</button><button id="camerasButton" class="tab" role="tab" data-panel="camerasDialog" aria-selected="false">Phones</button></nav>
-  <section id="mapDialog" class="panel room-panel" role="tabpanel" aria-label="Room">
-    <div class="room-bar">
-      <span class="caption">ADD</span>
-      <button class="chip" id="addTable" title="Add a table with its real size">Table</button>
-      <button class="chip" id="addZone" title="Draw a red zone: click its corners on the plan">Red zone</button>
-      <span id="roomHint" class="room-hint" role="status"></span>
-      <span id="roomCursor" class="room-cursor" aria-hidden="true"></span>
-      <div class="seg" role="group" aria-label="View"><button id="view2d" class="active" aria-pressed="true">2D</button><button id="view3d" aria-pressed="false">3D</button></div>
+  <div class="topbar" role="group" aria-label="Panels, drones and emergency">
+    <nav class="tabs" role="tablist" aria-label="Panels">
+      <button id="mapButton" class="tab" role="tab" data-panel="mapDialog" aria-selected="true"><span class="tdot" aria-hidden="true"></span>Room</button>
+      <button id="dronesButton" class="tab" role="tab" data-panel="dronesDialog" aria-selected="false"><span class="tdot" aria-hidden="true"></span>Drones</button>
+      <button id="camerasButton" class="tab" role="tab" data-panel="camerasDialog" aria-selected="false"><span class="tdot" aria-hidden="true"></span>Phones</button>
+    </nav>
+    <div id="linkStatus" class="fleet" data-state="checking" role="status">
+      <button class="unit" data-unit="0" title="Black: open the drones"><span id="dot0" class="dot dot-black" aria-hidden="true"></span><span class="unit-name">Black</span><span id="unitText0" class="unit-state">…</span></button>
+      <button class="unit" data-unit="1" title="Red: open the drones"><span id="dot1" class="dot dot-red" aria-hidden="true"></span><span class="unit-name">Red</span><span id="unitText1" class="unit-state">…</span></button>
+      <span id="linkText" class="visually-hidden"></span>
     </div>
+    <span class="spacer"></span>
+    <button id="pilotLine" class="pilot-line" title="Change your name">Set your name</button>
+    <span id="safetyStatus" role="status"></span>
+    <button id="switchOff" class="emergency-land" title="Cancel every command and land every drone now">Emergency land</button>
+  </div>
+  <section id="mapDialog" class="panel room-panel" role="tabpanel" aria-label="Room">
     <div class="room-body">
       <div class="map-wrap" id="mapWrap">
         <svg id="mapSvg" class="map-svg" role="img" aria-label="Room plan"></svg>
+        <div id="map3d" class="map3d" hidden></div>
         <div class="map-zoom"><button id="zoomIn" aria-label="Zoom in">+</button><button id="zoomOut" aria-label="Zoom out">−</button><button id="zoomFit" aria-label="Fit the room">⤢</button></div>
         <div class="map-scale" aria-hidden="true"><span id="scaleBar"></span><small id="scaleText">1 m</small></div>
         <div id="phoneHover" class="phone-hover" hidden><img alt=""><p></p></div>
-        <div id="map3d" class="map3d" hidden></div>
+        <div class="map-top">
+          <div class="seg" role="group" aria-label="View"><button id="view3d" aria-pressed="true" class="active">3D</button><button id="view2d" aria-pressed="false">2D</button></div>
+          <span id="roomCursor" class="room-cursor" aria-hidden="true"></span>
+          <button id="roomSettings" class="ghost" aria-expanded="false" aria-controls="roomSide">Settings</button>
+        </div>
+        <p id="roomHint" class="room-hint" role="status"></p>
       </div>
-      <aside class="room-side">
+      <aside id="roomSide" class="room-side" hidden aria-label="Room settings">
+        <div class="side-head"><span class="caption">SETTINGS</span><button id="closeSide" class="ghost" aria-label="Close settings">Close</button></div>
         <div id="inspector" class="inspector"></div>
+        <div class="side-block"><span class="caption">ADD</span><div class="side-row"><button class="chip" id="addTable" title="Add a table with its real size">Table</button><button class="chip" id="addZone" title="Draw a red zone: click its corners on the plan">Red zone</button></div></div>
+        <label class="switch-row"><span>Send the nearest drone when a person enters a red zone</span><input type="checkbox" id="autoSend" class="switch"></label>
         <div id="roomList" class="room-list"></div>
       </aside>
     </div>
-    <div class="room-foot"><label class="autosend"><input type="checkbox" id="autoSend"> Send the nearest drone when a person enters a red zone</label><span id="mapNote" class="map-note"></span></div>
+    <div class="active-bar"><span class="caption">ACTIVE</span><div id="activeStrip" class="active-strip"></div><span id="mapNote" class="map-note"></span></div>
   </section>
   <section id="dronesDialog" class="panel" role="tabpanel" aria-label="Drones" hidden><div class="drone-grid" id="droneGrid"></div><p class="telemetry-note" id="telemetryNote">Waiting for the server.</p><p class="telemetry-note" id="clientsLine"></p></section>
-  <section id="camerasDialog" class="panel" role="tabpanel" aria-label="Phones" hidden><p class="drone-intro">Open a link on each phone (same Wi-Fi). Then, on the Room tab, place the phone and calibrate it with 4 clicks. Zones are drawn on the Room plan.</p><div id="cameraGrid" class="camera-grid"></div><p class="telemetry-note" id="camerasNote">Waiting for the camera service.</p></section>
+  <section id="camerasDialog" class="panel" role="tabpanel" aria-label="Phones" hidden><p class="panel-intro">Open a link on each phone (same Wi-Fi). Then place the phone on the Room plan and calibrate it from Settings. Red zones are drawn on the Room plan.</p><div id="cameraGrid" class="camera-grid"></div><p class="telemetry-note" id="camerasNote">Waiting for the camera service.</p></section>
 </section>
 </div>
 <div id="photoView" class="photo-view" hidden role="dialog" aria-label="Photo from the drone"><img alt="Photo from the drone"><p></p></div>

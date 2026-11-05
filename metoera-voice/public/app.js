@@ -88,7 +88,7 @@ function setMuted(value){
 
 // Emergency controls skip the command queue on the server and cancel what is waiting.
 async function emergency(kind){
-  const label=kind==='motors'?'Motors cut':'Switch off';
+  const label=kind==='motors'?'Motors cut':'Emergency land';
   $('#safetyStatus').textContent=kind==='motors'?'Cutting motors…':'Landing…';
   if(socket)disconnect(); // no more voice commands after an emergency
   try{
@@ -100,13 +100,6 @@ async function emergency(kind){
   await refreshDrone();
 }
 $('#switchOff').addEventListener('click',()=>emergency('land'));
-// Cutting the motors drops the drone, so the button needs a second tap within 2 s.
-let killArmed=0;
-$('#killMotors').addEventListener('click',()=>{
-  if(Date.now()-killArmed<2000){killArmed=0;$('#killMotors').textContent='Cut motors';emergency('motors');return}
-  killArmed=Date.now();$('#killMotors').textContent='Tap again to cut';
-  setTimeout(()=>{if(killArmed&&Date.now()-killArmed>=2000){killArmed=0;$('#killMotors').textContent='Cut motors'}},2100);
-});
 $('#muteButton').addEventListener('click',()=>setMuted(!muted));
 
 // Two real drones. Grok names them by colour; the server knows them as tello and rmtt.
@@ -439,14 +432,15 @@ async function refreshDrone() {
       const label = colour === 'black' ? 'Black' : 'Red';
       const who = d?.pilot && !d.pilot.me ? ` · ${d.pilot.name}` : '';
       const text = !d ? `${label} –` : elsewhere(d) ? `${label} · ${d.owner.pilot || d.owner.name}` : d.owner?.state !== 'mine' ? `${label} …` : d.connected ? `${label} ${d.battery ?? '–'}%${d.flight==='flying'?' ✈':''}${who}` : `${label} off${who}`;
-      return {state:linkOf(d), text, detail:`${info.name}: ${availability(d)}`};
+      const short = !d ? 'not set' : elsewhere(d) ? (d.owner.pilot || d.owner.name) : d.owner?.state !== 'mine' ? '…' : d.connected ? `${d.battery ?? '–'}%${d.flight==='flying'?' · flying':''}${who}` : `off${who}`;
+      return {state:linkOf(d), text, short, detail:`${info.name}: ${availability(d)}`};
     });
     // The overall colour is about the drones this person may fly here; the others do not count.
     const configured = parts.filter(p => !['none', 'other'].includes(p.state));
     const overall = !configured.length ? (parts.some(p => p.state === 'other') ? 'other' : 'none') : configured.every(p => p.state === 'connected') ? 'connected' : configured.some(p => ['connected', 'waiting'].includes(p.state)) ? 'waiting' : 'offline';
     showLink(parts.map(p => p.text).join(' · '), overall, parts.map(p => p.detail).join('. '));
     $('#droneState').textContent = parts.map(p => p.text).join(' · ');
-    for (const [i, p] of parts.entries()) $(`#dot${i}`).setAttribute('data-state', p.state);
+    for (const [i, p] of parts.entries()) { $(`#dot${i}`).setAttribute('data-state', p.state); const t=$(`#unitText${i}`); if(t){ t.textContent=p.short; t.parentElement?.setAttribute?.('title', p.detail); } }
     decideName(data.pilot&&typeof data.pilot.name==='string'?data.pilot.name:'', true);
     // This page has a name but the server session has none (server restarted): send it again.
     if(nameDecided&&myName&&!(data.pilot&&data.pilot.name)&&!resendingName){ resendingName=true; void sendName(myName).finally(()=>{resendingName=false}); }
@@ -706,13 +700,13 @@ function cameraCard(slot){
   const card=document.createElement('article');
   card.className='camera-card';
   card.dataset.slot=slot.id;
-  card.innerHTML=`<div class="drone-card-head"><h3>Phone ${slot.id}</h3><span class="camera-state"></span></div><div class="camera-video"><img alt=""><span>No picture yet</span></div><div class="camera-controls"><button class="watch"></button><div class="lens"><button data-lens="wide">Wide</button><button data-lens="normal">Normal</button><button data-lens="tele">Tele</button></div></div><label class="camera-sens">Sensitivity <input type="range" min="0" max="100" step="5" class="sens"></label><label class="camera-arm"><input type="checkbox" class="arm"> ARM: a person this phone sees in a red zone makes the nearest drone take off and fly into the zone</label><div class="camera-link"><input readonly aria-label="Link for phone ${slot.id}"><button class="copy">Copy</button></div><p class="camera-result" role="status"></p>`;
+  card.innerHTML=`<div class="card-head"><span class="dot" aria-hidden="true"></span><h3>Phone ${slot.id}</h3><span class="camera-state"></span></div><div class="camera-video"><img alt=""><span>No picture yet</span></div><div class="set-row"><span>Watching</span><input type="checkbox" class="switch watch" aria-label="Phone ${slot.id} watching"></div><div class="set-row"><span>Lens</span><div class="seg lens"><button data-lens="wide">Wide</button><button data-lens="normal">Normal</button><button data-lens="tele">Tele</button></div></div><div class="set-row"><span>Sensitivity</span><input type="range" min="0" max="100" step="5" class="sens" aria-label="Sensitivity"></div><div class="set-row"><span>Send a drone<small>A person this phone sees in a red zone sends the nearest drone</small></span><input type="checkbox" class="switch arm" aria-label="Phone ${slot.id} sends a drone"></div><div class="camera-link"><input readonly aria-label="Link for phone ${slot.id}"><button class="copy">Copy link</button></div><p class="camera-result" role="status"></p>`;
   const out=card.querySelector('.camera-result');
   const run=async(command,done)=>{ const j=await cameraCommand(slot.id,command); out.textContent=j.ok===false?(j.error||'Failed'):done; };
-  card.querySelector('.watch').addEventListener('click',()=>{ const s=redzone?.slots?.find(x=>x.id===slot.id); void run({type:'watch',watching:!s?.watching},s?.watching?'Stopped watching':'Watching'); });
+  card.querySelector('.watch').addEventListener('change',e=>{ void run({type:'watch',watching:e.target.checked},e.target.checked?'Watching':'Stopped watching'); });
   for(const b of card.querySelectorAll('.lens button')) b.addEventListener('click',()=>void run({type:'lens',lens:b.dataset.lens},`Lens: ${b.textContent}`));
   card.querySelector('.sens').addEventListener('change',e=>void run({type:'sensitivity',sensitivity:Number(e.target.value)},`Sensitivity ${e.target.value}`));
-  card.querySelector('.arm').addEventListener('change',e=>{ void run({type:'arm',armed:e.target.checked},e.target.checked?'ARM on':'ARM off'); });
+  card.querySelector('.arm').addEventListener('change',e=>{ void run({type:'arm',armed:e.target.checked},e.target.checked?'Sends a drone':'Does not send a drone'); });
   card.querySelector('.copy').addEventListener('click',async()=>{ const v=card.querySelector('.camera-link input').value; try{ await navigator.clipboard.writeText(v); out.textContent='Link copied'; }catch{ card.querySelector('.camera-link input').select(); out.textContent='Select and copy the link'; } });
   return card;
 }
@@ -723,9 +717,10 @@ function updateCameras(){
   for(const slot of redzone.slots||[]){
     let card=grid.querySelector?.(`[data-slot="${slot.id}"]`);
     if(!card){ card=cameraCard(slot); grid.append(card); }
-    const state=!slot.online?'Phone not connected':`${slot.watching?'Watching':'Not watching'} · ${slot.peopleCount||0} people · ${slot.calibrated?'calibrated':'estimate only'}${slot.armed?' · ARM on':''}`;
+    const state=!slot.online?'offline':`${slot.peopleCount||0} ${slot.peopleCount===1?'person':'people'} · ${slot.calibrated?'calibrated':'not calibrated'}`;
     card.querySelector('.camera-state').textContent=state;
-    card.querySelector('.watch').textContent=slot.watching?'Stop watching':'Start watching';
+    card.classList.toggle('on',Boolean(slot.online)); card.classList.toggle('hot',Boolean(slot.peopleCount));
+    card.querySelector('.watch').checked=Boolean(slot.watching);
     card.querySelector('.watch').disabled=!slot.online;
     for(const b of card.querySelectorAll('.lens button')){ b.disabled=!slot.online||slot.lensesAvailable?.[b.dataset.lens]===false; b.classList.toggle('active',slot.lens===b.dataset.lens); }
     const sens=card.querySelector('.sens'); if(document.activeElement!==sens&&typeof slot.sensitivity==='number') sens.value=slot.sensitivity;
@@ -841,10 +836,14 @@ async function removeFromPlan(kind,id){
 async function refreshRoom(){ await loadRoom(); inspectorKey=''; await renderMap(); }
 
 // ---- what is selected, and the list ----
-function select(kind,id){ sel=kind?{kind,id:String(id)}:null; mode=mode?.kind==='calibrate'&&sel?.kind==='phone'&&sel.id===mode.slot?mode:null; inspectorKey=''; renderSide(); scheduleDraw();
+// Settings (list, inspector, add, auto-send) stay hidden until asked for, or until something is picked.
+function setSide(open){ const side=$('#roomSide'); if(!side) return; side.hidden=!open; $('#roomSettings')?.setAttribute('aria-expanded',String(open)); $('#mapWrap')?.classList?.toggle('with-side',open); }
+$('#roomSettings')?.addEventListener('click',()=>setSide($('#roomSide').hidden));
+$('#closeSide')?.addEventListener('click',()=>{ setSide(false); if(!mode) select(null); });
+function select(kind,id){ if(kind) setSide(true); sel=kind?{kind,id:String(id)}:null; mode=mode?.kind==='calibrate'&&sel?.kind==='phone'&&sel.id===mode.slot?mode:null; inspectorKey=''; renderSide(); scheduleDraw();
   // Bring the details into view: on a short screen they sit below the list.
   if(sel){ const side=document.querySelector?.('.room-side'); side?.scrollTo?.({top:0,behavior:'smooth'}); $('#inspector').scrollIntoView?.({block:'nearest',behavior:'smooth'}); } }
-function startMode(m){ mode=m; inspectorKey=''; mapSvg.classList.toggle('placing',Boolean(m)); renderSide(); scheduleDraw();
+function startMode(m){ if(m&&view3d) void setView3d(false); if(m) setSide(true); mode=m; inspectorKey=''; mapSvg.classList.toggle('placing',Boolean(m)); renderSide(); scheduleDraw();
   hint(!m?'':m.kind==='place'?`Click on the plan where ${m.label} is. Then drag the round handle to turn it.`:m.kind==='zone'?'Click the corners of the zone. Click the first corner again, or Finish, to close it.':m.kind==='table'?'Click where the centre of the table is.':m.kind==='calibrate'?'Click a floor spot in the phone picture, then the same spot on the plan. Four times.':''); }
 $('#addTable').addEventListener('click',()=>startMode({kind:'table'}));
 $('#addZone').addEventListener('click',()=>{ select(null); startMode({kind:'zone',points:[]}); });
@@ -917,7 +916,25 @@ function field(label,value,onChange,{step=0.05,suffix='m',type='number',cm=null}
 }
 function btn(text,onClick,cls=''){ const b=document.createElement('button'); b.textContent=text; b.className=`chip ${cls}`; b.addEventListener('click',onClick); return b; }
 function para(text,cls='note'){ const p=document.createElement('p'); p.className=cls; p.textContent=text; return p; }
-function renderSide(){ renderList(); renderInspector(); }
+function renderSide(){ renderList(); renderInspector(); renderActive(); }
+// What is on and working right now, under the room: click one to see and control it.
+let activeKey='';
+function renderActive(){
+  const strip=$('#activeStrip'); if(!strip?.replaceChildren) return; const r=R(); const items=[];
+  for(const id of ['tello','rmtt']){ const d=droneById(id), l=liveDrones[id]; if(!d&&!r.drones[id]) continue;
+    const on=Boolean(l?.connected??d?.connected), flying=Boolean(l?.flying??d?.flight==='flying');
+    items.push({kind:'drone',id,name:DRONE_LABEL[id]||id,state:!on?'off':flying?`flying${l?.where?` · ${l.where}`:''}`:`on the ground${d?.battery!=null?` · ${d.battery}%`:''}`,on,hot:flying,colour:DRONE_COLOUR[id]}); }
+  for(const s of ['1','2','3']){ const slot=slotOf(s); if(!slot?.online&&typeof r.cameras[s]?.x!=='number') continue;
+    items.push({kind:'phone',id:s,name:`Phone ${s}`,state:!slot?.online?'offline':`${slot.watching?'watching':'idle'}${slot.peopleCount?` · ${slot.peopleCount} people`:''}`,on:Boolean(slot?.online),hot:Boolean(slot?.peopleCount)}); }
+  for(const z of r.zones){ const occ=Boolean(mapLive?.zones?.find(q=>q.id===z.id)?.occupied); items.push({kind:'zone',id:z.id,name:z.name,state:occ?'person inside':'clear',on:false,hot:occ,zone:true}); }
+  const key=JSON.stringify([items,sel]); if(key===activeKey) return; activeKey=key;
+  strip.replaceChildren(...items.map(it=>{ const b=document.createElement('button'); b.className=`obj${it.on?' on':''}${it.hot?' hot':''}${it.zone?' zone':''}${sel?.kind===it.kind&&sel.id===String(it.id)?' selected':''}`;
+    b.innerHTML='<span class="dot"></span><span class="obj-name"></span><span class="obj-state"></span>';
+    if(it.colour) b.style?.setProperty?.('--c',it.colour);
+    b.querySelector('.obj-name').textContent=it.name; b.querySelector('.obj-state').textContent=it.state;
+    b.addEventListener('click',()=>select(it.kind,it.id)); return b; }));
+  if(!items.length) strip.replaceChildren(emptyRow('Nothing on yet'));
+}
 function renderInspector(){
   const box=$('#inspector');
   const key=JSON.stringify([sel,mode?.kind,mode?.points?.length,mode?.img?.length,mode?.plan?.length,sel?.kind==='drone'?Boolean(liveDrones[sel.id]?.flying):null]);
@@ -1271,7 +1288,7 @@ async function setView3d(on){
   $('#view2d').classList.toggle('active',!on); $('#view3d').classList.toggle('active',on);
   $('#view2d').setAttribute('aria-pressed',String(!on)); $('#view3d').setAttribute('aria-pressed',String(on));
   $('#map3d').hidden=!on; mapSvg.style.visibility=on?'hidden':''; $('#mapWrap').classList.toggle('is3d',on);
-  if(on&&!view3d){ try { const m=await import('/room3d.js'); view3d=m.mount($('#map3d')); update3d(); } catch(e){ hint('3D view unavailable in this browser'); $('#map3d').hidden=true; mapSvg.style.visibility=''; } }
+  if(on&&!view3d){ try { const m=await import('/room3d.js'); view3d=m.mount($('#map3d'),{onPick:(kind,id)=>select(kind,id)}); update3d(); } catch(e){ hint('3D view unavailable in this browser'); $('#map3d').hidden=true; mapSvg.style.visibility=''; } }
   if(!on&&view3d){ view3d.dispose(); view3d=null; }
 }
 function update3d(){ if(!view3d) return; const live=mapLive?{...mapLive,drones:(mapLive.drones||[]).map(d=>({...d,pose:liveDrones[d.id]?.pose?{...d.pose,...liveDrones[d.id].pose}:d.pose}))}:null; view3d.update({plan:roomData?.plan,room:R(),live,slots:redzone?.slots||[],drones}); }
@@ -1307,4 +1324,5 @@ setInterval(refreshDrone, 1500);
 // The map refreshes on its own timer, registered after the drone poll.
 setInterval(()=>{if(mapDialog.open) void renderMap()},1500);
 showPanel('mapDialog');
+void setView3d(true);
 startLive();

@@ -238,7 +238,7 @@ test('microphone off clears Grok input and ignores later commands except safety 
   assert.deepEqual(lands.map(b=>[b.droneId,b.action]),[['tello','land'],['rmtt','land']]);
 });
 
-test('switch off ends the voice session and calls the emergency endpoint', async () => {
+test('emergency land ends the voice session and lands every drone', async () => {
   const app=setup();
   app.element('#startVoice').click();
   app.resolveMedia({getTracks:()=>[app.track]});
@@ -249,14 +249,6 @@ test('switch off ends the voice session and calls the emergency endpoint', async
   const call=app.fetches.find(f=>f.url==='/api/emergency');
   assert.ok(call);
   assert.deepEqual(JSON.parse(call.body),{kind:'land'});
-});
-
-test('cut motors needs a second tap', async () => {
-  const app=setup();
-  await app.element('#killMotors').click();
-  assert.equal(app.fetches.some(f=>f.url==='/api/emergency'),false);
-  await app.element('#killMotors').click();
-  assert.deepEqual(JSON.parse(app.fetches.find(f=>f.url==='/api/emergency').body),{kind:'motors'});
 });
 
 test('a name saved in this browser is reused and the dialog stays closed', async () => {

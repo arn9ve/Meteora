@@ -277,3 +277,156 @@
 .cal-test summary{cursor:pointer;list-style:none;display:flex;gap:6px;align-items:baseline}
 .cal-test summary::-webkit-details-marker{display:none}
 .cal-test[open] summary{margin-bottom:4px}
+
+/* ==== Metoera v3: the look of the voice side everywhere ====
+   Rules: Arial, regular weight (never bold); captions 9-10 px, spaced capitals, grey;
+   square corners; 1 px #e6e6e6 lines; a grey dot grid as the ground; circles only for state dots.
+   Buttons: primary = ink fill, secondary = white with a line, danger = red, ghost = text only.
+   State dots: filled = on, hollow = off, red = alarm. */
+:root{--ink:#202020;--muted:#8b8b8b;--faint:#b5b5b5;--line:#e6e6e6;--soft:#f6f6f5;--red:#c62828;--black:#111;--dots:radial-gradient(#e2e2e2 1px,transparent 1.3px) 0 0/18px 18px}
+*,*::before,*::after{border-radius:0!important}
+.dot,.tdot,.row-dot,.obj .dot,.card-head .dot,.controls button,.handle{border-radius:50%!important}
+body,button,input,select,textarea{font-family:Arial,Helvetica,sans-serif}
+.dashboard{background:#fff;padding:0;gap:0}
+.dashboard *{font-weight:400}
+.caption{font-size:9px;letter-spacing:.12em;color:var(--muted);text-transform:uppercase;margin:0}
+.visually-hidden{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+/* top bar: tabs and drones, the same dots at the same spacing */
+.topbar{display:flex;align-items:center;gap:28px;height:64px;padding:0 24px;border-bottom:1px solid var(--line);flex:none}
+.topbar .tabs{display:flex;gap:28px;border:0}
+.topbar .tab,.unit{display:flex;align-items:center;gap:8px;border:0;background:none;padding:6px 0;margin:0;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);min-height:0}
+.topbar .tab:hover,.unit:hover{color:var(--ink)}
+.tdot,.dot{display:inline-block;width:8px;height:8px;flex:none;border:1px solid #c8c8c8;background:transparent;box-shadow:none;outline:0}
+.topbar .tab[aria-selected=true]{color:var(--ink);border:0;font-weight:400}
+.topbar .tab[aria-selected=true] .tdot{background:var(--ink);border-color:var(--ink)}
+.fleet{display:flex;gap:28px;padding-left:28px;border-left:1px solid var(--line);height:24px;align-items:center;margin:0}
+.unit .unit-name{color:var(--ink)}
+.unit .unit-state{text-transform:none;letter-spacing:0;font-size:11px;color:var(--faint)}
+.fleet .dot{outline:0!important}
+.fleet .dot-black[data-state=connected]{background:var(--black);border-color:var(--black)}
+.fleet .dot-red[data-state=connected]{background:var(--red);border-color:var(--red)}
+.fleet .dot-black{border-color:var(--black)}.fleet .dot-red{border-color:var(--red)}
+.fleet .dot[data-state=waiting]{background:repeating-linear-gradient(90deg,#bbb 0 1px,transparent 1px 3px)}
+.fleet .dot[data-state=offline]{background:transparent}
+.fleet .dot[data-state=other]{border-color:#ccc}
+.spacer{flex:1}
+.pilot-line{font-size:11px;color:var(--muted);text-decoration:none;border-bottom:1px dotted #ccc;padding:2px 0}
+#safetyStatus{font-size:10px;color:var(--muted)}
+.emergency-land{border:1px solid var(--red);background:var(--red);color:#fff;font-size:10px;letter-spacing:.14em;text-transform:uppercase;padding:0 18px;height:36px}
+.emergency-land:hover{background:#a51f1f}
+/* panels */
+.panel{padding:16px 24px 14px;gap:12px}
+.panel p,.panel-intro{font-size:12px;color:var(--muted);margin:0}
+.telemetry-note{font-size:11px;color:var(--faint)}
+/* room: the map takes the room, settings slide in on the right */
+.room-panel{padding:0;gap:0}
+.room-panel .room-body{flex:1;min-height:0;display:flex;gap:0;grid-template-columns:none}
+.map-wrap{flex:1;border:0;background:#fff var(--dots);min-width:0;min-height:0}
+.map-wrap .map-svg{background:transparent}
+.map-svg .grid0,.map-svg .grid1{stroke:none}.map-svg .grid5{stroke:#eee}
+.map-top{position:absolute;left:16px;right:16px;top:14px;display:flex;align-items:center;gap:14px;pointer-events:none}
+.map-top>*{pointer-events:auto}
+.map-top #roomSettings{margin-left:auto}
+.map-zoom{top:56px;right:16px}
+.map-zoom button{border:1px solid var(--line);background:#fff;color:#666;width:30px;height:30px}
+.seg{border:1px solid var(--line);margin:0;background:#fff}
+.seg button{background:#fff;color:var(--muted);font-size:10px;letter-spacing:.12em;padding:0 12px;min-height:28px;border:0}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button.active{background:var(--ink);color:#fff}
+.seg button:disabled{opacity:.35}
+.ghost{border:1px solid var(--line);background:#fff;color:var(--ink);font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:0 14px;height:30px}
+.ghost:hover,.ghost[aria-expanded=true]{background:var(--ink);color:#fff;border-color:var(--ink)}
+.room-cursor{font-size:10px;color:var(--faint)}
+.room-hint{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);margin:0;background:#fff;border:1px solid var(--line);padding:7px 12px;font-size:11px;color:var(--ink);max-width:70%;flex:none;min-width:0}
+.room-hint:empty{display:none}
+.map-scale{bottom:14px;left:16px}
+.room-side{width:340px;flex:none;border-left:1px solid var(--line);background:#fff;padding:16px 18px;gap:18px;overflow:auto}
+.side-head{display:flex;align-items:center;justify-content:space-between}
+.side-block{display:flex;flex-direction:column;gap:8px}
+.side-row{display:flex;gap:6px}
+.switch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0;font-size:12px;color:var(--ink)}
+/* the active strip under the room */
+.active-bar{display:flex;align-items:center;gap:16px;border-top:1px solid var(--line);padding:0 24px;height:58px;flex:none;overflow:hidden}
+.active-strip{display:flex;gap:8px;overflow-x:auto;flex:1;min-width:0;scrollbar-width:none}
+.obj{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:#fff;padding:0 12px;height:34px;white-space:nowrap;font-size:11px;color:var(--ink);flex:none}
+.obj:hover{border-color:#bdbdbd}
+.obj.selected{border-color:var(--ink)}
+.obj .dot{border-color:var(--c,#999)}
+.obj.on .dot{background:var(--c,var(--ink));border-color:var(--c,var(--ink))}
+.obj.zone .dot{border-color:var(--red)}
+.obj.zone.hot,.obj.hot.zone{border-color:var(--red);color:var(--red)}
+.obj.zone.hot .dot{background:var(--red)}
+.obj .obj-state{color:var(--faint)}
+.obj.hot:not(.zone) .obj-state{color:var(--ink)}
+.map-note{font-size:10px;color:var(--faint);margin:0;white-space:nowrap}
+/* buttons inside the panels */
+.chip,.camera-card button,.room-tools .tool{border:1px solid var(--line);background:#fff;color:var(--ink);font-size:11px;padding:0 12px;min-height:30px}
+.chip:hover{background:var(--soft)}
+.chip.dark{background:var(--ink);border-color:var(--ink);color:#fff}
+.chip.danger{background:#fff;border-color:#ebc9c9;color:var(--red)}
+/* switches: square track, square knob */
+input.switch{appearance:none;-webkit-appearance:none;width:34px;height:18px;border:1px solid #cfcfcf;background:#fff;position:relative;cursor:pointer;flex:none;margin:0}
+input.switch::after{content:'';position:absolute;top:2px;left:2px;width:12px;height:12px;background:#cfcfcf;transition:left .15s}
+input.switch:checked{background:var(--ink);border-color:var(--ink)}
+input.switch:checked::after{left:18px;background:#fff}
+input.switch:disabled{opacity:.4;cursor:default}
+input.switch.arm:checked{background:var(--red);border-color:var(--red)}
+/* list and inspector */
+.room-row{padding:7px 4px;border-bottom:1px solid #f1f1f1}
+.room-row:hover,.room-row.selected{background:var(--soft)}
+.row-name{font-weight:400}
+.row-dot{border:1px solid #c8c8c8;background:transparent}
+.row-dot[data-state=on]{background:var(--ink);border-color:var(--ink)}
+.row-dot[data-state=zone]{border-color:var(--red);background:transparent}
+.inspector{border-bottom:1px solid var(--line)}
+.field input,.field select,.cal-row select,.cal-cm{border:1px solid var(--line);background:#fff}
+.facing-warn{border-color:#ebc9c9;background:#fff}
+.cal-log{background:var(--soft)}
+/* drones */
+.drone-grid,.dashboard .drone-grid{grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+.drone-card,.drone-black,.drone-red{background:#fff;border:1px solid var(--line);padding:16px;color:var(--ink)}
+.drone-black h3,.drone-black .drone-coordinates,.drone-black .drone-motion strong{color:var(--ink)}
+.drone-black .drone-availability,.drone-black .drone-position,.drone-black .drone-motion{color:var(--muted)}
+.drone-card h3{font-size:13px;letter-spacing:.12em;text-transform:uppercase;display:flex;align-items:center;gap:8px;font-weight:400;color:var(--ink)}
+.drone-card h3::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--black)}
+.drone-red h3::before{background:var(--red)}
+.drone-red h3{color:var(--ink)}
+.drone-availability{font-size:11px;color:var(--muted)}
+.drone-position{font-size:9px;letter-spacing:.12em;color:var(--faint);margin:14px 0 4px}
+.drone-coordinates{font-size:13px;font-weight:400;min-height:0}
+.drone-motion{border-top:1px solid var(--line);font-size:11px}
+.drone-motion strong{font-weight:400}
+.drone-video{background:#111 var(--dots)}
+/* phones */
+.camera-grid{grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.camera-card{background:#fff;border:1px solid var(--line);padding:16px;display:flex;flex-direction:column;gap:0}
+.camera-card.hot{border-color:var(--red)}
+.card-head{display:flex;align-items:center;gap:8px}
+.card-head h3{font-size:13px;letter-spacing:.12em;text-transform:uppercase;font-weight:400;margin:0}
+.camera-card.on .card-head .dot{background:var(--ink);border-color:var(--ink)}
+.camera-card.hot .card-head .dot{background:var(--red);border-color:var(--red)}
+.camera-state{margin-left:auto;font-size:11px;color:var(--muted)}
+.camera-video{margin:12px 0 4px;background:#111}
+.set-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #f1f1f1;font-size:12px;color:var(--ink)}
+.set-row small{display:block;font-size:10px;color:var(--faint);margin-top:3px;max-width:200px}
+.set-row input[type=range]{width:140px;accent-color:var(--ink)}
+.camera-card .seg button{min-height:26px;border:0;font-size:10px;padding:0 10px}
+.camera-card .seg button.active{background:var(--ink);color:#fff}
+.camera-link{margin-top:12px;gap:0}
+.camera-link input{border:1px solid var(--line);border-right:0;background:var(--soft);height:30px;font-size:10px;color:var(--muted)}
+.camera-link .copy{height:30px}
+.camera-result{font-size:11px;color:var(--muted);min-height:14px;margin-top:8px}
+/* the voice side: same corners rule */
+.suggestion{background:#fff;border:1px solid var(--line)}
+.suggestion p{font-weight:400}
+.zone-alert{background:var(--red);font-weight:400;letter-spacing:.04em}
+@media(max-width:1100px){
+  .topbar{gap:16px;padding:0 16px;height:56px}.topbar .tabs,.fleet{gap:16px}.fleet{padding-left:16px}
+  .pilot-line,.unit-state,#safetyStatus{display:none}.emergency-land{padding:0 12px}
+  .room-panel{overflow:hidden}
+  .room-panel .room-body{position:relative;flex:1;flex-direction:row;display:flex}
+  .room-panel .map-wrap{height:auto;min-height:0;flex:1}
+  .room-panel .room-side{position:absolute;right:0;top:0;bottom:0;z-index:5;width:min(340px,100%);overflow:auto;padding:16px 18px}
+}
+@media(max-width:900px){.room-panel .room-body{min-height:70svh}.topbar{flex-wrap:wrap;height:auto;padding:10px 16px}}
+.drone-card-head{flex-direction:column;align-items:flex-start;gap:6px}

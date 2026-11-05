@@ -11,9 +11,6 @@
 
 <p align="center">Grok Bot Hackathon · Pavia 2026 · Track D, proposed by Riello</p>
 
-<p align="center"><a href="demo/meteora-demo.mp4"><img src="demo/poster.jpg" alt="Watch the Meteora demo, 75 seconds" width="820"></a></p>
-<p align="center"><a href="demo/meteora-demo.mp4"><b>▶ Watch the demo (75 s)</b></a></p>
-
 **The problem.** A large site (around 55,000 m² in the brief) is watched by cameras, and every time a camera flags something, someone has to go and check, fast. Guards cannot check every alert, so real events and false alarms wait in the same queue.
 
 **Meteora's answer: look first, then alert.** A camera event reaches Grok, a drone flies there to check, YOLO and Grok describe the scene, and people stay in charge of what happens next.

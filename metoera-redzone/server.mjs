@@ -46,12 +46,14 @@ const debounceMs = Number(process.env.REDZONE_DEBOUNCE_MS ?? 8000);
 const files = {
   '/': 'index.html',
   '/app.js': 'app.js',
+  '/sensors.js': 'sensors.js',
   '/style.css': 'style.css',
   '/console': 'console.html',
   '/console.html': 'console.html',
   '/console.js': 'console.js',
   '/console.css': 'console.css',
 };
+const sensorsPath = join(dataDir, 'slot-sensors.json');
 const types = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -90,6 +92,11 @@ function emptySlot(id) {
     lastError: null,
     previewJpeg: null,
     previewAt: null,
+    /** Latest DeviceOrientation / compass / depth-proxy from the phone. */
+    sensors: null,
+    /** Person-in-room relative estimates (yaw offset + distance) for Room/plan hooks. */
+    personEstimates: null,
+    people: null,
     /** @type {Set<(at: number) => void>} */
     previewWaiters: new Set(),
     /** @type {object[]} */
@@ -97,13 +104,118 @@ function emptySlot(id) {
   };
 }
 
+function numOrNull(v, { min = -Infinity, max = Infinity } = {}) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  return Math.min(max, Math.max(min, v));
+}
+
+/** Sanitize phone sensor payload (compass / tilt / depth proxy). */
+function sanitizeSensors(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const headingSource = ['absolute-orientation', 'webkit-compass', 'deviceorientation'].includes(raw.headingSource)
+    ? raw.headingSource
+    : null;
+  const depthSource = ['webxr', 'focus'].includes(raw.depthSource) ? raw.depthSource : null;
+  const permission = ['unknown', 'granted', 'denied', 'prompt', 'unsupported'].includes(raw.permission)
+    ? raw.permission
+    : 'unknown';
+  return {
+    headingDeg: numOrNull(raw.headingDeg, { min: 0, max: 360 }),
+    headingSource,
+    alpha: numOrNull(raw.alpha, { min: -360, max: 360 }),
+    beta: numOrNull(raw.beta, { min: -180, max: 180 }),
+    gamma: numOrNull(raw.gamma, { min: -180, max: 180 }),
+    tiltDeg: numOrNull(raw.tiltDeg, { min: -30, max: 90 }),
+    rollDeg: numOrNull(raw.rollDeg, { min: -180, max: 180 }),
+    absolute: Boolean(raw.absolute),
+    depthM: numOrNull(raw.depthM, { min: 0.1, max: 30 }),
+    depthSource,
+    webxrSupported: typeof raw.webxrSupported === 'boolean' ? raw.webxrSupported : null,
+    permission,
+    at: typeof raw.at === 'number' && Number.isFinite(raw.at) ? raw.at : Date.now(),
+  };
+}
+
+function sanitizeEstimates(raw) {
+  if (!Array.isArray(raw)) return [];
+  const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : null);
+  return raw.slice(0, 12).flatMap((e) => {
+    if (!e || typeof e !== 'object') return [];
+    const box = e.box && typeof e.box === 'object'
+      ? { x: n(e.box.x), y: n(e.box.y), w: n(e.box.w), h: n(e.box.h), score: n(e.box.score) }
+      : null;
+    if (!box || box.x === null || box.y === null || box.w === null || box.h === null) return [];
+    const distanceSource = ['bbox', 'focus', 'webxr'].includes(e.distanceSource) ? e.distanceSource : null;
+    return [{
+      box,
+      yawOffsetDeg: numOrNull(e.yawOffsetDeg, { min: -90, max: 90 }),
+      distanceM: numOrNull(e.distanceM, { min: 0.2, max: 25 }),
+      distanceSource,
+      compassBearingDeg: numOrNull(e.compassBearingDeg, { min: 0, max: 360 }),
+      tiltDeg: numOrNull(e.tiltDeg, { min: -30, max: 90 }),
+      depthM: numOrNull(e.depthM, { min: 0.1, max: 30 }),
+      sensorsAt: typeof e.sensorsAt === 'number' && Number.isFinite(e.sensorsAt) ? e.sensorsAt : null,
+    }];
+  });
+}
+
+async function loadPersistedSensors() {
+  try {
+    const raw = JSON.parse(await readFile(sensorsPath, 'utf8'));
+    if (!raw || typeof raw !== 'object') return;
+    for (const id of SLOT_IDS) {
+      const s = sanitizeSensors(raw[id]);
+      if (s) slots[id].sensors = s;
+    }
+  } catch {
+    /* missing file is fine */
+  }
+}
+
+let persistSensorsTimer = 0;
+function queuePersistSensors() {
+  if (persistSensorsTimer) return;
+  const timer = setTimeout(() => {
+    persistSensorsTimer = 0;
+    void (async () => {
+      try {
+        await mkdir(dataDir, { recursive: true });
+        const payload = Object.fromEntries(SLOT_IDS.map((id) => [id, slots[id].sensors]));
+        await writeFile(sensorsPath, JSON.stringify(payload, null, 2));
+      } catch (error) {
+        console.warn('Could not persist slot sensors:', error instanceof Error ? error.message : error);
+      }
+    })();
+  }, 800);
+  timer.unref?.();
+  persistSensorsTimer = timer;
+}
+
+/** @type {Record<string, number>} */
+const lastSensorLog = Object.fromEntries(SLOT_IDS.map((id) => [id, 0]));
+function maybeLogSensors(slot) {
+  const s = slot.sensors;
+  if (!s?.at) return;
+  const now = Date.now();
+  if (now - (lastSensorLog[slot.id] || 0) < 8000) return;
+  lastSensorLog[slot.id] = now;
+  const heading = s.headingDeg != null ? `${s.headingDeg.toFixed(0)}°` : '—';
+  const tilt = s.tiltDeg != null ? `${s.tiltDeg.toFixed(0)}°` : '—';
+  const depth = s.depthM != null ? `${s.depthM.toFixed(1)}m` : 'none';
+  console.log(
+    `[sensors P${slot.id}] compass ${heading} (${s.headingSource || 'n/a'}) · tilt↓ ${tilt} · depth ${depth}`,
+  );
+}
+
 /** @type {Record<string, ReturnType<typeof emptySlot>>} */
 const slots = Object.fromEntries(SLOT_IDS.map((id) => [id, emptySlot(id)]));
+void loadPersistedSensors();
 
 /** @type {Set<import('node:http').ServerResponse>} */
 const sseClients = new Set();
 
 function slotPublic(slot, { includePreviewMeta = true } = {}) {
+  const sensorsFresh = slot.sensors && Date.now() - (slot.sensors.at || 0) < 10_000;
   return {
     id: slot.id,
     name: slot.name,
@@ -124,6 +236,13 @@ function slotPublic(slot, { includePreviewMeta = true } = {}) {
     joined: Boolean(slot.token),
     // Boxes older than 2 s are dropped: nobody there any more, or the phone stopped.
     people: slot.people && Date.now() - slot.people.at < 2000 ? slot.people.boxes : [],
+    // Persisted last-known sensors stay visible; live flag marks a fresh heartbeat.
+    sensors: slot.sensors,
+    sensorsLive: Boolean(sensorsFresh),
+    personEstimates:
+      slot.personEstimates && Date.now() - slot.personEstimates.at < 2000
+        ? slot.personEstimates.items
+        : [],
   };
 }
 
@@ -617,8 +736,10 @@ async function handle(req, res, remote) {
           return;
         }
         const waiters = slot.previewWaiters;
+        const keptSensors = slot.sensors; // persist orientation across reconnects
         Object.assign(slot, emptySlot(slotId));
         slot.previewWaiters = waiters;
+        slot.sensors = keptSensors;
         broadcast();
         json(res, 200, { ok: true });
       } catch {
@@ -636,14 +757,23 @@ async function handle(req, res, remote) {
           return;
         }
         const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : null);
+        const now = Date.now();
         slot.people = {
-          at: Date.now(),
+          at: now,
           boxes: (Array.isArray(body.boxes) ? body.boxes : []).slice(0, 12)
             .map((b) => ({ x: n(b?.x), y: n(b?.y), w: n(b?.w), h: n(b?.h), score: n(b?.score) }))
             .filter((b) => b.x !== null && b.y !== null && b.w !== null && b.h !== null),
         };
-        slot.lastSeenAt = Date.now();
-        json(res, 200, { ok: true });
+        const estimates = sanitizeEstimates(body.estimates);
+        slot.personEstimates = { at: now, items: estimates };
+        const sensors = sanitizeSensors(body.sensors);
+        if (sensors) {
+          slot.sensors = sensors;
+          queuePersistSensors();
+          maybeLogSensors(slot);
+        }
+        slot.lastSeenAt = now;
+        json(res, 200, { ok: true, estimates: estimates.length });
       } catch {
         json(res, 400, { ok: false, error: 'Invalid people' });
       }
@@ -675,6 +805,12 @@ async function handle(req, res, remote) {
         if (body.roi && typeof body.roi === 'object') slot.roi = body.roi;
         if (typeof body.personScore === 'number' || body.personScore === null) slot.personScore = body.personScore;
         if (typeof body.error === 'string') slot.lastError = body.error.slice(0, 200);
+        const sensors = sanitizeSensors(body.sensors);
+        if (sensors) {
+          slot.sensors = sensors;
+          queuePersistSensors();
+          maybeLogSensors(slot);
+        }
         const commands = slot.pendingCommands.splice(0, slot.pendingCommands.length);
         // Heartbeats are frequent — don't SSE-broadcast every one (avoids Mac UI thrash).
         json(res, 200, { ok: true, commands, slot: slotPublic(slot) });

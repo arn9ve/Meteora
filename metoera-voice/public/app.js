@@ -824,7 +824,7 @@ function flightData(id){
 }
 function surfaceText(d){ const s=d?.startSurface; if(!s) return ''; const what=s.heightCm>0?`on a ${(s.heightCm/100).toFixed(2)} m surface`:'on the floor'; return d.flight==='flying'?`took off ${what} (${s.source==='sensor'?'confirmed by the infrared sensor':s.source==='plan'?'from the plan, not yet checked':'assumed'})`:`${what} (${s.source==='plan'?'plan':'assumed'})`; }
 function droneDetail(id){ const d=droneById(id); const placed=Boolean(R().drones[id]); if(!placed) return 'not on the plan'; if(!d?.connected) return 'on the plan · not connected'; return `${d.flight==='flying'?`flying · ${Number.isFinite(d.heightAboveFloorCm)?`${(d.heightAboveFloorCm/100).toFixed(2)} m above the floor`:''}`:'on the ground'}${Number.isFinite(d.battery)?` · ${d.battery}%`:''}`; }
-function phoneDetail(slot){ const s=slotOf(slot); const placed=typeof R().cameras[slot]?.x==='number'; const st=!s?.online?'offline':`${s.watching?'watching':'not watching'} · ${s.lens||'normal'} · ${s.peopleCount||0} people`; return placed?st:`not on the plan · ${st}`; }
+function phoneDetail(slot){ const s=slotOf(slot); const placed=typeof R().cameras[slot]?.x==='number'; const sens=s?.sensors; const sensBit=sens?.headingDeg!=null?` · compass ${Math.round(sens.headingDeg)}°`:sens?.tiltDeg!=null?` · tilt ${Math.round(sens.tiltDeg)}°`:''; const st=!s?.online?'offline':`${s.watching?'watching':'not watching'} · ${s.lens||'normal'} · ${s.peopleCount||0} people${sensBit}`; return placed?st:`not on the plan · ${st}`; }
 function renderList(){
   const list=$('#roomList'); const r=R();
   const ds=['tello','rmtt'].filter(id=>drones.some(d=>d.id===id)||r.drones[id]);
@@ -948,8 +948,10 @@ function phoneInspector(box,slot){
   if(!c||typeof c.x!=='number'){ box.append(para('Not on the plan: place it where it stands and turn it the way it looks, so the people it sees appear on the plan.'),btn('Place on the plan',()=>startMode({kind:'place',what:'phone',id:slot,label:`phone ${slot}`}),'dark')); }
   else {
     const set=k=>v=>{ if(Number.isFinite(v)){ c[k]=v; void savePhone(slot); } };
+    const live=s?.sensors; const liveLine=live&&s.sensorsLive?`Live phone sensors: compass ${live.headingDeg!=null?`${Math.round(live.headingDeg)}°`:'—'} · tilt↓ ${live.tiltDeg!=null?`${Math.round(live.tiltDeg)}°`:'—'} · depth ${live.depthM!=null?`~${Number(live.depthM).toFixed(1)} m`:'none (Safari ≠ LiDAR)'}. Live tilt overrides the field below when fresh.`:'Enable sensors on the phone page for live compass/tilt. Magnetic compass is for display; plan “Looks at” still drives mapping (plan +x ≠ north).';
     box.append(field('From left wall',c.x,set('x'),{cm:'x'}),field('From bottom wall',c.y,set('y'),{cm:'y'}),field('Looks at',c.heading,set('heading'),{step:5,suffix:'°'}),
       field('Height',c.z,set('z'),{cm:'size'}),field('Tilt down',c.tilt,set('tilt'),{step:1,suffix:'°'}),
+      para(liveLine),
       para('Height = from the floor to the phone. Tilt down = 0° looking level, 90° looking straight at the floor. With both set, people are placed where the line from the phone through their feet meets the floor.'),
       para(c.calibrated?'Calibrated: people are placed exactly where their feet touch the floor.':'People are placed from where they are in the picture and how tall they look (about ±1 m at 5 m). For exact spots, calibrate below.'),
       btn('Remove from the plan',()=>void removeFromPlan('phone',slot),'danger'));

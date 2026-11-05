@@ -66,6 +66,14 @@
         </label>
         <p id="dwellStatus" class="dwell-status">Dwell 0% · need ~1s in zone</p>
 
+        <section class="sensors" aria-label="Compass and orientation">
+          <div class="row sensors-row">
+            <button type="button" id="btnSensors" class="btn">Enable sensors</button>
+            <span id="sensorBadge" class="badge idle">Sensors off</span>
+          </div>
+          <p id="sensorStatus" class="sensor-status">Compass + tilt for Room mapping. These Pros have LiDAR in hardware, but Safari cannot read it like ARKit — depth stays a proxy when available.</p>
+        </section>
+
         <label class="arm">
           <input type="checkbox" id="armToggle" />
           <span>

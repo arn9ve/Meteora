@@ -120,3 +120,17 @@ test('route on the real room with the 6 tables is found quickly', async () => {
   assert.ok(route && route.length >= 1, 'no route');
   assert.ok(Date.now() - t0 < 1500, `slow: ${Date.now() - t0} ms`);
 });
+
+test('a zone as a place: found by name in English or Italian, and a point inside it away from pillars', async () => {
+  const { findZone, zoneTarget, inside } = await import('../src/room.ts');
+  const zone = { id: 'z1', name: 'Zone 1', points: [[1.5, 0], [4, 0], [4, 2], [1.5, 2]] };
+  assert.equal(findZone([zone], 'zona 1'), zone);
+  assert.equal(findZone([zone], 'the zone 1'), zone);
+  assert.equal(findZone([zone], 'zone 2'), null);
+  const plan = { walls: [], bounds: { min: [-5, -5], max: [10, 10] }, pillars: [{ id: 'pillar-3', x: 2.44, y: 0.937, w: 1.2, d: 0.7 }] };
+  const t = zoneTarget(zone, plan, []);
+  assert.ok(inside(t, zone.points), JSON.stringify(t));
+  // At least 50 cm from the pillar in the middle of the zone.
+  const u = Math.max(Math.abs(t[0] - 2.44) - 0.6, 0), v = Math.max(Math.abs(t[1] - 0.937) - 0.35, 0);
+  assert.ok(Math.hypot(u, v) >= 0.49, JSON.stringify(t));
+});

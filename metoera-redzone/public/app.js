@@ -664,7 +664,7 @@ btnTest.addEventListener('click', () => void postIntrusion({ score: 1, note: 'ma
 
 armToggle.addEventListener('change', async () => {
   const armed = armToggle.checked;
-  if (armed && !window.confirm('ARM takeoff for this phone slot? Human next to drone?')) {
+  if (false && armed) { // ARM is on by default now: no question
     armToggle.checked = false;
     return;
   }

@@ -308,7 +308,7 @@ const buildTools=()=>[
   droneTool('memory','What this drone remembers: position in the room, the last actions, saved places and things it saw with their position'),
   droneTool('face','Turn this drone to face a point of the room map (x,y from memory)',{x:{type:'integer'},y:{type:'integer'}},['x','y']),
   droneTool('mark','Save the current position under a name (ricorda questo punto come …)',{name:{type:'string'}},['name']),
-  droneTool('go_to','Fly to a table or object of the room plan by its name (table 1 … table 6; with centre true it goes over the middle of the table: al centro del tavolo, sopra il tavolo), or to a remembered place: home (where it took off), last_landing, previous, a name saved with mark, or room coordinates x,y in cm from memory. The server plans a way around tables, pillars and walls and stops next to a table, not above it; a table with a mission pad is the exception: the drone goes over it and centres exactly on the pad. Drone must be flying',{place:{type:'string'},x:{type:'integer'},y:{type:'integer'},centre:{type:'boolean',description:'Over the middle of the table instead of next to it'}},[]),
+  droneTool('go_to','Fly into a red zone by its name (vai nella zona 1: place "Zone 1"; it ends inside the zone and checks it with a photo), or to a table or object of the room plan by its name (table 1 … table 6; with centre true it goes over the middle of the table: al centro del tavolo, sopra il tavolo), or to a remembered place: home (where it took off), last_landing, previous, a name saved with mark, or room coordinates x,y in cm from memory. The server plans a way around tables, pillars and walls and stops next to a table, not above it; a table with a mission pad is the exception: the drone goes over it and centres exactly on the pad. Drone must be flying',{place:{type:'string'},x:{type:'integer'},y:{type:'integer'},centre:{type:'boolean',description:'Over the middle of the table instead of next to it'}},[]),
   droneTool('preflight','Check before flying to a place, nothing moves (controlla prima, funzionerà?, sei pronto?): says whether it should work, what could go wrong and how long it takes. Say the verdict, the main risk and the time in two short sentences',{place:{type:'string',description:'Where it would go, e.g. centre of table 3'}},['place']),
   droneTool('calibrate','Calibration test (fai la calibrazione, testa la precisione): the drone must be on the ground on its take-off spot; it takes off, flies right, left, right, forward, back, forward, comes back to the start with its telemetry and lands, then reports the error of each move. Takes about a minute',{sizeCm:{type:'integer',minimum:20,maximum:80,description:'Size of the moves, default 50'},photo:{type:'boolean',description:'Also check the position with a photo'}},[]),
   droneTool('localize','Check where the drone really is: one photo, Grok vision recognises the pillars and tables of the room plan in it, and the position is corrected (dove sei esattamente, controlla la posizione, ricalibra la posizione). Must be flying; it is also done by itself at the end of a go_to when the position is in doubt'),
@@ -524,7 +524,8 @@ $('#mapButton').addEventListener('click', () => showPanel('mapDialog'));
 // (only one page may) and sends the nearest drone to that person.
 let redzone=null, eventsPrimed=false, autoSend=false;
 const seenEvents=new Set();
-try { autoSend=localStorage.getItem('metoera_autosend')==='1'; } catch {}
+// On unless this browser turned it off.
+autoSend=true; try { autoSend=localStorage.getItem('metoera_autosend')!=='0'; } catch {}
 $('#autoSend').checked=autoSend;
 $('#autoSend').addEventListener('change',()=>{ autoSend=$('#autoSend').checked; try{localStorage.setItem('metoera_autosend',autoSend?'1':'0')}catch{} });
 let alertTimer=0;
@@ -539,7 +540,8 @@ function zoneNote(){
 function handleRedzone(rz){
   redzone=rz;
   if(!rz) return;
-  if(!eventsPrimed){ for(const e of rz.events||[]) seenEvents.add(e.id); eventsPrimed=true; }
+  // On page load, old alarms are not replayed; one from the last 10 s is still handled.
+  if(!eventsPrimed){ for(const e of rz.events||[]) if(Date.now()-e.at>10000) seenEvents.add(e.id); eventsPrimed=true; }
   for(const e of rz.events||[]){ if(seenEvents.has(e.id)) continue; seenEvents.add(e.id); void onIntrusion(e); }
   void handlePadNav(rz.padNav ?? null);
   if(camerasDialog.open) updateCameras();
@@ -638,20 +640,40 @@ function handlePadNav(pad){
     lastPadReportId=state.reportId;
     // Report already spoken when this page ran describe; skip duplicate if we own it.
   }
-  if(state.phase==='triggered' && !padMissionBusy) void claimAndFlyPadMission(state);
+  // The old pad-to-pad mission is no longer started from here: a person in a red zone sends the
+  // nearest drone into the zone with the full mission (onIntrusion -> runZoneMission).
+  void state;
 }
 async function onIntrusion(e){
-  // The pad mission flies Black on its own path: no second mission on top of it.
-  const sending=autoSend&&!padMissionBusy&&!['triggered','outbound','awaiting_command'].includes(redzone?.padNav?.state?.phase);
+  // A person in a red zone, seen by a phone with ARM on: the nearest drone takes off (if needed)
+  // and flies INTO the zone with the full mission: look around, reason, route, enter, check.
+  const armed=redzone?.slots?.find(s=>s.id===e.slot)?.armed!==false;
+  const sending=autoSend&&armed&&!autoDispatching;
   showZoneAlert(`Person in ${e.name}${sending?' · sending the nearest drone':''}`);
   log(e.name,`Person at ${e.x.toFixed(1)}, ${e.y.toFixed(1)} m`);
-  notifyGrok(`${e.name}: a person entered, standing at (${e.x.toFixed(2)}, ${e.y.toFixed(2)}) m on the room plan, which is (${Math.round(e.x*100)}, ${Math.round(e.y*100)}) cm in drone coordinates. ${sending?'The nearest drone is being sent automatically; say so in a few words.':'Tell the person in one short sentence and offer to send a drone (dispatch with those cm coordinates).'}`);
+  notifyGrok(`${e.name}: a person entered. ${sending?'The nearest drone takes off by itself and flies into the zone; say so in a few words.':`Tell the person in one short sentence and offer to send a drone (go_to place "${e.name}").`}`);
   if(!sending) return;
   try {
     const r=await fetch('/api/redzone/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:e.id})});
     const j=await r.json();
-    if(j.ok){ autoDispatching=true; try{ await runDispatch({x:Math.round(j.x*100),y:Math.round(j.y*100),label:'person'},generation); } finally { autoDispatching=false; } }
+    if(j.ok){ autoDispatching=true; try{ await runZoneMission(e,generation); } finally { autoDispatching=false; } }
   } catch {}
+}
+async function runZoneMission(e,run){
+  const goal=e.target||{x:e.x,y:e.y};
+  let pick;
+  try { pick=await (await fetch('/api/nearest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({x:Math.round(goal.x*100),y:Math.round(goal.y*100),stopCm:0})})).json(); } catch { pick={ok:false,error:'Server unreachable'}; }
+  if(run!==generation) return;
+  if(!pick.ok){ notifyGrok(`${e.name}: no drone can go: ${pick.error}`); return; }
+  const id=pick.drone, name=nameOf(id);
+  log(`${name} · ${e.name}`,'sent into the zone');
+  longTask[id]='go_to';
+  try {
+    if(!pick.flying){ const up=await runOnDrone(id,'takeoff',{}); if(!up.ok){ notifyGrok(`${e.name}: ${name} could not take off: ${up.error}`); return; } }
+    const r=await runOnDrone(id,'go_to',{place:e.name});
+    void refreshDrone();
+    notifyGrok(r.insideZone?`${name} is inside ${e.name}${r.checkedWithPhoto?', confirmed with a photo':''}. Say it in a few words.`:`${name} did not get inside ${e.name}: ${r.error||'unknown'}${r.where?` (it is ${r.where})`:''}. Say it in one short sentence.`);
+  } finally { if(longTask[id]==='go_to') delete longTask[id]; }
 }
 async function cameraCommand(slot,command){
   try { const r=await fetch('/api/cameras/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slot,command})}); return await r.json(); }
@@ -661,13 +683,13 @@ function cameraCard(slot){
   const card=document.createElement('article');
   card.className='camera-card';
   card.dataset.slot=slot.id;
-  card.innerHTML=`<div class="drone-card-head"><h3>Phone ${slot.id}</h3><span class="camera-state"></span></div><div class="camera-video"><img alt=""><span>No picture yet</span></div><div class="camera-controls"><button class="watch"></button><div class="lens"><button data-lens="wide">Wide</button><button data-lens="normal">Normal</button><button data-lens="tele">Tele</button></div></div><label class="camera-sens">Sensitivity <input type="range" min="0" max="100" step="5" class="sens"></label><label class="camera-arm"><input type="checkbox" class="arm"> ARM: phone may take off a drone by itself (keep off)</label><div class="camera-link"><input readonly aria-label="Link for phone ${slot.id}"><button class="copy">Copy</button></div><p class="camera-result" role="status"></p>`;
+  card.innerHTML=`<div class="drone-card-head"><h3>Phone ${slot.id}</h3><span class="camera-state"></span></div><div class="camera-video"><img alt=""><span>No picture yet</span></div><div class="camera-controls"><button class="watch"></button><div class="lens"><button data-lens="wide">Wide</button><button data-lens="normal">Normal</button><button data-lens="tele">Tele</button></div></div><label class="camera-sens">Sensitivity <input type="range" min="0" max="100" step="5" class="sens"></label><label class="camera-arm"><input type="checkbox" class="arm"> ARM: a person this phone sees in a red zone makes the nearest drone take off and fly into the zone</label><div class="camera-link"><input readonly aria-label="Link for phone ${slot.id}"><button class="copy">Copy</button></div><p class="camera-result" role="status"></p>`;
   const out=card.querySelector('.camera-result');
   const run=async(command,done)=>{ const j=await cameraCommand(slot.id,command); out.textContent=j.ok===false?(j.error||'Failed'):done; };
   card.querySelector('.watch').addEventListener('click',()=>{ const s=redzone?.slots?.find(x=>x.id===slot.id); void run({type:'watch',watching:!s?.watching},s?.watching?'Stopped watching':'Watching'); });
   for(const b of card.querySelectorAll('.lens button')) b.addEventListener('click',()=>void run({type:'lens',lens:b.dataset.lens},`Lens: ${b.textContent}`));
   card.querySelector('.sens').addEventListener('change',e=>void run({type:'sensitivity',sensitivity:Number(e.target.value)},`Sensitivity ${e.target.value}`));
-  card.querySelector('.arm').addEventListener('change',e=>{ if(e.target.checked&&!confirm('With ARM on the phone itself can make a drone take off. Only with someone next to the drone. Turn ARM on?')){ e.target.checked=false; return; } void run({type:'arm',armed:e.target.checked},e.target.checked?'ARM on':'ARM off'); });
+  card.querySelector('.arm').addEventListener('change',e=>{ void run({type:'arm',armed:e.target.checked},e.target.checked?'ARM on':'ARM off'); });
   card.querySelector('.copy').addEventListener('click',async()=>{ const v=card.querySelector('.camera-link input').value; try{ await navigator.clipboard.writeText(v); out.textContent='Link copied'; }catch{ card.querySelector('.camera-link input').select(); out.textContent='Select and copy the link'; } });
   return card;
 }

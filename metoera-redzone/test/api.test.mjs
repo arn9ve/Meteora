@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 const serviceRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-async function withServer(fn) {
+async function withServer(fn, extraEnv = {}) {
   const port = 19000 + Math.floor(Math.random() * 1000);
   const child = spawn(process.execPath, ['server.mjs'], {
     cwd: serviceRoot,
@@ -17,6 +17,10 @@ async function withServer(fn) {
       REDZONE_PHONE_PORT: String(port + 1),
       PHONE_ACCESS: 'off',
       REDZONE_DEBOUNCE_MS: '5000',
+      // These tests check the old behaviour: phones start disarmed, the pad mission is on.
+      REDZONE_ARM_DEFAULT: '0',
+      PAD_NAV: '1',
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -113,4 +117,16 @@ test('console page is served', async () => {
     const text = await res.text();
     assert.match(text, /Mac console/i);
   });
+});
+
+test('defaults now: every phone armed, and an armed intrusion leaves the flight to the voice server', async () => {
+  await withServer(async (port) => {
+    const base = `http://127.0.0.1:${port}`;
+    const health = await (await fetch(`${base}/api/health`)).json();
+    const slots = health.slots ?? (await (await fetch(`${base}/api/slots`)).json()).slots;
+    assert.ok(slots.every((s) => s.armed === true), JSON.stringify(slots.map((s) => s.armed)));
+    const join = await (await fetch(`${base}/api/slots/1/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Test' }) })).json();
+    const r = await (await fetch(`${base}/api/slots/1/intrusion`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: join.token, score: 0.9, force: true }) })).json();
+    assert.equal(r.event.takeoff.reason, 'voice-server');
+  }, { REDZONE_ARM_DEFAULT: '1', PAD_NAV: '0' });
 });

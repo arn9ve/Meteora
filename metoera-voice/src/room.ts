@@ -350,3 +350,31 @@ export function describePlace(objects: RoomObject[], pillars: { id: string; x: n
   if (b && b.edge < 2.5) return `between ${a.name} and ${b.name} (${(a.edge).toFixed(1)} m from ${a.name})`;
   return `${a.edge.toFixed(1)} m from ${a.name}, the nearest thing`;
 }
+
+/** A zone named in words: "zone 1", "zona 1", its id. */
+export function findZone(zones: Zone[], place: string): Zone | null {
+  const norm = (t: string) => t.trim().toLowerCase().replace(/^(la |the )/, '').replace(/^zona\b/, 'zone').replace(/\s+/g, ' ');
+  const p = norm(place);
+  return zones.find((z) => norm(z.name) === p || z.id.toLowerCase() === p) ?? null;
+}
+
+/**
+ * Where to go to be inside a zone: a point inside it, at least 50 cm from walls, pillars and the
+ * zone's own edge when possible, as near its middle as that allows (m). Null for a zone with no room.
+ */
+export function zoneTarget(zone: Zone, plan: RoutePlan | null, objects: RoomObject[]): Point | null {
+  const pts = zone.points;
+  const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length, cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  let best: { p: Point; score: number } | null = null;
+  for (let x = Math.min(...xs); x <= Math.max(...xs); x += 0.1) for (let y = Math.min(...ys); y <= Math.max(...ys); y += 0.1) {
+    const p: Point = [x, y];
+    if (!inside(p, pts)) continue;
+    const edge = Math.min(...pts.map((a, i) => segDist(p, a, pts[(i + 1) % pts.length])));
+    const clear = clearanceAt(plan, objects.filter((o) => o.kind !== 'table'), p); // over tables is fine at flying height
+    // Room around it matters up to 50 cm; then being near the middle wins.
+    const score = Math.min(edge, 0.5) * 2 + Math.min(clear, 0.5) * 2 - Math.hypot(x - cx, y - cy) * 0.3;
+    if (!best || score > best.score) best = { p, score };
+  }
+  return best ? [Math.round(best.p[0] * 100) / 100, Math.round(best.p[1] * 100) / 100] : null;
+}

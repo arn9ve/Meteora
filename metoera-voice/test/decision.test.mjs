@@ -146,3 +146,25 @@ test('photos that keep failing are not asked for again; a landed drone ends the 
   const r2 = await missionGoTo('tello', landed.d, { x: 900, y: 300, name: 'x' }, { plan, objects: [], people: () => [], decide: null, hoverMs: 1 });
   assert.match(r2.error, /landed/);
 });
+
+test('into a zone: ends inside it, checked; short of it, one correction', async () => {
+  const zone = [[3.5, 2], [5.5, 2], [5.5, 4], [3.5, 4]];
+  // A drone that flies 20% short: the first arrival is outside the zone, the correction gets in.
+  const { d, sent, pose } = fakeDrone({ startX: 100, startY: 300 });
+  d.execute = async (c) => { sent.push(c); if (c.action === 'go_to') { pose.x += (c.x - pose.x) * 0.8; pose.y += (c.y - pose.y) * 0.8; } return c.action === 'localize' ? { ok: false, error: 'not two landmarks' } : { ok: true }; };
+  const said = [];
+  const r = await missionGoTo('tello', d, { x: 450, y: 300, name: 'Zone 1', zone }, { plan, objects: [], people: () => [], decide: null, hoverMs: 1, onPlan: (t) => said.push(t), where: () => 'next to table 3' });
+  assert.equal(r.insideZone, true, JSON.stringify(r));
+  assert.ok(sent.some((c) => c.action === 'localize'));
+  assert.match(said.at(-1), /I am inside Zone 1 \(by my position; the photo did not confirm it\)/);
+});
+
+test('a person inside the target zone does not stop the drone going there; one on the way for long stops it', async () => {
+  const zone = [[3.5, 2], [5.5, 2], [5.5, 4], [3.5, 4]];
+  const a = fakeDrone({ startX: 100, startY: 300 });
+  const r = await missionGoTo('tello', a.d, { x: 450, y: 300, name: 'Zone 1', zone }, { plan, objects: [], people: () => [{ x: 4.5, y: 3 }], decide: null, hoverMs: 1 });
+  assert.equal(r.insideZone, true, JSON.stringify(r));
+  const b = fakeDrone({ startX: 100, startY: 300 });
+  const r2 = await missionGoTo('tello', b.d, { x: 800, y: 300, name: 'x' }, { plan, objects: [], people: () => [{ x: 2.5, y: 3 }], decide: null, hoverMs: 1 });
+  assert.match(r2.error, /person has been in the way/);
+});

@@ -73,7 +73,7 @@ test('mission state: trigger → claim → awaiting_command with report', () => 
   assert.ok(state.reportId);
 });
 
-async function withServer(fn) {
+async function withServer(fn, extraEnv = {}) {
   const port = 19000 + Math.floor(Math.random() * 1000);
   const child = spawn(process.execPath, ['server.mjs'], {
     cwd: serviceRoot,
@@ -83,6 +83,10 @@ async function withServer(fn) {
       REDZONE_PHONE_PORT: String(port + 1),
       PHONE_ACCESS: 'off',
       REDZONE_DEBOUNCE_MS: '5000',
+      // These tests check the old behaviour: phones start disarmed, the pad mission is on.
+      REDZONE_ARM_DEFAULT: '0',
+      PAD_NAV: '1',
+      ...extraEnv,
       // Point at a closed port so takeoff fails fast without hanging the test.
       METOERA_VOICE_URL: 'http://127.0.0.1:9',
     },

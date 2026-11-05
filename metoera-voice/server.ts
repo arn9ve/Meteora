@@ -9,7 +9,7 @@ import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { RealTello, type Detections, type DepthView } from './src/tello.ts';
-import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, planRoute, padsOf, describePlace, type Point, type RoomConfig } from './src/room.ts';
+import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, planRoute, padsOf, describePlace, findZone, zoneTarget, type Point, type RoomConfig } from './src/room.ts';
 import { missionGoTo, blockingAt } from './src/mission.ts';
 import { runCalibration, summary as calibrationSummary, type CalibrationReport } from './src/calibration.ts';
 import { landmarksOf, expectedInView, bearingOfX, solvePose, localizePrompt, parseSeen, solveSurvey, surveyPrompt, parseSurvey, CAMERA_FOV_DEG } from './src/landmarks.ts';
@@ -206,9 +206,10 @@ async function decidedGoTo(id: string, drone: RealTello, body: Record<string, un
   const map = drone.map() as {places: Record<string, {x: number; y: number}>};
   const name = typeof routed.place === 'string' ? routed.place.trim().toLowerCase() : null;
   const to = name ? map.places[name] : typeof routed.x === 'number' && typeof routed.y === 'number' ? {x:routed.x, y:routed.y} : null;
-  const {face, label: placeLabel, centre: _centre, ...plainRouted} = routed as Record<string, unknown>;
+  const {face, label: placeLabel, centre: _centre, zone: zoneId, ...plainRouted} = routed as Record<string, unknown>;
+  const zonePoints = typeof zoneId === 'string' ? room.zones.find((z) => z.id === zoneId)?.points : undefined;
   if (!to || !plan) return drone.execute(plainRouted);
-  const result = await missionGoTo(id, drone, {x:to.x, y:to.y, name:typeof placeLabel === 'string' ? placeLabel : typeof body.place === 'string' ? body.place : `(${to.x}, ${to.y})`, ...(typeof routed.pad === 'number' ? {pad:routed.pad} : {}), ...(typeof routed.minHeightCm === 'number' ? {minHeightCm:routed.minHeightCm} : {}), ...(face ? {face:face as {x: number; y: number}} : {})}, {
+  const result = await missionGoTo(id, drone, {x:to.x, y:to.y, name:typeof placeLabel === 'string' ? placeLabel : typeof body.place === 'string' ? body.place : `(${to.x}, ${to.y})`, ...(typeof routed.pad === 'number' ? {pad:routed.pad} : {}), ...(typeof routed.minHeightCm === 'number' ? {minHeightCm:routed.minHeightCm} : {}), ...(face ? {face:face as {x: number; y: number}} : {}), ...(zonePoints ? {zone:zonePoints} : {})}, {
     plan, objects:room.objects, people:() => redzone.people, decide:process.env.XAI_API_KEY ? askDecision : null,
     where:(x, y) => describePlace(room.objects, plan.pillars ?? [], x, y),
     log:(event) => flightLog(id, event),
@@ -471,7 +472,7 @@ const redzoneUrl = (process.env.REDZONE_URL ?? 'http://127.0.0.1:18791').replace
 const redzonePhonePort = Number(process.env.REDZONE_PHONE_PORT ?? 18792);
 type RedzoneSlot = {id: string; name?: string; online: boolean; watching: boolean; armed: boolean; personScore?: number | null; lastIntrusionAt: number | null; hasPreview: boolean; joined: boolean; lens?: string; people?: {x: number; y: number; w: number; h: number; score: number | null}[]};
 type Person = {slot: string; x: number; y: number; score: number | null; approx?: boolean};
-type ZoneEvent = {id: string; zone: string; name: string; at: number; x: number; y: number; claimedBy: string | null};
+type ZoneEvent = {id: string; zone: string; name: string; at: number; x: number; y: number; claimedBy: string | null; slot?: string; target?: {x: number; y: number} | null};
 const redzone = {available:false, slots:[] as RedzoneSlot[], people:[] as Person[], events:[] as ZoneEvent[]};
 const zoneState = new Map<string, {occupied: boolean; lastEventAt: number}>();
 const ZONE_REPEAT_MS = 30_000;
@@ -506,7 +507,8 @@ async function pollRedzone() {
     const state = zoneState.get(zone.id) ?? {occupied:false, lastEventAt:0};
     if (who && !state.occupied && Date.now() - state.lastEventAt > ZONE_REPEAT_MS) {
       state.lastEventAt = Date.now();
-      redzone.events.push({id:`${zone.id}-${state.lastEventAt}`, zone:zone.id, name:zone.name, at:state.lastEventAt, x:who.x, y:who.y, claimedBy:null});
+      const goal = zoneTarget(zone, plan, room.objects);
+      redzone.events.push({id:`${zone.id}-${state.lastEventAt}`, zone:zone.id, name:zone.name, at:state.lastEventAt, x:who.x, y:who.y, claimedBy:null, slot:who.slot, target:goal ? {x:goal[0], y:goal[1]} : null});
       if (redzone.events.length > 20) redzone.events.shift();
       console.log(`${new Date().toLocaleTimeString()} ${zone.name}: person at (${who.x.toFixed(2)}, ${who.y.toFixed(2)}) m, seen by phone ${who.slot}${who.approx ? ' (estimate, phone not calibrated)' : ''}`);
     }
@@ -564,7 +566,14 @@ function routeGoTo(drone: RealTello, body: Record<string, unknown>): Record<stri
   if (plan && placed && !placed.facingConfirmed) return {error:`${DRONE_NAMES[String(body.droneId)] ?? 'The drone'} does not know which way it faces in the room: set the direction of its camera on the plan (Room, select the drone, turn the arrow) and confirm it. Short moves like "forward 1 metre" still work.`};
   let command: Record<string, unknown> = body;
   const map = drone.map() as {pose: {x: number; y: number}; places: Record<string, {x: number; y: number}>};
-  if (typeof body.place === 'string' && !drone.hasPlace(body.place)) {
+  // A red zone: a point inside it, away from pillars and walls; the mission checks it got inside.
+  const zone = typeof body.place === 'string' ? findZone(room.zones, body.place) : null;
+  if (zone) {
+    const t = zoneTarget(zone, plan, room.objects);
+    if (!t) return {error:`${zone.name} has no room inside to fly into`};
+    const {place: _place, centre: _centre, ...rest} = body;
+    command = {...rest, x:Math.round(t[0] * 100), y:Math.round(t[1] * 100), label:zone.name, zone:zone.id};
+  } else if (typeof body.place === 'string' && !drone.hasPlace(body.place)) {
     // "centre of table 3", "sopra il tavolo 3", or centre: true: over the middle of the table, not next to it.
     const centreWords = /\b(centre|center|centro|middle|sopra|above|over)\b(\s+(of|del|della|il|la))*\s*/gi;
     const wantsCentre = body.centre === true || centreWords.test(body.place);
@@ -995,7 +1004,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
               else {
                 const command = action === 'go_to' ? routeGoTo(drone, body) : body;
                 if ('error' in command) timed(res, 200, {ok:false, mode:'real', error:command.error});
-                else { const {face: _face, label: _label, centre: _centre, ...plain} = command as Record<string, unknown>; timed(res, 200, await drone.execute(plain)); }
+                else { const {face: _face, label: _label, centre: _centre, zone: _zone, ...plain} = command as Record<string, unknown>; timed(res, 200, await drone.execute(plain)); }
               }
             }
           } finally {

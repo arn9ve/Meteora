@@ -2,7 +2,7 @@
 // ask the model (1.5 s at most, otherwise the rules choose), check the choice, do it, repeat.
 // The route legs come from the room plan (planRoute), never from the model.
 import { checkChoice, decisionPrompt, parseChoice, ruleChoice, type Choice, type DecisionState } from './decision.ts';
-import { clearanceAt, planRoute, surfaceHeightAt, type Point, type RoomObject } from './room.ts';
+import { clearanceAt, inside, planRoute, surfaceHeightAt, type Point, type RoomObject } from './room.ts';
 
 type Plan = Parameters<typeof planRoute>[0] & { height_m?: number };
 type Result = { ok: boolean; error?: string; [k: string]: unknown };
@@ -43,12 +43,12 @@ function segPointDist(p: Point, a: Point, b: Point): number {
 }
 
 /** Flies `droneId` to `target` (room cm). Ends when there, landed, stopped from outside, or out of steps. */
-export async function missionGoTo(droneId: string, drone: MissionDrone, target: { x: number; y: number; name: string; pad?: number; minHeightCm?: number; face?: { x: number; y: number } }, deps: MissionDeps): Promise<Result> {
+export async function missionGoTo(droneId: string, drone: MissionDrone, target: { x: number; y: number; name: string; pad?: number; minHeightCm?: number; face?: { x: number; y: number }; zone?: Point[] }, deps: MissionDeps): Promise<Result> {
   const maxSteps = deps.maxSteps ?? 30, timeoutMs = deps.timeoutMs ?? 1500;
   if (!drone.live().flying) return { ok: false, error: 'Take off first' };
   const generation = drone.generation;
   const lastSteps: DecisionState['lastSteps'] = [];
-  let safe: Point | null = null, checked = false, stuck = 0, photoFails = 0;
+  let safe: Point | null = null, checked = false, stuck = 0, photoFails = 0, waits = 0;
   const choices: string[] = [];
   // Look first: the first flight to somewhere after a take-off starts with a survey (up, four photos,
   // Grok vision, position and heading), unless the drone has none. Then think: the plan from there.
@@ -78,7 +78,10 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
     const next: Point | null = route && route.length ? (route.find((q) => Math.hypot(q[0] - at[0], q[1] - at[1]) >= 0.3) ?? route[route.length - 1]) : null;
     // A leg goes to that point, at most 150 cm (under 20 cm the drone would not move at all).
     const legEnd: Point | null = next ? (() => { const d = Math.hypot(next[0] - at[0], next[1] - at[1]); if (d < 0.2) return null; const k = Math.min(1, (LEG_CM / 100) / d); return [at[0] + (next[0] - at[0]) * k, at[1] + (next[1] - at[1]) * k] as Point; })() : null;
-    const nearPerson = legEnd ? deps.people().reduce<number | null>((best, p) => { const d = segPointDist([p.x, p.y], at, legEnd); return best === null || d < best ? d : best; }, null) : null;
+    // People at the destination are why it goes (a person in the red zone): only people on the
+    // way, not in the target zone and not within 1.5 m of the target point, make it wait.
+    const onTheWay = deps.people().filter((p) => !(target.zone && inside([p.x, p.y], target.zone)) && Math.hypot(p.x - target.x / 100, p.y - target.y / 100) > 1.5);
+    const nearPerson = legEnd ? onTheWay.reduce<number | null>((best, p) => { const d = segPointDist([p.x, p.y], at, legEnd); return best === null || d < best ? d : best; }, null) : null;
     const snap = drone.snapshot();
     const state: DecisionState = {
       goal: target.name, remainingCm, nextLegCm: legEnd ? Math.round(Math.hypot(legEnd[0] - at[0], legEnd[1] - at[1]) * 100) : 0,
@@ -122,6 +125,18 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
     let r: Result;
     switch (c.action) {
       case 'done': {
+        // Into a zone: inside it by the position? If not, one short correction; then a photo to confirm.
+        if (target.zone) {
+          const isIn = () => { const p = drone.live().pose; return inside([p.x / 100, p.y / 100], target.zone!); };
+          if (!isIn() && drone.live().flying) await drone.execute({ droneId, action: 'go_to', x: target.x, y: target.y, check: false });
+          const photo = drone.live().flying ? await drone.execute({ droneId, action: 'localize' }) : { ok: false, error: 'landed' };
+          if (photo.ok && !isIn() && drone.live().flying) await drone.execute({ droneId, action: 'go_to', x: target.x, y: target.y, check: false });
+          const inZone = isIn();
+          const where = deps.where ? deps.where(drone.live().pose.x, drone.live().pose.y) : '';
+          deps.onPlan?.(inZone ? `I am inside ${target.name}${photo.ok ? ', checked with a photo' : ' (by my position; the photo did not confirm it)'}: ${where}.` : `I could not get inside ${target.name}: I am ${where}.`);
+          deps.log?.({ event: 'zone-arrival', zone: target.name, inside: inZone, photo: photo.ok, photoError: photo.ok ? undefined : photo.error });
+          return { ok: inZone, action: 'go_to', reached: inZone, insideZone: inZone, checkedWithPhoto: photo.ok, ...(inZone ? {} : { error: `not inside ${target.name}` }), steps: step, choices, plan };
+        }
         // Arrived: face what we came to (a table), so the camera looks at it.
         if (target.face) { const turn = turnTo(live.pose, target.face); if (Math.abs(turn) >= 20) await drone.execute({ droneId, action: 'rotate', direction: turn > 0 ? 'counterclockwise' : 'clockwise', degrees: Math.min(180, Math.abs(turn)) }); }
         return { ok: true, action: 'go_to', reached: true, remainingCm, steps: step, choices, checkedWithPhoto: checked, plan };
@@ -149,6 +164,9 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
       if (r.ok && moved < 10) { stuck += 1; r = { ok: false, error: 'did not move' }; } else stuck = 0;
       if (stuck >= 3) return { ok: false, error: 'Stopped and hovering: three steps without getting closer. Tell me where it is, or ask it to look around', steps: step, choices };
     }
+    // Waiting a long time for a person to move: say so and stop, hovering, instead of waiting on.
+    waits = c.action === 'hover' ? waits + 1 : 0;
+    if (waits >= 10) return { ok: false, error: 'Stopped and hovering: a person has been in the way for 10 seconds', steps: step, choices };
     lastSteps.push({ action: c.action, ok: r.ok, ...(r.ok ? {} : { note: String(r.error ?? '').slice(0, 60) }) });
     // A point with room around it, reached without trouble, is where "back" goes.
     if (r.ok && c.action !== 'hover') { const p = drone.live().pose; const q: Point = [p.x / 100, p.y / 100]; if (clearanceAt(deps.plan, deps.objects, q) > 0.5) safe = q; }

@@ -31,6 +31,10 @@ const dataDir = join(root, 'data');
 const eventsPath = join(dataDir, 'events.jsonl');
 const phoneDir = join(root, '.phone');
 const STALE_MS = 8_000;
+// ARM default for every phone slot (REDZONE_ARM_DEFAULT=0 to start disarmed).
+const ARM_DEFAULT = process.env.REDZONE_ARM_DEFAULT !== '0';
+// The old pad-to-pad mission (cam1 -> Black pad-01 -> pad-02) only with PAD_NAV=1.
+const PAD_NAV = process.env.PAD_NAV === '1';
 const PREVIEW_MAX = 120_000;
 
 try {
@@ -78,7 +82,8 @@ function emptySlot(id) {
     online: false,
     lastSeenAt: null,
     watching: false,
-    armed: false,
+    // ARM on by default (asked): a person in a red zone makes the voice server send a drone.
+    armed: ARM_DEFAULT,
     lens: 'normal',
     lensesAvailable: { wide: false, normal: true, tele: false },
     /** 0 = least sensitive (high confidence), 100 = most sensitive. Default 35 → ~0.65 score. */
@@ -339,8 +344,11 @@ async function handleIntrusion(slot, body) {
     event.takeoff = {
       attempted: false,
       reason: 'disarmed',
-      note: 'ARM is OFF (default). Enable from Mac console or phone only with a human next to the drone.',
+      note: 'ARM is OFF for this phone: no drone is sent.',
     };
+  } else if (!PAD_NAV) {
+    // The voice server sees the person on the room plan and flies the nearest drone into the zone.
+    event.takeoff = { attempted: false, reason: 'voice-server', note: 'The voice server sends the nearest drone into the red zone.' };
   } else {
     event.takeoff = await tryTakeoff(eventId, slot.id);
   }
@@ -591,7 +599,7 @@ async function handle(req, res, remote) {
         slot.lastSeenAt = Date.now();
         slot.online = true;
         slot.watching = false;
-        slot.armed = false;
+        slot.armed = ARM_DEFAULT;
         slot.lastError = null;
         slot.pendingCommands = [];
         await appendEvent({
@@ -806,7 +814,7 @@ async function handle(req, res, remote) {
 }
 
 for (const id of SLOT_IDS) {
-  slots[id].armed = false;
+  slots[id].armed = ARM_DEFAULT;
 }
 
 const phone = await phoneSetup().catch((error) => {

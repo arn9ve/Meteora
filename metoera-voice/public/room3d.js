@@ -121,7 +121,7 @@ export function mount(container) {
     }
     for (const d of map?.drones || []) {
       if (!d.placed && drones.find((q) => q.id === d.id)?.flight !== 'flying') continue;
-      const colour = d.id === 'rmtt' ? 0xd32f2f : 0x111111, z = Math.max(0.05, (d.pose.z || 0) / 100);
+      const colour = d.id === 'rmtt' ? 0xd32f2f : 0x111111, z = Math.max(0.05, (d.pose.zFloor ?? d.pose.z ?? 0) / 100);
       const m = box(0.1, 0.04, 0.1, colour); m.position.copy(v3(d.pose.x / 100, d.pose.y / 100, z)); m.rotation.y = d.pose.heading * Math.PI / 180; live.add(m);
       const ring = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.012, 8, 32), new THREE.MeshBasicMaterial({color:colour}));
       ring.rotation.x = Math.PI / 2; ring.position.copy(m.position); live.add(ring);

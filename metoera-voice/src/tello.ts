@@ -19,6 +19,12 @@ export type TelloSnapshot = {
   battery: number | null;
   heightCm: number | null;
   heading: number | null;
+  /** Downward infrared (ToF) distance to whatever is right below, cm. Reads about 10 on any surface. */
+  tofCm: number | null;
+  /** What the drone took off from: a table (its height) or the floor (0), and how that is known. */
+  startSurface: { heightCm: number; source: 'plan' | 'sensor' | 'assumed' };
+  /** Height above the room floor = start surface + telemetry height. */
+  heightAboveFloorCm: number | null;
   lastError: string | null;
   /** Short memory line: position, last actions, recent sightings. */
   memory: string;
@@ -58,6 +64,11 @@ export type TelloOptions = {
    * Checked before every packet, so a drone another laptop owns never hears from this one.
    */
   mayTalk?: () => string | null;
+  /**
+   * What is on the floor at a room point (cm): 0 = open floor, N = the top of an object N cm high
+   * (a table), null = near an edge, not sure. From the room plan.
+   */
+  surfaceAt?: (x: number, y: number) => number | null;
 };
 
 export type Detection = { label: string; confidence: number; center: { x: number; y: number }; box?: Box };
@@ -148,6 +159,13 @@ export class RealTello {
   #heightCm: number | null = null;
   #heading: number | null = null;
   #lastStateAt = 0;
+  #tof: number | null = null;
+  // Start surface: the plan gives a first guess at takeoff; the ToF confirms or corrects it once
+  // the drone is over a spot whose height the plan knows (ToF + that height - telemetry h).
+  #base: { heightCm: number; source: 'plan' | 'sensor' | 'assumed' } = { heightCm: 0, source: 'assumed' };
+  #baseSamples: number[] = [];
+  #takeoffAt: { x: number; y: number } | null = null;
+  readonly #surfaceAt: ((x: number, y: number) => number | null) | null;
   // Mission pads (Tello EDU / RoboMaster TT read them with the downward sensor after `mon`).
   #padsOn = false;
   #pad = -1;
@@ -171,6 +189,7 @@ export class RealTello {
     this.#frame = options.frame ?? null;
     this.#askVision = options.askVision ?? null;
     this.#world = new World(options.start);
+    this.#surfaceAt = options.surfaceAt ?? null;
     this.#depth = options.depth ?? null;
     this.#settleMs = options.settleMs ?? 400;
     this.#mayTalk = options.mayTalk ?? (() => null);
@@ -193,7 +212,9 @@ export class RealTello {
 
   /** What the top-down map draws for this drone. */
   map() {
-    return this.#world.map();
+    const m = this.#world.map();
+    const base = this.#currentBase();
+    return { ...m, pose: { ...m.pose, zFloor: (this.#flight === 'flying' ? m.pose.z : 0) + base.heightCm }, startSurface: { ...base }, tofCm: this.#tof };
   }
 
   snapshot(): TelloSnapshot {
@@ -208,6 +229,9 @@ export class RealTello {
       battery: this.#battery,
       heightCm: this.#heightCm,
       heading: this.#heading,
+      tofCm: this.#tof,
+      startSurface: { ...this.#currentBase() },
+      heightAboveFloorCm: this.#heightCm === null ? null : this.#heightCm + this.#currentBase().heightCm,
       lastError: this.#lastError,
       memory: this.#world.summary(),
       timestamp: new Date().toISOString(),
@@ -360,6 +384,7 @@ export class RealTello {
       const battery = Number(level);
       this.#battery = battery;
       if (battery < this.#minTakeoffBattery) return this.#fail(`Battery ${battery}% is below ${this.#minTakeoffBattery}%`);
+      this.#guessBase();
       return this.#motion('takeoff', 'takeoff', 20000, () => { this.#flight = 'flying'; });
     }
 
@@ -679,8 +704,9 @@ export class RealTello {
       else return this.#fail('go_to needs a place or x and y');
       if (value.minHeightCm !== undefined) {
         if (typeof value.minHeightCm !== 'number' || !Number.isInteger(value.minHeightCm) || value.minHeightCm < 20 || value.minHeightCm > 250) return this.#fail('minHeightCm must be an integer from 20 to 250');
-        if (this.#world.pose.z < value.minHeightCm) {
-          const climb = await this.#motion('go_to', `up ${Math.max(20, value.minHeightCm - this.#world.pose.z)}`, 20000);
+        const aboveFloor = this.#world.pose.z + this.#base.heightCm;
+        if (aboveFloor < value.minHeightCm) {
+          const climb = await this.#motion('go_to', `up ${Math.max(20, value.minHeightCm - aboveFloor)}`, 20000);
           if (!climb.ok) return climb;
         }
         if (target.z !== undefined && target.z !== 0) target.z = Math.max(target.z, value.minHeightCm);
@@ -939,6 +965,47 @@ export class RealTello {
     if (this.#pending.accept(text) || /^error\b/i.test(text)) this.#pending.resolve(text);
   }
 
+  /** At takeoff: on a table of the plan, or on the floor. The sensor may correct it later. */
+  #guessBase(): void {
+    this.#baseSamples = [];
+    const p = this.#world.pose;
+    this.#takeoffAt = { x: p.x, y: p.y };
+    this.#base = this.#planBase();
+  }
+
+  #planBase(): { heightCm: number; source: 'plan' | 'assumed' } {
+    const p = this.#world.pose;
+    const under = this.#surfaceAt?.(p.x, p.y);
+    return typeof under === 'number' ? { heightCm: under, source: 'plan' } : { heightCm: 0, source: 'assumed' };
+  }
+
+  /** On the ground: what it stands on, from the plan (the ToF reads ~10 cm on any surface). */
+  #currentBase(): { heightCm: number; source: 'plan' | 'sensor' | 'assumed' } {
+    return this.#flight === 'flying' ? this.#base : this.#planBase();
+  }
+
+  /**
+   * In flight, over a spot whose height the plan knows: start surface = ToF + that height - h
+   * (h counts from the take-off surface, ToF from whatever is below now).
+   * About 1.5 s of steady readings (spread under 15 cm) are needed before it changes anything.
+   */
+  #learnBase(): void {
+    // Only while hovering (the position is up to date after a move, stale during one) and away from
+    // the take-off spot: over the surface it took off from, ToF and h always agree and say nothing.
+    const h = this.#heightCm, tof = this.#tof, p = this.#world.pose, from = this.#takeoffAt;
+    const under = this.#surfaceAt?.(p.x, p.y);
+    const away = !from || Math.hypot(p.x - from.x, p.y - from.y) > 40;
+    if (this.#flight !== 'flying' || this.#busy || !away || h === null || h < 30 || tof === null || typeof under !== 'number') { this.#baseSamples = []; return; }
+    this.#baseSamples.push(tof + under - h);
+    if (this.#baseSamples.length > 15) this.#baseSamples.shift();
+    if (this.#baseSamples.length < 15) return;
+    const sorted = [...this.#baseSamples].sort((a, b) => a - b);
+    if (sorted[sorted.length - 1] - sorted[0] > 15) return;
+    const base = Math.max(0, Math.min(300, Math.round(sorted[7])));
+    // A few cm either way is sensor noise: keep the plan's value then, just mark it confirmed.
+    this.#base = { heightCm: Math.abs(base - this.#base.heightCm) <= 12 ? this.#base.heightCm : base, source: 'sensor' };
+  }
+
   #onState({ text }: Datagram): void {
     const read = (key: string) => {
       const match = new RegExp(`(?:^|;)${key}:(-?\\d+)(?:;|$)`).exec(text);
@@ -959,6 +1026,9 @@ export class RealTello {
     }
     this.#heading = read('yaw');
     this.#world.applyTelemetry(this.#heightCm, this.#heading);
+    const tof = read('tof');
+    this.#tof = tof !== null && tof >= 10 && tof < 800 ? tof : null;
+    this.#learnBase();
     const mid = read('mid');
     if (mid !== null && mid > 0) { this.#pad = mid; this.#padAt = Date.now(); this.#padsSeen?.add(mid); }
     this.#lastStateAt = Date.now();

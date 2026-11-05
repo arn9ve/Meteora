@@ -204,3 +204,19 @@ export function floorFromMount(cam: { x: number; y: number; heading: number; z: 
   const p: Point = [cam.x + ray[0] * s, cam.y + ray[1] * s];
   return Math.hypot(p[0] - cam.x, p[1] - cam.y) > 25 ? null : p;
 }
+
+/**
+ * What is on the floor at a room point (m), in cm: the height of the object it is on (tables
+ * without a height count as 75 cm), 0 on open floor, null within `marginM` of an object's edge
+ * (dead reckoning is not that precise, so do not guess there).
+ */
+export function surfaceHeightAt(objects: RoomObject[], x: number, y: number, marginM = 0.25): number | null {
+  let edge = false;
+  for (const o of objects) {
+    const a = o.rotation * Math.PI / 180, dx = x - o.x, dy = y - o.y;
+    const u = Math.abs(dx * Math.cos(a) + dy * Math.sin(a)), v = Math.abs(-dx * Math.sin(a) + dy * Math.cos(a));
+    if (u <= o.w / 2 - marginM && v <= o.d / 2 - marginM) return Math.round((o.heightM ?? (o.kind === 'table' ? 0.75 : 0)) * 100) || null;
+    if (u <= o.w / 2 + marginM && v <= o.d / 2 + marginM) edge = true;
+  }
+  return edge ? null : 0;
+}

@@ -338,7 +338,7 @@ function availability(d) {
   if (o?.state === 'mine') return `${d.connected ? 'Connected' : (d.linkError || 'Connecting…')} · ${d.pilot ? (d.pilot.me ? 'you fly it' : `flown by ${d.pilot.name}`) : 'free'}${o.conflict ? ` · also claimed by ${o.conflict}` : ''}`;
   return o?.reason && o.reason !== CHECKING ? o.reason : 'Checking other laptops…';
 }
-const coordinates = d => d?.connected ? `Battery ${d.battery ?? '–'}% · Height ${d.heightCm ?? '–'} cm` : 'Unavailable';
+const coordinates = d => d?.connected ? `Battery ${d.battery ?? '–'}% · Height ${d.heightCm ?? '–'} cm${Number.isFinite(d.heightAboveFloorCm) && d.startSurface?.heightCm ? ` (${d.heightAboveFloorCm} cm above the floor)` : ''}${d.startSurface ? ` · ${surfaceText(d)}` : ''}` : 'Unavailable';
 const motion = d => d ? `${d.flight === 'flying' ? 'Flying' : 'On the ground'}${Number.isFinite(d.heading) ? ` · ${d.heading}°` : ''}${d.lastError && !elsewhere(d) ? ` · ${d.lastError}` : ''}` : 'Set its IP in .env.tello';
 let clientsText = '';
 // The cards are rebuilt (video started or dropped) only when a drone changes laptop.
@@ -786,7 +786,8 @@ function row(kind,id,name,detail,placed){
   return b;
 }
 function group(title,rows){ const g=document.createElement('div'); g.className='room-group'; const h=document.createElement('p'); h.className='caption'; h.textContent=title; g.append(h,...rows); return g; }
-function droneDetail(id){ const d=droneById(id); const placed=Boolean(R().drones[id]); if(!placed) return 'not on the plan'; if(!d?.connected) return 'on the plan · not connected'; return `${d.flight==='flying'?'flying':'on the ground'}${Number.isFinite(d.battery)?` · ${d.battery}%`:''}`; }
+function surfaceText(d){ const s=d?.startSurface; if(!s) return ''; const what=s.heightCm>0?`on a ${(s.heightCm/100).toFixed(2)} m surface`:'on the floor'; return d.flight==='flying'?`took off ${what} (${s.source==='sensor'?'confirmed by the infrared sensor':s.source==='plan'?'from the plan, not yet checked':'assumed'})`:`${what} (${s.source==='plan'?'plan':'assumed'})`; }
+function droneDetail(id){ const d=droneById(id); const placed=Boolean(R().drones[id]); if(!placed) return 'not on the plan'; if(!d?.connected) return 'on the plan · not connected'; return `${d.flight==='flying'?`flying · ${Number.isFinite(d.heightAboveFloorCm)?`${(d.heightAboveFloorCm/100).toFixed(2)} m above the floor`:''}`:'on the ground'}${Number.isFinite(d.battery)?` · ${d.battery}%`:''}`; }
 function phoneDetail(slot){ const s=slotOf(slot); const placed=typeof R().cameras[slot]?.x==='number'; const st=!s?.online?'offline':`${s.watching?'watching':'not watching'} · ${s.lens||'normal'} · ${s.peopleCount||0} people`; return placed?st:`not on the plan · ${st}`; }
 function renderList(){
   const list=$('#roomList'); const r=R();
@@ -900,7 +901,7 @@ function phoneInspector(box,slot){
 }
 function updateInspectorLive(){
   const box=$('#inspector');
-  if(sel?.kind==='drone'){ const el=box.querySelector('.live-drone'); if(el) el.textContent=droneDetail(sel.id); }
+  if(sel?.kind==='drone'){ const el=box.querySelector('.live-drone'); const d=droneById(sel.id); if(el) el.textContent=[droneDetail(sel.id),surfaceText(d),d?.connected&&Number.isFinite(d.tofCm)?`infrared below: ${d.tofCm} cm`:''].filter(Boolean).join(' · '); }
   if(sel?.kind==='phone'){
     const s=slotOf(sel.id); const v=box.querySelector('.phone-live'); if(!v) return;
     const img=v.querySelector('img');

@@ -1,17 +1,17 @@
-# Metoera architecture
+# Meteora architecture
 
-This page explains how the parts of Metoera talk to each other, what happens step by step when a person walks into a red zone, which coordinate frames the code uses, and which safety layers protect a flight.
+This page explains how the parts of Meteora talk to each other, what happens step by step when a person walks into a red zone, which coordinate frames the code uses, and which safety layers protect a flight.
 
-The facts here come from `metoera-voice/server.ts`, `metoera-voice/src/mission.ts`, `metoera-voice/src/tello.ts`, `metoera-redzone/server.mjs` and `metoera-vision/metoera_vision/server.py`.
+The facts here come from `meteora-voice/server.ts`, `meteora-voice/src/mission.ts`, `meteora-voice/src/tello.ts`, `meteora-redzone/server.mjs` and `meteora-vision/meteora_vision/server.py`.
 
 ## The parts
 
 | Part | Runs on | Job |
 | --- | --- | --- |
-| `metoera-voice` | the laptop (Node.js) | The brain. Talks to both drones over UDP, holds the room plan, plans routes, runs missions, serves the control page, gets the Grok token, and calls Grok for vision and decisions. |
-| `metoera-vision` | the laptop (Python) | Receives the drones' video, runs YOLO and the depth model, and answers HTTP questions about the newest frame of each drone. |
-| `metoera-redzone` | the laptop (Node.js) | Collects what the detector phones see (person boxes, preview pictures) and passes commands to them. |
-| Detector phones | phone browsers | Run COCO-SSD person detection on the phone's camera and post the person boxes to `metoera-redzone`. |
+| `meteora-voice` | the laptop (Node.js) | The brain. Talks to both drones over UDP, holds the room plan, plans routes, runs missions, serves the control page, gets the Grok token, and calls Grok for vision and decisions. |
+| `meteora-vision` | the laptop (Python) | Receives the drones' video, runs YOLO and the depth model, and answers HTTP questions about the newest frame of each drone. |
+| `meteora-redzone` | the laptop (Node.js) | Collects what the detector phones see (person boxes, preview pictures) and passes commands to them. |
+| Detector phones | phone browsers | Run COCO-SSD person detection on the phone's camera and post the person boxes to `meteora-redzone`. |
 | Control page | a browser on the laptop or the pilot's phone | Voice session with Grok realtime, the 3D/2D room, the drone and phone panels. It also starts the zone mission when an alarm comes in. |
 | Drones | Tello EDU (Black, id `tello`) and RoboMaster TT (Red, id `rmtt`) | Speak the Tello text SDK on the shared Wi-Fi. |
 | xAI | the internet | Grok realtime voice, Grok vision, and Grok decisions. |
@@ -20,18 +20,18 @@ The facts here come from `metoera-voice/server.ts`, `metoera-voice/src/mission.t
 
 | From | To | Port | What |
 | --- | --- | --- | --- |
-| `metoera-voice` | each drone | UDP 8889 | SDK commands (`command`, `sn?`, `takeoff`, `forward 50`, …). The server binds local port 8889 too, because the Tello always replies to port 8889. |
-| each drone | `metoera-voice` | UDP 8890 | telemetry (height, yaw, speed, battery, mission pad), about 10 times a second |
-| each drone | `metoera-vision` | UDP 11111 | raw H.264 video, after `metoera-voice` sends `streamon` |
-| `metoera-voice` | `metoera-vision` | HTTP 18790 | `GET /detections`, `/frame.jpg`, `/depth`, `/stream`, each with `?drone=tello` or `?drone=rmtt` |
-| browser on the laptop | `metoera-voice` | HTTP 18787 | control page and API, bound to `127.0.0.1` |
-| pilot's phone | `metoera-voice` | HTTPS 18788 | the same page and API, with the access key |
-| any phone | `metoera-voice` | HTTP 18786 | certificate page only (no drones, no key) |
-| `metoera-voice` | other laptops | UDP 18789 | claims: which laptop holds which drone (broadcast, or `METOERA_PEERS`) |
-| detector phones | `metoera-redzone` | HTTPS 18792 | join, heartbeat, person boxes, preview pictures, commands |
-| `metoera-voice` and the Mac console | `metoera-redzone` | HTTP 18791 | `GET /api/slots` every second, phone previews, phone commands |
-| browser | xAI | WSS | Grok realtime voice, with a 5-minute token from `metoera-voice` `POST /session` |
-| `metoera-voice` | xAI | HTTPS | Grok vision (photos) and Grok decisions (text), with `XAI_API_KEY` |
+| `meteora-voice` | each drone | UDP 8889 | SDK commands (`command`, `sn?`, `takeoff`, `forward 50`, …). The server binds local port 8889 too, because the Tello always replies to port 8889. |
+| each drone | `meteora-voice` | UDP 8890 | telemetry (height, yaw, speed, battery, mission pad), about 10 times a second |
+| each drone | `meteora-vision` | UDP 11111 | raw H.264 video, after `meteora-voice` sends `streamon` |
+| `meteora-voice` | `meteora-vision` | HTTP 18790 | `GET /detections`, `/frame.jpg`, `/depth`, `/stream`, each with `?drone=tello` or `?drone=rmtt` |
+| browser on the laptop | `meteora-voice` | HTTP 18787 | control page and API, bound to `127.0.0.1` |
+| pilot's phone | `meteora-voice` | HTTPS 18788 | the same page and API, with the access key |
+| any phone | `meteora-voice` | HTTP 18786 | certificate page only (no drones, no key) |
+| `meteora-voice` | other laptops | UDP 18789 | claims: which laptop holds which drone (broadcast, or `METEORA_PEERS`) |
+| detector phones | `meteora-redzone` | HTTPS 18792 | join, heartbeat, person boxes, preview pictures, commands |
+| `meteora-voice` and the Mac console | `meteora-redzone` | HTTP 18791 | `GET /api/slots` every second, phone previews, phone commands |
+| browser | xAI | WSS | Grok realtime voice, with a 5-minute token from `meteora-voice` `POST /session` |
+| `meteora-voice` | xAI | HTTPS | Grok vision (photos) and Grok decisions (text), with `XAI_API_KEY` |
 
 ```mermaid
 flowchart LR
@@ -40,9 +40,9 @@ flowchart LR
     R["Red<br/>RoboMaster TT"]
   end
   subgraph Laptop
-    V["metoera-voice<br/>:18787 page, :18788 phone, :18786 cert"]
-    VI["metoera-vision<br/>:18790"]
-    RZ["metoera-redzone<br/>:18791 console, :18792 phones"]
+    V["meteora-voice<br/>:18787 page, :18788 phone, :18786 cert"]
+    VI["meteora-vision<br/>:18790"]
+    RZ["meteora-redzone<br/>:18791 console, :18792 phones"]
   end
   P["Detector phones<br/>COCO-SSD"]
   UI["Control page<br/>browser"]
@@ -64,7 +64,7 @@ flowchart LR
   V <-- "UDP 18789 claims" --> L
 ```
 
-### metoera-voice API (main routes)
+### meteora-voice API (main routes)
 
 - `GET /api/drones`: both drones, their pilot, owner, battery and flight state, the other laptops, and the phone slots.
 - `GET /api/live`: server-sent events, 10 times a second, with each drone's pose, its last decision and its plan.
@@ -79,7 +79,7 @@ flowchart LR
 
 Every `POST` must come from the page's own origin.
 
-### metoera-vision API
+### meteora-vision API
 
 All per-drone routes need `?drone=<id>`.
 
@@ -88,20 +88,20 @@ All per-drone routes need `?drone=<id>`.
 - `GET /find?label=person`: the best match for one COCO label.
 - `GET /frame.jpg`: the newest frame with boxes drawn.
 - `GET /stream`: MJPEG stream.
-- `GET /depth`: metric depth from Depth Anything V2 Metric Indoor (`metoera_vision/depth.py`). The answer has a depth per detected object and a row of `columns`, each with a bearing in degrees and a depth in metres. It answers 503 when depth is off (`--no-depth`) or no frame has arrived yet.
+- `GET /depth`: metric depth from Depth Anything V2 Metric Indoor (`meteora_vision/depth.py`). The answer has a depth per detected object and a row of `columns`, each with a bearing in degrees and a depth in metres. It answers 503 when depth is off (`--no-depth`) or no frame has arrived yet.
 
-### metoera-redzone API (main routes)
+### meteora-redzone API (main routes)
 
 - `POST /api/slots/:id/join | heartbeat | people | preview | intrusion | command`: used by the phones.
-- `GET /api/slots`: every phone, with online, watching, armed, lens, and the latest person boxes. `metoera-voice` reads this every second.
+- `GET /api/slots`: every phone, with online, watching, armed, lens, and the latest person boxes. `meteora-voice` reads this every second.
 - `GET /api/slots/:id/preview.jpg`, `preview.mjpeg`: the phone's picture, for the console and the Room panel.
 - `GET /api/stream`: server-sent events for the console.
 - `GET /api/pad-nav`, `POST /api/pad-nav/claim | phase | command`: the old pad-to-pad mission. It is off unless `PAD_NAV=1`.
 
 ## The zone mission, step by step
 
-1. **A phone sees a person.** The phone runs COCO-SSD on its camera and posts the person boxes (normalised to 0–1), at most twice a second, to `metoera-redzone` (`POST /api/slots/N/people`).
-2. **metoera-voice reads the phones** every second (`GET /api/slots`). If a calibrated phone is placed on the plan, the feet of each person are projected onto the floor. Otherwise the position is estimated from where the phone stands and faces.
+1. **A phone sees a person.** The phone runs COCO-SSD on its camera and posts the person boxes (normalised to 0–1), at most twice a second, to `meteora-redzone` (`POST /api/slots/N/people`).
+2. **meteora-voice reads the phones** every second (`GET /api/slots`). If a calibrated phone is placed on the plan, the feet of each person are projected onto the floor. Otherwise the position is estimated from where the phone stands and faces.
 3. **A zone is triggered.** Each phone watches one zone: the zone set for it, or the only zone, or the zone nearest to the phone. A zone is triggered when a phone that watches it sees a person, or when a person on the plan stands inside it. The alarm fires once on entry and not again for 30 s. The server stores it as an event, with a target point inside the zone. That point is at least 50 cm from the zone's edges, as far as possible (up to 1 m) from walls and pillars, and close to the middle.
 4. **A page claims it.** Every open control page polls `/api/drones` every 1.5 s and sees the new event. If auto-send is on (the default), the page calls `POST /api/redzone/claim`. Only the first page wins. The page also starts the Grok voice session if it is not running, and Grok says "I saw a person in Zone 1. I am going to check."
 5. **The nearest drone is picked** (`POST /api/nearest`). It must be held by this laptop, be connected, not be flown by someone else, and have at least 25% battery. A drone on the ground counts 100 cm extra for the takeoff.
@@ -119,11 +119,11 @@ All per-drone routes need `?drone=<id>`.
 ```mermaid
 sequenceDiagram
   participant Phone as Detector phone
-  participant RZ as metoera-redzone
-  participant V as metoera-voice
+  participant RZ as meteora-redzone
+  participant V as meteora-voice
   participant Page as Control page
   participant D as Nearest drone
-  participant VI as metoera-vision
+  participant VI as meteora-vision
   participant G as Grok (xAI)
 
   Phone->>RZ: POST /api/slots/N/people (person boxes)

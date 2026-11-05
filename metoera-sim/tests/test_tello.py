@@ -194,3 +194,91 @@ def test_no_pad_on_the_ground(room, clock):
     tello.receive("command")
     tello.receive("mon")
     assert telemetry(tello, "mid") == -1  # too close to see it
+
+
+# ---- what metoera-voice's approach branch uses: go, go with a pad, ground speed
+
+
+def test_go_flies_a_straight_line(tello, clock):
+    airborne(tello, clock)
+    assert tello.receive("go 10 10 10 50") == ["error"]  # every axis under 20 cm
+    assert tello.receive("go 100 0 0 5") == ["error"]  # speed 10-100
+    assert tello.receive("go 600 0 0 50") == ["error"]  # 500 at most
+    assert fly(tello, clock, "go 100 50 0 50", 112 / 50 + SETTLE_S + 0.1) == ["ok"]  # x forward, y left
+    assert (tello.pose.x, tello.pose.y, tello.pose.z) == pytest.approx((1.0, 0.5, HOVER_Z))
+
+
+def test_go_is_checked_like_a_move(room, tello, clock):
+    airborne(tello, clock)
+    hover = tello.pose
+    for sdk, (f, l, u), direction in (("go 200 0 0 50", (2.0, 0, 0), "forward"), ("go 0 0 -100 50", (0, 0, -1.0), "down")):
+        move, go = room.check_move(hover, direction, abs(f + l + u)), room.check_go(hover, f, l, u)
+        assert move and go and go.free_cm == move.free_cm  # the same rule along an axis
+    assert room.check_go(hover, 0.0, 0.5, 0.0) is None  # nothing to the left
+    # Diagonal: ahead and a little left, past the red box's edge (it spans y -0.2..0.2).
+    assert tello.receive("go 200 20 0 50") == ["error blocked: obstacle 175 cm on the way: at most 170 cm"]
+    assert tello.pose == hover
+
+
+def test_go_to_a_mission_pad(room, clock):
+    pads = {"1": [0.0, 0.0, 0.0], "2": [2.0, -1.0, 0.0]}
+    tello = SimTello("tello", "SIMTELLO0001", Pose(0.1, -0.05, LANDED_Z, 0.0), room, clock=clock, mission_pads=pads)
+    airborne(tello, clock)
+    assert tello.receive("go 0 0 80 30 m1") == ["error No mission pad detected"]  # pads off
+    tello.receive("mon")
+    assert tello.receive("go 0 0 80 30 m2") == ["error No mission pad detected"]  # not below
+    assert fly(tello, clock, "go 0 0 100 30 m1", 25 / 30 + SETTLE_S + 0.1) == ["ok"]
+    assert (tello.pose.x, tello.pose.y, tello.pose.z) == pytest.approx((0.0, 0.0, 1.0))
+    assert (telemetry(tello, "x"), telemetry(tello, "y"), telemetry(tello, "z")) == (0, 0, 100)
+
+
+def decode(vgx, vgy, imu_yaw_deg):
+    """metoera-voice's reading of the real Tello EDU (src/odometry.ts #step: compass axes,
+    yawSign 1, mirror 1, flip -1): the drone's (forward, right) speed in cm/s."""
+    import math
+
+    psi = math.radians(imu_yaw_deg)
+    vx, vy = -vgx * 12.2, -vgy * 12.2
+    return vx * math.cos(psi) + vy * math.sin(psi), -vx * math.sin(psi) + vy * math.cos(psi)
+
+
+@pytest.mark.parametrize("start_yaw", [0.0, 90.0, -135.0])
+def test_ground_speed_reads_like_the_real_tello(room, clock, start_yaw):
+    tello = SimTello("tello", "SIMTELLO0001", Pose(-0.5, 0.0, LANDED_Z, start_yaw), room, clock=clock)
+    airborne(tello, clock)
+    assert telemetry(tello, "yaw") == 0  # the IMU's 0 is where it faced when switched on
+    assert (telemetry(tello, "vgx"), telemetry(tello, "vgy")) == (0, 0)  # hovering
+    for turn, sdk, want in ((None, "forward 50", (1, 0)), ("cw 90", "left 50", (0, -1)), ("ccw 45", "back 50", (-1, 0))):
+        if turn:
+            assert fly(tello, clock, turn, 2.0) == ["ok"]
+        assert tello.receive(sdk) == []
+        wait(tello, clock, 0.65)  # the middle of the move: full speed
+        forward, right = decode(telemetry(tello, "vgx"), telemetry(tello, "vgy"), telemetry(tello, "yaw"))
+        speed = 0.5 * 6 * 0.25 / (0.5 + SETTLE_S) * 100  # cm/s at the middle of a smooth 50 cm move
+        assert forward == pytest.approx(want[0] * speed, abs=12.2) and right == pytest.approx(want[1] * speed, abs=12.2)
+        assert wait(tello, clock, 1.0) == ["ok"]
+    assert telemetry(tello, "yaw") == 45
+
+
+def test_hover_slide(room, clock):
+    tello = SimTello("tello", "SIMTELLO0001", Pose(0.0, 0.0, LANDED_Z, 0.0), room, clock=clock, drift=0.03, seed=3)
+    airborne(tello, clock)
+    before = tello.pose
+    for _ in range(4):
+        wait(tello, clock, 5.0)
+        tello.receive("battery?")  # the server's keep-alive
+    moved = ((tello.pose.x - before.x) ** 2 + (tello.pose.y - before.y) ** 2) ** 0.5
+    assert 0.0 < moved < 0.4  # 20 s at under 2 cm/s
+    assert (telemetry(tello, "vgx"), telemetry(tello, "vgy")) == (0, 0)  # too slow to show
+
+
+def test_no_valid_imu(room, clock):
+    tello = SimTello("tello", "SIMTELLO0001", Pose(0.0, 0.0, LANDED_Z, 0.0), room, clock=clock, imu_errors=1.0, seed=1)
+    airborne(tello, clock)
+    outcomes = set()
+    for _ in range(8):
+        x = tello.pose.x
+        replies = tello.receive("back 20") + wait(tello, clock, 2.0)
+        assert replies == ["error No valid imu"]
+        outcomes.add("moved" if abs(tello.pose.x - x) > 0.1 else "stayed")
+    assert outcomes == {"moved", "stayed"}

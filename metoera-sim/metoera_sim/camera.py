@@ -20,6 +20,9 @@ DIAGONAL_FOV_DEG = 82.6
 
 @dataclass(frozen=True)
 class Pose:
+    """A position and heading. For a drone it is the centre of its body (drone.camera_pose
+    gives where its camera is); the renderer takes the pose of the camera itself."""
+
     x: float = 0.0
     y: float = 0.0
     z: float = 0.8  # the Tello hovers at about 80 cm after takeoff
@@ -76,6 +79,16 @@ def view_matrix(pose: Pose) -> np.ndarray:
     m[:3, :3] = rot
     m[:3, 3] = -rot @ pose.position
     return m
+
+
+def project(pose: Pose, k: Intrinsics, point) -> tuple[float, float, float]:
+    """Pixel (u, v) where the world point appears, and its depth along the view axis."""
+    r, d, f = camera_axes(pose)
+    rel = np.asarray(point, dtype=np.float64) - pose.position
+    depth = float(rel @ f)
+    if depth <= 1e-6:
+        return float("nan"), float("nan"), depth
+    return k.cx + k.fx * float(rel @ r) / depth, k.cy + k.fy * float(rel @ d) / depth, depth
 
 
 def unproject(pose: Pose, k: Intrinsics, u: float, v: float, depth: float) -> np.ndarray:

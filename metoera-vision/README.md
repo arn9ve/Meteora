@@ -28,6 +28,17 @@ python3.13 -m venv .venv
 scripts/make_sample.sh          # optional: builds samples/sample.mp4 + sample.h264 for testing
 ```
 
+**Windows** works too (tested with the simulated drones from `metoera-sim`). With [uv](https://docs.astral.sh/uv/):
+
+```bash
+cd metoera-vision
+uv venv --python 3.13 .venv
+uv pip install --python .venv/Scripts/python.exe -r requirements.txt
+.venv/Scripts/python -m metoera_vision --drones tello=127.0.0.1:50001,rmtt=127.0.0.1:50002
+```
+
+PyPI's torch for Windows has no CUDA, so YOLO runs on the CPU there. That keeps about 5 detections per second per drone.
+
 The weights (`yolo11n.pt`, 5.6 MB) download automatically on first start
 into `weights/`, from the official `ultralytics/assets` GitHub release. On Apple
 Silicon the model runs on the GPU (`mps`). Elsewhere it falls back to `cpu`, or

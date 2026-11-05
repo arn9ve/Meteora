@@ -1,8 +1,11 @@
 # metoera-sim
 
-The room as a Gaussian splat, seen through a simulated Tello's camera. This is step 1 of the simulator: scan a room with a phone, load it on the GPU, fly a virtual drone through it, and align it with the real room (level floor, takeoff pad at the origin, real metres). The simulated Tello that answers the SDK and streams this camera to metoera-vision comes next.
+Simulated Tellos flying in a scan of the real room, for metoera-voice and metoera-vision to use instead of real drones.
 
-Runs on **Windows with an NVIDIA GPU** (gsplat needs CUDA; it does not run on a Mac). Tested on an RTX 4050 Laptop GPU (6 GB): a 960×720 view renders in about 2 ms.
+- **Step 1, the room:** scan a room with a phone, load it on the GPU, fly a virtual drone through it, and align it with the real room (level floor, takeoff pad at the origin, real metres).
+- **Step 2, the drones:** simulated Tellos answer the SDK on UDP, send telemetry, and stream their camera as H.264. Each is a box the size of a real Tello plus a margin, so a move into a wall it cannot see is refused.
+
+Runs on **Windows with an NVIDIA GPU** (gsplat needs CUDA; it does not run on a Mac). Tested on an RTX 4050 Laptop GPU (6 GB): a 960×720 view renders in about 2 ms, and two drones stream at 30 fps each.
 
 ## Setup (once)
 
@@ -15,7 +18,9 @@ uv pip install --python .venv/Scripts/python.exe -r requirements.txt
 .venv/Scripts/python -m metoera_sim.check
 ```
 
-About 6 GB on disk. The check confirms CUDA, gsplat and the rendering. It renders a small synthetic room to `renders/check.png`, and writes a practice scene to `scenes/demo/`. That scene is saved crooked on purpose, like a phone scan.
+About 6 GB on disk. The check confirms CUDA, gsplat and the rendering. It renders a small synthetic room to `renders/check.png`, and writes a practice scene to `scenes/demo/`. That scene is saved crooked on purpose, like a phone scan. Running the check again rewrites `scenes/demo/` and deletes its `scene.json`.
+
+The tests need no GPU: `.venv/Scripts/python -m pytest tests`.
 
 ## Scan a room (phone, about 20 minutes)
 
@@ -43,7 +48,8 @@ Scans stay out of git (`scenes/` is ignored).
 | --- | --- |
 | `w` `s` / `a` `d` / `r` `f` | forward / back, left / right, up / down 20 cm (capitals: 5 cm) |
 | `q` `e` | turn left / right 15° (capitals: 5°) |
-| `t` | top-down view on/off; `i` `k` tilt the camera |
+| `t` | top view on/off: from 1.5 m above the drone, with everything more than 10 cm above it cut away (no ceiling). The drone is drawn to scale: white is its body, yellow the margin kept clear |
+| `i` `k` | tilt the camera |
 | `g`, then click the floor | levels the floor and puts it at height 0 |
 | `o`, then click the takeoff pad | makes it (0, 0, 0). The heading you face becomes +x, the takeoff direction |
 | `1` / `2`, then click pad A / pad B | sets the scale from `--pad-distance` |
@@ -60,11 +66,70 @@ Scans stay out of git (`scenes/` is ignored).
 
 After that, every tool works in the same world frame: metres, z up, the takeoff pad at (0, 0, 0), x the takeoff heading, y to its left. Yaw is counterclockwise, so the Tello's `cw` turns are negative.
 
+A move that would run the drone into the scan shows `blocked: ...` at the top. The viewer moves anyway, since it is a free camera for aligning.
+
+## Fly simulated drones (step 2)
+
+Three terminals, all on this laptop:
+
+```bash
+# 1. The drones, in an aligned scan (or "synthetic" for the check's room)
+.venv/Scripts/python -m metoera_sim.serve scenes/practice
+
+# 2. metoera-vision (its own venv; see its README)
+cd ../metoera-vision
+.venv/Scripts/python -m metoera_vision --drones tello=127.0.0.1:50001,rmtt=127.0.0.1:50002
+
+# 3. metoera-voice, with the simulator's settings
+cd ../metoera-voice
+node --env-file=../metoera-sim/sim.env server.ts
+```
+
+Then open http://localhost:18797 and fly Black (`tello`) and Red (`rmtt`) as usual. The simulator prints every command, reply and blocked move. `--drones tello` runs only one.
+
+**Ports.** [`sim.env`](sim.env) points the voice server at the simulated drones. Every port it uses differs from the real setup, so the real `.env.tello` stays untouched and a voice server for the real drones can run on the same laptop:
+
+| | Real drones | Simulator |
+| --- | --- | --- |
+| Voice page | 18787 | 18797 |
+| Replies, telemetry (on the laptop) | 8889, 8890 | 8879, 8880 (Black), 8881 (Red) |
+| Drone commands | 8889 on each drone | 9001 (Black), 9002 (Red) on 127.0.0.1 |
+| Announcements between laptops | 18789 | 18799, so teammates never see the simulated drones |
+| Video to metoera-vision | 11111 | 11111, from 50001 (Black) and 50002 (Red) |
+
+The simulated drones listen on 127.0.0.1 only, and their serials are `SIMTELLO0001` and `SIMRMTT00002`. Black starts on the takeoff pad facing +x. Red starts on pad B, or 1 m to the left if the scan has no pad B.
+
+`tools/test-flight.mjs` works too. It expects replies on 8889, so start the simulator with `--reply-port 8889 --drones tello`, then from metoera-voice: `TELLO_PORT=9001 TELLO_EXPECT_SERIAL=SIMTELLO0001 node tools/test-flight.mjs 127.0.0.1`.
+
+### The drone's size and its blind spots
+
+The drone is a box: Ryze's 98 × 92.5 × 41 mm for the Tello EDU (TLW004), plus **5 cm on every side** (`--margin`). The margin covers the propeller guards and the error in the scan. Ryze's size does not seem to include the guards.
+
+The camera only looks ahead, but the simulator knows the whole room. Before every move, turn, flip or takeoff it slides the box along the path. If the scan is in the way, the drone stays put and answers, for example:
+
+```
+error blocked: obstacle 15 cm to the right: at most 10 cm
+```
+
+The voice server shows that as "Drone rejected move: ...". A real Tello would fly into the wall. Land and emergency are never refused.
+
+### How the simulated Tello behaves
+
+- It ignores everything until `command`, then answers `sn?`, `battery?`, `speed?` and the other queries.
+- Moves fly at the set speed (`speed`, 100 cm/s to start) and answer `ok` when they arrive. Takeoff climbs to 80 cm, and land comes down onto whatever is underneath, a table or the floor.
+- `stop` hovers at once; the move it cancels never answers. Another motion command during a move gets `error busy`.
+- With no command for 15 s it lands by itself, like the real one. The voice server's `battery?` keeps it up.
+- The battery drains while flying, about 13 minutes from 100 %. Below 5 % it lands by itself.
+- Telemetry is in the Tello EDU's format at 10 Hz. `h` is the height above the takeoff spot, and `yaw` is clockwise.
+- Video is 960×720 at 30 fps, raw H.264 in 1460-byte datagrams, with a keyframe every second.
+
 ## Render one view
 
 ```bash
 .venv/Scripts/python -m metoera_sim.render scenes/practice --x 1.5 --y 0 --z 0.8 --yaw 90 -o renders/view.jpg
 ```
+
+`--x --y --z` place the drone's body. The picture is taken from its camera, 4.5 cm ahead, at the nose.
 
 ## Code
 
@@ -72,12 +137,24 @@ After that, every tool works in the same world frame: metres, z up, the takeoff 
 | --- | --- |
 | `metoera_sim/scene.py` | Load and save a splat `.ply` (the standard 3DGS layout Scaniverse exports), and the alignment transforms and `scene.json` |
 | `metoera_sim/camera.py` | The Tello's camera: 960×720, its field of view, the drone pose and Tello-style moves |
-| `metoera_sim/render.py` | gsplat rendering of colour, optionally with depth (used to click points) |
+| `metoera_sim/drone.py` | The drone's size, its camera at the nose, and what it would hit in the scan |
+| `metoera_sim/render.py` | gsplat rendering of colour, optionally with depth (used to click points) or as YUV for the video |
 | `metoera_sim/viewer.py` | Fly-through and alignment |
+| `metoera_sim/tello.py` | The simulated Tello's SDK: answers, timings, telemetry (no GPU, no network) |
+| `metoera_sim/video.py` | H.264 encoding and 1460-byte datagrams |
+| `metoera_sim/serve.py` | The simulated drones on UDP |
 | `metoera_sim/check.py` | Install check, synthetic room, practice scene |
+| `sim.env` | metoera-voice's settings for the simulator |
+| `tests/` | The obstacle check, the SDK and the video, on the synthetic room (CPU) |
 
 ## Known limits
 
 - **Camera width:** DJI's quoted 82.6° is used as the diagonal field of view (70° horizontally). It is not yet checked against a real Tello frame; calibrate it before trusting distances seen in the simulator.
 - **Colour:** only the base colour of each Gaussian is kept, with no view-dependent shine. It saves memory and survives the alignment rotation.
-- **A scan is frozen in time:** whatever moved during it is blurry, and nothing moves in the simulator.
+- **A scan is frozen in time:** whatever moved during it is blurry, and nothing moves in the simulator. People walking into a blind spot are not simulated.
+- **The drones neither see nor block each other.** Each one sees only the scan.
+- **The margin is a guess** until a drone with guards on is measured. The RoboMaster TT uses the same box; its expansion board makes it taller, which the margin covers.
+- **Timings are estimates:** the default speed, the turn rate (90°/s) and the takeoff and landing times. Check them against a real Tello (`speed?`, and time a takeoff, a `forward 100` and a `cw 90`).
+- **What counts as solid:** the centres of Gaussians with opacity of at least 0.3, with at least 5 in the way. A big, sparse Gaussian may let the box through; a cluster of floaters may block it.
+- **No physics:** no drift, wind, or bumping. Flips take 1.5 s and need 30 cm of room on that side; `rc` is ignored.
+- **The real drones get none of this protection.** They don't know where they are in the scan.

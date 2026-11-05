@@ -5,7 +5,10 @@
 Moves (like the Tello: relative to its heading; capitals for small steps):
   w / s   forward / back 20 cm        a / d   left / right 20 cm
   r / f   up / down 20 cm             q / e   turn left / right 15 degrees
-  t       top-down view on/off        i / k   tilt the camera up / down 10 degrees
+  t       top view on/off             i / k   tilt the camera up / down 10 degrees
+The top view looks down from 1.5 m above the drone, with everything higher than 10 cm above it
+cut away (no ceiling). The drone is drawn to scale: white is its body, yellow the margin kept
+clear. A move that would run into the scan says so ("blocked: ..."); the viewer moves anyway.
 
 Aligning (press the key, then click in the picture):
   g  click the floor          -> the floor becomes level and sits at height 0
@@ -27,11 +30,14 @@ from dataclasses import replace
 
 import numpy as np
 
-from .camera import Intrinsics, Pose, unproject
+from .camera import Intrinsics, Pose, project, unproject
+from .drone import DIRECTIONS, LENGTH_M, MARGIN_M, WIDTH_M, Obstacles, camera_pose, half_extents
 from .render import Renderer
 from .scene import Scene, load_scene, rot_x, rot_y, rot_z, rotation_between, scale, translate
 
 WINDOW = "metoera-sim viewer"
+TOP_HEIGHT_M = 1.5  # the top view's camera, above the drone
+TOP_CUT_M = 0.10  # ... and what it cuts away: everything this far above the drone and higher
 UP_AXES = {"x": (1, 0, 0), "-x": (-1, 0, 0), "y": (0, 1, 0), "-y": (0, -1, 0), "z": (0, 0, 1), "-z": (0, 0, -1)}
 PROMPTS = {
     "floor": "click the FLOOR",
@@ -66,15 +72,18 @@ def fit_plane(points: np.ndarray, iters: int = 400, thresh: float = 0.02, seed: 
 
 
 class Viewer:
-    def __init__(self, scene: Scene, pad_distance: float | None, renderer: Renderer) -> None:
+    def __init__(self, scene: Scene, pad_distance: float | None, renderer: Renderer, margin: float = MARGIN_M) -> None:
         self.scene = scene
+        self.margin = margin
+        self._obstacles: tuple[object, Obstacles] | None = None
+        self.top = False
         self.pad_distance = pad_distance
         self.renderer = renderer
         self.k = renderer.k
         self.pads: dict[str, np.ndarray] = {k: np.array(v) for k, v in scene.meta.get("pads", {}).items()}
         self.done: set[str] = set(scene.meta.get("aligned", []))
         means = scene.splats.means.median(dim=0).values.cpu().numpy()
-        self.pose = Pose(0.0, 0.0, 0.8, 0.0) if "origin" in self.done else Pose(*means.tolist(), 0.0)
+        self.pose = Pose(0.0, 0.0, 0.8, 0.0) if "origin" in self.done else Pose(*means.tolist(), 0.0)  # the body
         self.mode: str | None = None
         self.click: tuple[int, int] | None = None
         self.message = "h: help. Start with g (floor), then o (takeoff pad), then 1 and 2 (pads)."
@@ -97,15 +106,29 @@ class Viewer:
         self.done.discard("floor")
         self.message = f"scan turned 90 degrees about {axis}"
 
+    def view_pose(self) -> tuple[Pose, float]:
+        """The camera of what the window shows, and its near plane."""
+        p = self.pose
+        if self.top:
+            return Pose(p.x, p.y, p.z + TOP_HEIGHT_M, p.yaw, -90.0), TOP_HEIGHT_M - TOP_CUT_M
+        return camera_pose(p), 0.05
+
+    def obstacles(self) -> Obstacles:
+        """The solid part of the scan, rebuilt whenever the alignment moves it."""
+        if self._obstacles is None or self._obstacles[0] is not self.scene.splats:
+            self._obstacles = (self.scene.splats, Obstacles(self.scene.splats, margin=self.margin))
+        return self._obstacles[1]
+
     def pick(self, u: int, v: int) -> np.ndarray | None:
-        view = self.renderer.render(self.scene.splats, self.pose, depth=True)
+        cam, near = self.view_pose()
+        view = self.renderer.render(self.scene.splats, cam, depth=True, near_plane=near)
         y0, y1, x0, x1 = max(0, v - 2), v + 3, max(0, u - 2), u + 3
         alpha = view.alpha[y0:y1, x0:x1]
         depth = view.depth[y0:y1, x0:x1][alpha > 0.5]
         if depth.size == 0:
             self.message = "nothing there: click on a surface of the scan"
             return None
-        return unproject(self.pose, self.k, u, v, float(np.median(depth)))
+        return unproject(cam, self.k, u, v, float(np.median(depth)))
 
     def on_pick(self, point: np.ndarray) -> None:
         mode, self.mode = self.mode, None
@@ -162,7 +185,8 @@ class Viewer:
 
         p = self.pose
         lines = [
-            f"x {p.x:+.2f}  y {p.y:+.2f}  z {p.z:+.2f} m   yaw {p.yaw:+.0f}  tilt {p.pitch:+.0f}   {self.ms:.0f} ms",
+            f"x {p.x:+.2f}  y {p.y:+.2f}  z {p.z:+.2f} m   yaw {p.yaw:+.0f}  "
+            + ("top view" if self.top else f"tilt {p.pitch:+.0f}") + f"   {self.ms:.0f} ms",
             f"aligned: {', '.join(sorted(self.done)) or 'nothing yet'}{'   (unsaved: p)' if self.unsaved else ''}",
             (">>> " + PROMPTS[self.mode]) if self.mode else self.message,
         ]
@@ -178,19 +202,56 @@ class Viewer:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
         if self.mode:
             cv2.drawMarker(img, (self.k.width // 2, self.k.height // 2), (0, 255, 255), cv2.MARKER_CROSS, 16, 1)
+        if self.top:
+            self.draw_drone(img)
         return img
+
+    def draw_drone(self, img: np.ndarray) -> None:
+        """The drone to scale in the top view: its body, the margin kept clear, its heading."""
+        import cv2
+
+        cam, _ = self.view_pose()
+        p = self.pose
+        c, s = math.cos(math.radians(p.yaw)), math.sin(math.radians(p.yaw))
+
+        def pixel(forward: float, left: float) -> tuple[int, int]:
+            u, v, _ = project(cam, self.k, (p.x + forward * c - left * s, p.y + forward * s + left * c, p.z))
+            return round(u), round(v)
+
+        def outline(hf: float, hl: float) -> np.ndarray:
+            return np.array([pixel(f, l) for f, l in ((hf, hl), (hf, -hl), (-hf, -hl), (-hf, hl))], np.int32)
+
+        hf, hl, _ = half_extents(self.margin)
+        cv2.polylines(img, [outline(hf, hl)], True, (0, 220, 255), 1, cv2.LINE_AA)  # BGR yellow
+        cv2.polylines(img, [outline(LENGTH_M / 2, WIDTH_M / 2)], True, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.arrowedLine(img, pixel(0.0, 0.0), pixel(hf + 0.08, 0.0), (0, 220, 255), 2, cv2.LINE_AA, tipLength=0.35)
+
+    def move(self, kind: str, amount: float) -> None:
+        """Fly the drone like the Tello, and say if the real one would hit something."""
+        obstacles = self.obstacles()
+        if kind == "turn":
+            blocked = obstacles.check_turn(self.pose, amount)
+            self.pose = self.pose.moved(turn=amount)
+        else:
+            axis, sign = DIRECTIONS[kind]
+            blocked = obstacles.check_move(self.pose, kind, amount)
+            self.pose = self.pose.moved(**{("forward", "left", "up")[axis]: sign * amount})
+        if blocked:
+            self.message = f"blocked: {blocked.message} (the viewer moves anyway)"
+        elif self.message.startswith("blocked:"):
+            self.message = ""
 
     def key(self, ch: str) -> bool:
         """Handle one key; returns False to quit."""
         small = ch.isupper()
         step, turn = (0.05, 5.0) if small else (0.2, 15.0)
         c = ch.lower()
-        moves = {"w": dict(forward=step), "s": dict(forward=-step), "a": dict(left=step), "d": dict(left=-step),
-                 "r": dict(up=step), "f": dict(up=-step), "q": dict(turn=turn), "e": dict(turn=-turn)}
+        moves = {"w": ("forward", step), "s": ("back", step), "a": ("left", step), "d": ("right", step),
+                 "r": ("up", step), "f": ("down", step), "q": ("turn", turn), "e": ("turn", -turn)}
         if c in moves:
-            self.pose = self.pose.moved(**moves[c])
+            self.move(*moves[c])
         elif c == "t":
-            self.pose = replace(self.pose, pitch=0.0 if self.pose.pitch <= -89 else -90.0)
+            self.top = not self.top
         elif c == "i":
             self.pose = replace(self.pose, pitch=min(90.0, self.pose.pitch + 10))
         elif c == "k":
@@ -232,7 +293,8 @@ class Viewer:
                 if point is not None:
                     self.on_pick(point)
             self.click = None
-            view = self.renderer.render(self.scene.splats, self.pose)
+            cam, near = self.view_pose()
+            view = self.renderer.render(self.scene.splats, cam, near_plane=near)
             self.ms = view.ms
             cv2.imshow(WINDOW, self.hud(cv2.cvtColor(view.image, cv2.COLOR_RGB2BGR)))
             code = cv2.waitKey(30)
@@ -251,6 +313,7 @@ def main(argv=None) -> int:
     p.add_argument("--up", choices=sorted(UP_AXES), default="y",
                    help="which axis of the scan points up, before any scene.json exists (phone scans: y)")
     p.add_argument("--max-gaussians", type=int, default=None, help="thin a very large scan")
+    p.add_argument("--margin", type=float, default=MARGIN_M, help="metres kept clear around the drone's body (default 0.05)")
     a = p.parse_args(argv)
 
     t0 = time.perf_counter()
@@ -258,7 +321,7 @@ def main(argv=None) -> int:
     if not scene.json_path.exists():
         scene.set_alignment(rotation_between(np.array(UP_AXES[a.up], dtype=float), np.array([0.0, 0.0, 1.0])))
     print(f"loaded {len(scene.splats):,} Gaussians in {time.perf_counter() - t0:.1f} s")
-    return Viewer(scene, a.pad_distance, Renderer()).run()
+    return Viewer(scene, a.pad_distance, Renderer(), margin=a.margin).run()
 
 
 if __name__ == "__main__":

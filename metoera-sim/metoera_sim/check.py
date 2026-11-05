@@ -93,6 +93,7 @@ def main() -> int:
         return 1
 
     from .camera import Intrinsics, Pose, unproject
+    from .drone import CAMERA_FORWARD_M, camera_pose
     from .render import Renderer, save_rgb
     from .scene import rot_x, transform
 
@@ -101,20 +102,23 @@ def main() -> int:
     line("Tello camera", True, f"{k.width}x{k.height}, focal {k.fx:.0f} px, horizontal FOV {k.horizontal_fov_deg:.1f} deg")
     try:
         renderer = Renderer(k)
-        hover = Pose(0.0, 0.0, 0.8, 0.0)
-        view = renderer.render(room, hover, depth=True)  # first call may compile CUDA kernels
+        hover = Pose(0.0, 0.0, 0.8, 0.0)  # the drone's body; its camera is at the nose
+        eye = camera_pose(hover)
+        view = renderer.render(room, eye, depth=True)  # first call may compile CUDA kernels
     except Exception as e:  # noqa: BLE001
         line("render", False, f"{type(e).__name__}: {e}")
         return 1
     save_rgb(OUT / "check.png", view.image)
     save_rgb(OUT / "check_top.png", renderer.render(room, Pose(1.5, 0.0, 3.5, 0.0, -90.0)).image)
-    save_rgb(OUT / "check_left.png", renderer.render(room, hover.moved(turn=45)).image)
+    save_rgb(OUT / "check_left.png", renderer.render(room, camera_pose(hover.moved(turn=45))).image)
     line("render", True, f"{len(room):,} Gaussians -> {OUT / 'check.png'} (+ check_top.png, check_left.png)")
 
-    # Depth under the centre pixel must land on the red box's front face, 1.8 m ahead.
+    # Depth under the centre pixel must land on the red box's front face, 1.8 m ahead of the
+    # body centre (so a little less from the camera at the nose).
     d = float(view.depth[k.height // 2, k.width // 2])
-    hit = unproject(hover, k, k.width / 2, k.height / 2, d)
-    line("depth picking", abs(d - 1.8) < 0.05, f"centre pixel at {d:.3f} m -> world point {np.round(hit, 3).tolist()} (expected x = 1.8)")
+    want = 1.8 - CAMERA_FORWARD_M
+    hit = unproject(eye, k, k.width / 2, k.height / 2, d)
+    line("depth picking", abs(d - want) < 0.05, f"centre pixel at {d:.3f} m -> world point {np.round(hit, 3).tolist()} (expected x = 1.8)")
     r, g, b = view.image[k.height // 2, k.width // 2]
     line("colour", r > 150 and g < 80 and b < 80, f"centre pixel RGB {r},{g},{b} (the red box)")
 
@@ -137,7 +141,7 @@ def main() -> int:
     torch.cuda.reset_peak_memory_stats()
     t0 = time.perf_counter()
     for i in range(50):
-        renderer.render(room, hover.moved(turn=i * 7))
+        renderer.render(room, camera_pose(hover.moved(turn=i * 7)))
     fps = 50 / (time.perf_counter() - t0)
     line("speed", fps >= 30, f"{fps:.0f} renders/s at {k.width}x{k.height}, peak GPU memory {torch.cuda.max_memory_allocated() / 2**20:.0f} MB")
     print("all good" if ok else "some checks failed")

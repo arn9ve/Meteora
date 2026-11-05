@@ -9,6 +9,7 @@ av==17.1.0
 ninja==1.13.2
 jaxtyping==0.3.7
 rich==15.0.0
+pytest==9.2.0
 # gsplat imports torch.utils.cpp_extension to look for CUDA, which needs these two:
 packaging==26.3
 setuptools==69.5.1

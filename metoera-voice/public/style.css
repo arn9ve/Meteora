@@ -285,7 +285,7 @@
    State dots: filled = on, hollow = off, red = alarm. */
 :root{--ink:#202020;--muted:#8b8b8b;--faint:#b5b5b5;--line:#e6e6e6;--soft:#f6f6f5;--red:#c62828;--black:#111;--dots:radial-gradient(#e2e2e2 1px,transparent 1.3px) 0 0/18px 18px}
 *,*::before,*::after{border-radius:0!important}
-.dot,.tdot,.row-dot,.obj .dot,.card-head .dot,.controls button,.handle{border-radius:50%!important}
+.dot,.tdot,.row-dot,.obj .dot,.card-head .dot,.handle{border-radius:50%!important}
 body,button,input,select,textarea{font-family:Arial,Helvetica,sans-serif}
 .dashboard{background:#fff;padding:0;gap:0}
 .dashboard *{font-weight:400}
@@ -432,3 +432,13 @@ input.switch.arm:checked{background:var(--red);border-color:var(--red)}
 .drone-card-head{flex-direction:column;align-items:flex-start;gap:6px}
 .wordmark{display:flex;align-items:center;letter-spacing:0}.wordmark .logo{height:34px;width:auto;display:block;margin-left:-6px}
 .wordmark .logo{height:40px;margin-left:-8px}
+
+/* icons (Lucide, ISC licence) on the suggestions; square voice controls; red dots while Grok listens */
+.suggestion .icon{width:26px;height:26px;stroke:#9b9b9b;stroke-width:1.5;fill:none;display:block}
+.suggestion span{display:flex;justify-content:center}
+.controls button,.controls button.round{width:44px;height:44px;padding:11px;border:1px solid var(--line);background:#fff;color:#5a5a5a}
+.controls button:hover{background:var(--ink);border-color:var(--ink);color:#fff;transform:none}
+.controls button svg{stroke-width:1.6}
+.controls .mute.muted{background:var(--red);border-color:var(--red);color:#fff}
+.voice.live .symbol.active{color:var(--red)}
+.voice.live.muted .symbol.active{color:#eee}

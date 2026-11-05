@@ -250,6 +250,9 @@ function dispatch(name,args,failed,run){
     };
     if(URGENT.includes(name)||READ_NOW.includes(name)) void task();
     else {
+      // The automatic flight into a red zone is not stopped by Grok repeating it (or asking for a
+      // flight there again): only by a different order, stop, land or the emergency buttons.
+      if(longTask[id]==='zone'&&(name==='go_to'||name==='takeoff')){ log(`${nameOf(id)} · ${actionLabels[name]||name}`,'Already flying into the zone'); continue; }
       // A new order while it is flying somewhere: that flight stops here, this one goes next.
       if(longTask[id]){ log(`${nameOf(id)} · ${actionLabels[longTask[id]]||longTask[id]}`,'Interrupted by a new command'); void runOnDrone(id,'stop',{}); }
       droneQueues[id]=(droneQueues[id]??Promise.resolve()).then(task,task);
@@ -663,7 +666,7 @@ async function onIntrusion(e){
   showZoneAlert(`Person in ${e.name}${sending?' · sending the nearest drone':''}`);
   log(e.name,`Person at ${e.x.toFixed(1)}, ${e.y.toFixed(1)} m`);
   const zoneIt=String(e.name).replace(/^zone\b/i,'zona');
-  notifyGrok(`${e.name}: phone ${e.slot||''} sees a person. ${sending?`Say right now, in the person's language, in one short sentence: you saw a person in ${e.name} and you are going to check. The nearest drone is taking off by itself.`:`Tell the person in one short sentence and offer to send a drone (go_to place "${e.name}").`}`,true,sending?`Ho visto una persona nella ${zoneIt}. Vado a controllare.`:`C'è una persona nella ${zoneIt}.`);
+  notifyGrok(`${e.name}: phone ${e.slot||''} sees a person. ${sending?`Say right now, in the person's language, in one short sentence: you saw a person in ${e.name} and you are going to check. The nearest drone is taking off and flying there by itself: do NOT call any drone tool for this.`:`Tell the person in one short sentence and offer to send a drone (go_to place "${e.name}").`}`,true,sending?`Ho visto una persona nella ${zoneIt}. Vado a controllare.`:`C'è una persona nella ${zoneIt}.`);
   if(!sending) return;
   try {
     const r=await fetch('/api/redzone/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:e.id})});
@@ -679,7 +682,7 @@ async function runZoneMission(e,run){
   if(!pick.ok){ notifyGrok(`${e.name}: no drone can go: ${pick.error}`); return; }
   const id=pick.drone, name=nameOf(id);
   log(`${name} · ${e.name}`,'sent into the zone');
-  longTask[id]='go_to';
+  longTask[id]='zone';
   try {
     if(!pick.flying){ const up=await runOnDrone(id,'takeoff',{}); if(!up.ok){ notifyGrok(`${e.name}: ${name} could not take off: ${up.error}`); return; } }
     const r=await runOnDrone(id,'go_to',{place:e.name});
@@ -687,7 +690,7 @@ async function runZoneMission(e,run){
     const zoneIt=String(e.name).replace(/^zone\b/i,'zona');
     notifyGrok(r.insideZone?`${name} is inside ${e.name}${r.checkedWithPhoto?', confirmed with a photo':''}.${r.report?` It looked left, ahead and right; Grok vision reports: ${r.report} Tell the person this report in two short sentences.`:' Say it in a few words.'}`:`${name} did not get inside ${e.name}: ${r.error||'unknown'}${r.where?` (it is ${r.where})`:''}. Say it in one short sentence.`,true,
       r.insideZone?`${nameOf(id).replace(/^Drone \d · /,'')} è nella ${zoneIt}. ${r.report||''}`:`${nameOf(id).replace(/^Drone \d · /,'')} non è riuscito a entrare nella ${zoneIt}.`);
-  } finally { if(longTask[id]==='go_to') delete longTask[id]; }
+  } finally { if(longTask[id]==='zone') delete longTask[id]; }
 }
 async function cameraCommand(slot,command){
   try { const r=await fetch('/api/cameras/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slot,command})}); return await r.json(); }

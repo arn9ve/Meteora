@@ -81,3 +81,51 @@ export function parseSeen(answer: string | null, expected: Expected[]): { id: st
     });
   } catch { return null; }
 }
+
+/** One sighting in a survey photo: a landmark, where it is in that photo, and the heading of that photo. */
+export type SurveySighting = { x: number; y: number; bearingDeg: number; headingDeg: number; id: string };
+
+/**
+ * Position AND heading from sightings in several photos taken at known relative headings (a turn
+ * on the spot): tries every correction of the heading, keeps the one whose lines cross best.
+ * Needs at least three sightings of at least two different landmarks.
+ */
+export function solveSurvey(sightings: SurveySighting[]): { x: number; y: number; deltaHeading: number; residualM: number; used: number } | null {
+  if (sightings.length < 3 || new Set(sightings.map((s) => s.id)).size < 2) return null;
+  let best: { x: number; y: number; deltaHeading: number; residualM: number; used: number } | null = null;
+  for (let delta = -180; delta < 180; delta += 1) {
+    const sol = solvePose(0, sightings.map((s) => ({ x: s.x, y: s.y, bearingDeg: s.bearingDeg - (s.headingDeg + delta), distanceM: null })));
+    if (!sol) continue;
+    // What a camera sees is in front of it: a line of sight crossing behind the drone is the
+    // same line turned 180°, not a solution.
+    const behind = sightings.some((s) => { const t = (s.headingDeg + delta - s.bearingDeg) * Math.PI / 180; return (s.x - sol.x) * Math.cos(t) + (s.y - sol.y) * Math.sin(t) < 0.3; });
+    if (behind) continue;
+    // Small preference for small corrections when two fit about as well.
+    const score = sol.residualM + Math.abs(delta) * 0.0005;
+    if (!best || score < best.residualM + Math.abs(best.deltaHeading) * 0.0005) best = { x: sol.x, y: sol.y, deltaHeading: delta, residualM: sol.residualM, used: sol.used };
+  }
+  return best;
+}
+
+/** The survey question for Grok vision: every landmark, and where each should appear in each photo. */
+export function surveyPrompt(landmarks: Landmark[], perPhoto: Expected[][]): string {
+  const all = landmarks.map((l) => `- ${l.id}: ${l.name}, ${l.describe}`).join('\n');
+  const hints = perPhoto.map((exp, i) => `Photo ${i + 1}: ${exp.length ? exp.map((e) => `${e.id} ~${Math.round(Math.abs(e.bearingDeg))}° ${e.bearingDeg >= 0 ? 'right' : 'left'}, ${e.distanceM.toFixed(1)} m`).join('; ') : 'nothing expected'}`).join('\n');
+  return `These ${perPhoto.length} photos come from the front camera of a small indoor drone hovering on one spot, turning 90° clockwise between photos. Things of the room that can be seen:\n${all}\n\nWhere they should appear if the drone's estimate is right (it may be off by a metre or two and by some degrees):\n${hints}\n\nFor each photo, list what you actually see, with the horizontal position of its centre in that photo (x from 0 = left edge to 1 = right edge) and how sure you are (0 to 1). Pillars look alike: use their order and how near they look, and the hints. Leave out what you cannot see. Reply with ONLY JSON: {"photos":[{"photo":1,"seen":[{"id":"...","x":0.0,"confidence":0.0}]}],"note":"<at most 20 words: what you see and where the drone seems to be>"}`;
+}
+
+export function parseSurvey(answer: string | null, landmarks: Landmark[], photos: number): { photo: number; id: string; x: number; confidence: number }[] | null {
+  if (!answer) return null;
+  const m = /\{[\s\S]*\}/.exec(answer.replace(/```(?:json)?/g, ''));
+  if (!m) return null;
+  try {
+    const v = JSON.parse(m[0]) as { photos?: unknown };
+    if (!Array.isArray(v.photos)) return null;
+    const ids = new Set(landmarks.map((l) => l.id));
+    return v.photos.flatMap((p) => {
+      const o = p as { photo?: unknown; seen?: unknown };
+      if (!Number.isInteger(o.photo) || (o.photo as number) < 1 || (o.photo as number) > photos || !Array.isArray(o.seen)) return [];
+      return o.seen.flatMap((s) => { const q = s as { id?: unknown; x?: unknown; confidence?: unknown }; return typeof q.id === 'string' && ids.has(q.id) && typeof q.x === 'number' && q.x >= 0 && q.x <= 1 ? [{ photo: o.photo as number, id: q.id, x: q.x, confidence: typeof q.confidence === 'number' ? q.confidence : 0.5 }] : []; });
+    });
+  } catch { return null; }
+}

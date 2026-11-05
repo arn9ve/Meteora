@@ -80,3 +80,19 @@ test('after "No valid imu" the next route starts with a photo fix', async (t) =>
   await d.execute({ droneId: 'tello', action: 'go_to', x: 100, y: 0 });
   assert.ok(fixes >= 1, String(fixes));
 });
+
+test('survey: climbs, four photos turning on the spot, back to its heading, corrects position and heading, comes down', async (t) => {
+  const f = await fake();
+  let got = null;
+  const d = drone(f, { start: { x: 41, y: -63, heading: 90 }, frame: async () => Buffer.from('jpg'), survey: async (input) => { got = input; return { ok: true, x: 50, y: -60, deltaHeading: -100, seen: ['pillar-3', 't3'], residualCm: 6, note: 'pillar 3 and table 3' }; } });
+  t.after(() => { d.close(); f.close(); });
+  await d.execute({ droneId: 'tello', action: 'takeoff' });
+  assert.equal(d.surveyedThisFlight, false);
+  const r = await d.execute({ droneId: 'tello', action: 'survey' });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(got.photos.length, 4);
+  assert.deepEqual(got.headings, [90, 0, -90, 180]);
+  assert.deepEqual(f.received.filter((c) => /^(up|down|cw|ccw) /.test(c)), ['up 120', 'cw 90', 'cw 90', 'cw 90', 'cw 90', 'down 120']);
+  assert.deepEqual([d.map().pose.x, d.map().pose.y, d.map().pose.heading], [50, -60, -10]);
+  assert.equal(d.surveyedThisFlight, true);
+});

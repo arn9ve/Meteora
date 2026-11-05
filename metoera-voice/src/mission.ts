@@ -12,6 +12,8 @@ export type MissionDrone = {
   live(): { flying: boolean; pose: { x: number; y: number; heading: number; zFloor: number }; source: 'telemetry' | 'commands'; startSurface: { heightCm: number } };
   snapshot(): { battery: number | null; heightAboveFloorCm: number | null };
   readonly generation: number;
+  /** A look-around (survey) was done since take-off. */
+  readonly surveyedThisFlight?: boolean;
 };
 export type MissionDeps = {
   plan: Plan;
@@ -24,6 +26,8 @@ export type MissionDeps = {
   onStep?: (info: { step: number; action: string; reason: string; by: 'model' | 'rules' | 'timeout'; overruled: string | null; ms: number }) => void;
   /** The plan, worked out before anything moves (to be said to the person). */
   onPlan?: (text: string) => void;
+  /** The place in words (above table 1…), for what is said. */
+  where?: (xCm: number, yCm: number) => string;
   timeoutMs?: number;
   hoverMs?: number;
   maxSteps?: number;
@@ -46,8 +50,20 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
   const lastSteps: DecisionState['lastSteps'] = [];
   let safe: Point | null = null, checked = false, stuck = 0, photoFails = 0;
   const choices: string[] = [];
-  // Think first: where the target is from here, how far, which way to turn, over what.
-  const plan = planText(drone.live().pose, target, deps);
+  // Look first: the first flight to somewhere after a take-off starts with a survey (up, four photos,
+  // Grok vision, position and heading), unless the drone has none. Then think: the plan from there.
+  let surveyNote = '';
+  if (drone.surveyedThisFlight === false) {
+    deps.onPlan?.('Looking around first: climbing a little and taking four photos to see where I am.');
+    const sv = await drone.execute({ droneId, action: 'survey' });
+    deps.log?.({ event: 'decision', step: 0, by: 'rules', did: { action: 'survey' }, ok: sv.ok, error: sv.error });
+    if (drone.generation !== generation) return { ok: false, error: 'Mission stopped (stop, land or emergency)', steps: 0, choices };
+    const here = deps.where ? deps.where(drone.live().pose.x, drone.live().pose.y) : '';
+    surveyNote = sv.ok
+      ? `I saw ${(sv.seen as string[] ?? []).join(', ')}${sv.note ? ` (${sv.note})` : ''}: I am ${here}${Math.abs(Number(sv.deltaHeading) || 0) >= 10 ? `, and I was facing ${Math.abs(Number(sv.deltaHeading))}° ${Number(sv.deltaHeading) > 0 ? 'more to the left' : 'more to the right'} than I thought` : ''}${Number(sv.shiftCm) >= 30 ? `, ${sv.shiftCm} cm from where I thought` : ''}. `
+      : `The look-around did not settle it (${String(sv.error ?? '').replace(/^Survey: /, '')}), so I go by my telemetry: I am ${here}. `;
+  }
+  const plan = surveyNote + planText(drone.live().pose, target, deps);
   deps.onPlan?.(plan);
   deps.log?.({ event: 'mission', target, plan });
   for (let step = 1; step <= maxSteps; step += 1) {

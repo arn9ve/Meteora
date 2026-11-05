@@ -542,3 +542,17 @@ test('go_to with minHeightCm climbs first, then flies', async (t) => {
   assert.match(moves[1], /^(forward 150|go 150 0 0 \d+)$/); // stays up: no descent back down
   assert.equal((await drone.execute({ droneId: 'tello', action: 'go_to', x: 0, y: 0, minHeightCm: 999 })).ok, false);
 });
+
+test('a turn is not counted twice when the heading comes from the telemetry (5 Nov, 10:19)', async () => {
+  const { World } = await import('../src/world.ts');
+  const w = new World({ x: 0, y: 0, heading: 90 });
+  w.applySdk('takeoff');
+  w.applyTelemetry(80, 0);      // anchors: yaw 0 = heading 90
+  w.applyTelemetry(80, 100);    // the drone turned 100° clockwise: heading -10
+  w.applySdk('cw 100');         // the "ok" of that turn arrives after the telemetry
+  assert.equal(w.pose.heading, -10);
+  const v = w.vectorTo({ x: 228, y: -42 }); // table 3, from table 1: straight ahead now
+  assert.ok(v.forward > 225 && Math.abs(v.left) < 10, JSON.stringify(v));
+  w.correctHeading(15); w.applyTelemetry(80, 100);
+  assert.equal(w.pose.heading, 5); // a survey correction holds with the next telemetry
+});

@@ -725,7 +725,8 @@ function startLive(){
     for(const d of data.drones||[]){
       const was=liveDrones[d.id]; liveDrones[d.id]=d;
       // A new flight plan for a drone this person flies: Grok says it before the drone moves.
-      if(d.plan&&d.plan.at!==was?.plan?.at&&was&&drones.find(x=>x.id===d.id)?.pilot?.me&&Date.now()-d.plan.at<5000) notifyGrok(`${nameOf(d.id)} plan, before moving: ${d.plan.text} Say it in one short sentence, in the person's language, then say you are going.`,true);
+      // Said by the page that sent the flight (or the pilot's page): what it is doing and why, before it moves.
+      if(d.plan&&d.plan.at!==was?.plan?.at&&was&&(longTask[d.id]||drones.find(x=>x.id===d.id)?.pilot?.me)&&Date.now()-d.plan.at<8000) notifyGrok(`${nameOf(d.id)} is thinking out loud, before moving: ${d.plan.text} Say this reasoning to the person in two short sentences, in their language (where it is, what it saw, where the target is and what it will do), then that it is going.`,true);
       if(d.flying&&!was?.flying) trails[d.id]=[];
       if(d.flying){ const t=trails[d.id]||=[]; const q=t[t.length-1]; if(!q||Math.hypot(q[0]-d.pose.x,q[1]-d.pose.y)>=3){ t.push([d.pose.x,d.pose.y]); if(t.length>3000) t.shift(); } }
     }

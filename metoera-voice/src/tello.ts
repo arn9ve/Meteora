@@ -86,6 +86,8 @@ export type TelloOptions = {
   cameraIdleMs?: number;
   /** Time for the video to reach the vision service after streamon. */
   cameraWarmMs?: number;
+  /** Look around before going somewhere: 4 photos turning on the spot; the server (Grok vision + plan) finds position and heading. */
+  survey?: (input: { photos: Buffer[]; headings: number[]; pose: { x: number; y: number; heading: number } }) => Promise<{ ok: true; x: number; y: number; deltaHeading: number; seen: string[]; residualCm: number; note: string } | { ok: false; error: string; note?: string }>;
   /** Mission pads on the room plan (number, centre in room cm): exact positions when the drone is over one. */
   pads?: () => { pad: number; x: number; y: number; surfaceCm: number; name: string }[];
   /** Where am I really: a photo, the plan and Grok vision (the server does it). Pose and result in room cm. */
@@ -212,6 +214,8 @@ export class RealTello {
   #padRel = { x: 0, y: 0, z: 0 };     // where the drone is relative to the pad it sees (cm, pad axes)
   #padSnapAt = 0;
   readonly #pads: TelloOptions['pads'] | null;
+  readonly #surveyCb: TelloOptions['survey'] | null;
+  #surveyedFlight = false; // a survey was done since this take-off
   #lastError: string | null = null;
 
   constructor(options: TelloOptions) {
@@ -239,6 +243,7 @@ export class RealTello {
     this.#cameraWarmMs = options.cameraWarmMs ?? 2500;
     this.#localize = options.localize ?? null;
     this.#pads = options.pads ?? null;
+    this.#surveyCb = options.survey ?? null;
     this.#depth = options.depth ?? null;
     this.#settleMs = options.settleMs ?? 400;
     this.#mayTalk = options.mayTalk ?? (() => null);
@@ -434,6 +439,12 @@ export class RealTello {
     if (ready) return this.#fail(ready);
     if (['look', 'scan', 'approach', 'explore', 'face', 'describe', 'find'].includes(String(value.action))) await this.#cameraOn();
 
+    // Look around before going: climb, 4 photos turning on the spot, position and heading from the plan.
+    if (value.action === 'survey') {
+      if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for survey');
+      return this.#survey(generation);
+    }
+
     // Centre over a mission pad of the plan and take its exact position.
     if (value.action === 'pad_center') {
       if (Object.keys(value).some((k) => !['droneId', 'action', 'pad'].includes(k)) || !Number.isInteger(value.pad)) return this.#fail('pad_center needs pad (1-8)');
@@ -457,7 +468,7 @@ export class RealTello {
       this.#guessBase();
       // Telemetry odometry from the moment the motors start: the drift of the take-off counts too.
       const p = this.#world.pose;
-      this.#odo.reset({ x: p.x, y: p.y }); this.#odoActive = true; this.#takingOff = true;
+      this.#odo.reset({ x: p.x, y: p.y }); this.#odoActive = true; this.#takingOff = true; this.#surveyedFlight = false;
       this.#flightLog?.({ event: 'takeoff', pose: p, startSurface: this.#base });
       try {
         const up = await this.#motion('takeoff', 'takeoff', 20000, () => { this.#flight = 'flying'; });
@@ -1204,6 +1215,52 @@ export class RealTello {
     this.#world.record('localize', `moved the estimate ${shift} cm (${r.seen.join(', ')})`);
     return { ok: true, mode: 'real', action: 'localize', drone: this.snapshot(), pose: this.#world.pose, shiftCm: shift, seen: r.seen, residualCm: r.residualCm, note: r.note } as TelloResult;
   }
+
+  /**
+   * Survey: up to about 2 m above the floor (sees more of the room), one photo every 90° turning
+   * clockwise and back to the start heading, then the server asks Grok vision what of the plan is
+   * in each photo and works out position and heading. A believable result corrects both. Then back
+   * down to the height it had.
+   */
+  async #survey(generation: number): Promise<TelloResult> {
+    if (!this.#surveyCb || !this.#frame) return this.#fail('Survey is not configured on the server');
+    if (this.#flight !== 'flying') return this.#fail('Take off first');
+    if (!(await this.#cameraOn())) return this.#fail('The camera did not start');
+    const base = this.#base.heightCm, z0 = this.#world.pose.z;
+    const climb = Math.max(0, Math.min(250 - base, 200 - base) - z0);
+    if (climb >= 20) { const up = await this.#motion('survey', `up ${Math.round(climb)}`, 15000); if (!up.ok) return up; }
+    const photos: Buffer[] = [], headings: number[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
+      await new Promise((r) => setTimeout(r, 900)); // steady picture
+      const image = await this.#frame();
+      if (image) { photos.push(image); headings.push(this.#world.pose.heading); }
+      const turn = await this.#motion('survey', 'cw 90', 15000);
+      if (!turn.ok) return turn;
+    }
+    const p = this.#world.pose;
+    const awake = setInterval(() => { void this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 2000); }, 5000);
+    let r: Awaited<ReturnType<NonNullable<TelloOptions['survey']>>>;
+    try { r = photos.length >= 2 ? await this.#surveyCb({ photos, headings, pose: { x: p.x, y: p.y, heading: p.heading } }) : { ok: false, error: 'No pictures from the camera' }; }
+    finally { clearInterval(awake); }
+    let applied = false, shift = 0;
+    if (r.ok) {
+      shift = Math.round(Math.hypot(r.x - p.x, r.y - p.y));
+      if (shift <= 350) {
+        this.#world.setXY(r.x, r.y); this.#odo.shift(r.x - p.x, r.y - p.y);
+        if (Math.abs(r.deltaHeading) >= 3) this.#world.correctHeading(r.deltaHeading);
+        this.#needFix = false; this.#flownAtFix = this.#odo.stats.flownCm; applied = true;
+      }
+    }
+    this.#surveyedFlight = true;
+    this.#flightLog?.({ event: 'survey', ok: r.ok, applied, shift, ...(r.ok ? { to: { x: r.x, y: r.y }, deltaHeading: r.deltaHeading, seen: r.seen, residualCm: r.residualCm } : { error: r.error }), note: r.note });
+    if (climb >= 20) await this.#motion('survey', `down ${Math.round(climb)}`, 15000);
+    return r.ok
+      ? { ok: true, mode: 'real', action: 'survey', drone: this.snapshot(), applied, shiftCm: shift, deltaHeading: r.deltaHeading, seen: r.seen, note: r.note, pose: this.#world.pose } as TelloResult
+      : this.#fail(`Survey: ${r.error}${r.note ? ` (${r.note})` : ''}`);
+  }
+
+  get surveyedThisFlight(): boolean { return this.#surveyedFlight; }
 
   /** Is a photo fix worth it now? Doubt = could not see the floor, route aborted, no telemetry, or 3 m since the last fix. */
   #inDoubt(): boolean {

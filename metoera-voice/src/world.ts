@@ -72,6 +72,12 @@ export class World {
     if (!last || Math.hypot(last.x - x, last.y - y) >= 5) { this.#path.push({ x: Math.round(x), y: Math.round(y) }); if (this.#path.length > 2000) this.#path.shift(); }
   }
 
+  /** A photo survey found the heading off by `deltaDeg` (+ = more counterclockwise): fix it for good. */
+  correctHeading(deltaDeg: number): void {
+    this.#pose.heading = normalize(this.#pose.heading + deltaDeg);
+    if (this.#yawAtStart !== null) this.#yawAtStart += deltaDeg;
+  }
+
   /** Applies a Tello SDK move that the drone confirmed with "ok". */
   applySdk(sdk: string): void {
     const p = this.#pose;
@@ -94,7 +100,9 @@ export class World {
       if (!this.#fromTelemetry) this.#step(Number(m[1]), Number(m[2]));
       p.z = Math.max(0, p.z + Number(m[3]));
     } else if ((m = /^(cw|ccw) (\d+)$/.exec(sdk))) {
-      p.heading = normalize(p.heading + (m[1] === 'ccw' ? Number(m[2]) : -Number(m[2])));
+      // Once the telemetry yaw gives the heading, it already contains this turn: adding it again
+      // made the drone believe it faced 100° further than it did (flight of 5 Nov, 10:19).
+      if (this.#yawAtStart === null) p.heading = normalize(p.heading + (m[1] === 'ccw' ? Number(m[2]) : -Number(m[2])));
     }
   }
 

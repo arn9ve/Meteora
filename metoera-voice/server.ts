@@ -12,7 +12,7 @@ import { RealTello, type Detections, type DepthView } from './src/tello.ts';
 import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, planRoute, padsOf, describePlace, type Point, type RoomConfig } from './src/room.ts';
 import { missionGoTo, blockingAt } from './src/mission.ts';
 import { runCalibration, summary as calibrationSummary, type CalibrationReport } from './src/calibration.ts';
-import { landmarksOf, expectedInView, bearingOfX, solvePose, localizePrompt, parseSeen } from './src/landmarks.ts';
+import { landmarksOf, expectedInView, bearingOfX, solvePose, localizePrompt, parseSeen, solveSurvey, surveyPrompt, parseSurvey, CAMERA_FOV_DEG } from './src/landmarks.ts';
 import { Claims, CLAIMS_PORT, describeElsewhere, parsePeers, udpTransport } from './src/claims.ts';
 import { Pilots, TAKEOFF } from './src/pilots.ts';
 
@@ -156,6 +156,7 @@ async function decidedGoTo(id: string, drone: RealTello, body: Record<string, un
   if (!to || !plan) return drone.execute(plainRouted);
   const result = await missionGoTo(id, drone, {x:to.x, y:to.y, name:typeof placeLabel === 'string' ? placeLabel : typeof body.place === 'string' ? body.place : `(${to.x}, ${to.y})`, ...(typeof routed.pad === 'number' ? {pad:routed.pad} : {}), ...(typeof routed.minHeightCm === 'number' ? {minHeightCm:routed.minHeightCm} : {}), ...(face ? {face:face as {x: number; y: number}} : {})}, {
     plan, objects:room.objects, people:() => redzone.people, decide:process.env.XAI_API_KEY ? askDecision : null,
+    where:(x, y) => describePlace(room.objects, plan.pillars ?? [], x, y),
     log:(event) => flightLog(id, event),
     onPlan:(text) => { planLive.set(id, {text, at:Date.now()}); console.log(`${new Date().toLocaleTimeString()} ${label(id)} · plan: ${text}`); },
     onStep:(info) => { decisionsLive.set(id, {...info, at:Date.now()}); console.log(`${new Date().toLocaleTimeString()} ${label(id)} · step ${info.step}: ${info.action} (${info.by}${info.overruled ? `, overruled: ${info.overruled}` : ''}) ${info.reason} ${info.ms} ms`); },
@@ -195,6 +196,23 @@ async function localizeFrom(id: string, pose: {x: number; y: number; heading: nu
   return {ok:true as const, x:Math.round(sol.x * 100), y:Math.round(sol.y * 100), seen:obs.map((o) => o.id), residualCm:Math.round(sol.residualM * 100), note};
 }
 
+/** Survey: four photos turning on the spot; Grok vision says what of the plan is in each; position and heading from all of it. */
+async function surveyFrom(input: {photos: Buffer[]; headings: number[]; pose: {x: number; y: number; heading: number}}) {
+  const landmarks = landmarksOf(plan, room.objects);
+  if (landmarks.length < 2) return {ok:false as const, error:'The plan has too few pillars and tables'};
+  const perPhoto = input.headings.map((h) => expectedInView(landmarks, {x:input.pose.x / 100, y:input.pose.y / 100, heading:h}, 14, CAMERA_FOV_DEG + 30));
+  const answer = await askVision(input.photos, surveyPrompt(landmarks, perPhoto));
+  const seen = parseSurvey(answer, landmarks, input.photos.length);
+  const note = /"note"\s*:\s*"([^"]{0,200})"/.exec(answer ?? '')?.[1] ?? '';
+  if (!seen) return {ok:false as const, error:'Grok vision did not answer', note};
+  const sightings = seen.filter((q) => q.confidence >= 0.5).map((q) => { const l = landmarks.find((m) => m.id === q.id)!; return {id:l.id, x:l.x, y:l.y, bearingDeg:bearingOfX(q.x), headingDeg:input.headings[q.photo - 1]}; });
+  const sol = solveSurvey(sightings);
+  if (!sol) return {ok:false as const, error:`not enough seen to tell where it is (${sightings.length} sightings)`, note};
+  const b = plan!.bounds;
+  if (sol.residualM > 0.5 || sol.x < b.min[0] || sol.x > b.max[0] || sol.y < b.min[1] || sol.y > b.max[1]) return {ok:false as const, error:'what Grok saw does not fit together', note};
+  return {ok:true as const, x:Math.round(sol.x * 100), y:Math.round(sol.y * 100), deltaHeading:sol.deltaHeading, seen:[...new Set(sightings.map((q) => q.id))], residualCm:Math.round(sol.residualM * 100), note};
+}
+
 // Each drone is enabled only when its IP is set (in .env or .env.tello):
 // TELLO_IP + TELLO_SETUP_SERIAL is droneId 'tello', RMTT_IP + RMTT_SETUP_SERIAL is droneId 'rmtt'.
 // Both share local ports 8889 and 8890 (UdpPort routes replies by sender IP), so they need different IPs.
@@ -206,7 +224,7 @@ function droneFromEnv(id: string, prefix: string): RealTello | null {
   const host = process.env[`${prefix}_IP`]?.trim();
   if (!host) return null;
   if (!isIpv4(host)) { console.log(`${prefix}_IP must be an IPv4 address (got "${host}"); that drone is off`); return null; }
-  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, start:startOf(prefix), depth:() => readDepth(id), mayTalk:() => mayTalk(id), surfaceAt:(x, y) => surfaceHeightAt(room.objects, x / 100, y / 100), odometryFit:odometryFits[id], onOdometryFit:(fit) => saveOdometryFit(id, fit), flightLog:(event) => flightLog(id, event), cameraAlwaysOn:process.env.CAMERA_ALWAYS_ON === '1', localize:(pose) => localizeFrom(id, pose), pads:() => padsOf(room.objects)});
+  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, start:startOf(prefix), depth:() => readDepth(id), mayTalk:() => mayTalk(id), surfaceAt:(x, y) => surfaceHeightAt(room.objects, x / 100, y / 100), odometryFit:odometryFits[id], onOdometryFit:(fit) => saveOdometryFit(id, fit), flightLog:(event) => flightLog(id, event), cameraAlwaysOn:process.env.CAMERA_ALWAYS_ON === '1', localize:(pose) => localizeFrom(id, pose), pads:() => padsOf(room.objects), survey:surveyFrom});
 }
 const drones = new Map<string, RealTello>();
 for (const [id, prefix] of FLEET) {

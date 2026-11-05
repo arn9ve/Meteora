@@ -37,7 +37,7 @@ function segPointDist(p: Point, a: Point, b: Point): number {
 }
 
 /** Flies `droneId` to `target` (room cm). Ends when there, landed, stopped from outside, or out of steps. */
-export async function missionGoTo(droneId: string, drone: MissionDrone, target: { x: number; y: number; name: string }, deps: MissionDeps): Promise<Result> {
+export async function missionGoTo(droneId: string, drone: MissionDrone, target: { x: number; y: number; name: string; pad?: number; minHeightCm?: number }, deps: MissionDeps): Promise<Result> {
   const maxSteps = deps.maxSteps ?? 30, timeoutMs = deps.timeoutMs ?? 1500;
   if (!drone.live().flying) return { ok: false, error: 'Take off first' };
   const generation = drone.generation;
@@ -62,6 +62,14 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
       battery: snap.battery, haveSafePoint: safe !== null, lastSteps: lastSteps.slice(-4), step, maxSteps,
     };
     if (!route && remainingCm >= 30) return { ok: false, error: 'No safe way to the target from here', steps: step - 1, choices };
+    // A table with a mission pad: once the route has reached its edge, climb over the table, fly to
+    // the centre and centre exactly over the pad (the drone's own sensor). Nothing for the model to decide.
+    if (target.pad && (state.nextLegCm < 20 || remainingCm < 30)) {
+      deps.onStep?.({ step, action: `over ${target.name}, centre on pad ${target.pad}`, reason: 'final approach', by: 'rules', overruled: null, ms: 0 });
+      const r = await drone.execute({ droneId, action: 'go_to', x: target.x, y: target.y, pad: target.pad, check: false, ...(target.minHeightCm ? { minHeightCm: target.minHeightCm } : {}) });
+      deps.log?.({ event: 'decision', step, by: 'rules', did: { action: 'pad_final', pad: target.pad }, ok: r.ok, error: r.error });
+      return { ...r, action: 'go_to', reached: r.ok, padCentred: r.ok, steps: step, choices: [...choices, `pad ${target.pad}`] };
+    }
     // Ask the model; the rules answer if it is not configured, too slow, or makes no sense.
     const t0 = Date.now();
     let by: 'model' | 'rules' | 'timeout' = 'rules', reason = 'rules', choice: Choice = ruleChoice(state);

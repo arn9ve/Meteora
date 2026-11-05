@@ -10,7 +10,7 @@ export type Plan = { units: 'm'; walls: { a: Point; b: Point }[]; above?: { soli
 export type Pose = { x: number; y: number; heading: number; facingConfirmed?: boolean };
 export type CameraConfig = { x?: number; y?: number; heading?: number; z?: number; tilt?: number; img?: Point[]; plan?: Point[]; h?: number[] | null };
 export type Zone = { id: string; name: string; points: Point[] };
-export type RoomObject = { id: string; name: string; kind: 'table' | 'shelf' | 'wall' | 'obstacle' | 'other'; x: number; y: number; w: number; d: number; rotation: number; heightM?: number };
+export type RoomObject = { id: string; name: string; kind: 'table' | 'shelf' | 'wall' | 'obstacle' | 'other'; x: number; y: number; w: number; d: number; rotation: number; heightM?: number; pad?: number };
 export type RoomConfig = { drones: Record<string, Pose>; cameras: Record<string, CameraConfig>; zones: Zone[]; objects: RoomObject[] };
 
 export async function loadPlan(path: string): Promise<Plan | null> {
@@ -38,7 +38,7 @@ export function sanitizeObjects(input: unknown[]): RoomObject[] {
     const o = v as Partial<RoomObject>;
     if (![o.x, o.y, o.w, o.d, o.rotation].every((n) => typeof n === 'number' && Number.isFinite(n))) return [];
     const kind = (['table', 'shelf', 'wall', 'obstacle', 'other'] as const).includes(o.kind!) ? o.kind! : 'other';
-    return [{id:typeof o.id === 'string' && o.id.trim() ? o.id.trim().slice(0, 20) : `object-${i + 1}`, name:typeof o.name === 'string' && o.name.trim() ? o.name.trim().slice(0, 40) : `${kind} ${i + 1}`, kind, x:o.x!, y:o.y!, w:Math.max(0.05, Math.min(30, o.w!)), d:Math.max(0.05, Math.min(30, o.d!)), rotation:o.rotation!, ...(typeof o.heightM === 'number' && Number.isFinite(o.heightM) && o.heightM >= 0 ? {heightM:o.heightM} : {})}];
+    return [{id:typeof o.id === 'string' && o.id.trim() ? o.id.trim().slice(0, 20) : `object-${i + 1}`, name:typeof o.name === 'string' && o.name.trim() ? o.name.trim().slice(0, 40) : `${kind} ${i + 1}`, kind, x:o.x!, y:o.y!, w:Math.max(0.05, Math.min(30, o.w!)), d:Math.max(0.05, Math.min(30, o.d!)), rotation:o.rotation!, ...(typeof o.heightM === 'number' && Number.isFinite(o.heightM) && o.heightM >= 0 ? {heightM:o.heightM} : {}), ...(Number.isInteger(o.pad) && o.pad! >= 1 && o.pad! <= 8 ? {pad:o.pad} : {})}];
   });
 }
 
@@ -70,10 +70,12 @@ function crosses(o: RoomObject, from: Point, to: Point): boolean {
   }
   return true;
 }
-export function resolveObjectPlace(objects: RoomObject[], place: string, fromCm: {x: number; y: number}): {x: number; y: number; minHeightCm?: number} | null {
+export function resolveObjectPlace(objects: RoomObject[], place: string, fromCm: {x: number; y: number}): {x: number; y: number; minHeightCm?: number; pad?: number} | null {
   const name = (s: string) => s.trim().toLowerCase().replace(/^tavolo\s+(\d+)$/, 'table $1');
   const target = objects.find((o) => name(o.name) === name(place) || o.id.toLowerCase() === place.trim().toLowerCase());
   if (!target) return null;
+  // A table with a mission pad in its centre: go to the pad itself, above the table, and centre on it.
+  if (target.pad) return {x:Math.round(target.x * 100), y:Math.round(target.y * 100), minHeightCm:Math.min(250, Math.round((target.heightM ?? 0.75) * 100) + 50), pad:target.pad};
   const from: Point = [fromCm.x / 100, fromCm.y / 100], to = approachPoint(target, from);
   const heights = objects.filter((o) => o !== target && o.heightM !== undefined && crosses(o, from, to)).map((o) => Math.ceil(o.heightM! * 100 + 50));
   return {x:Math.round(to[0] * 100), y:Math.round(to[1] * 100), ...(heights.length ? {minHeightCm:Math.max(20, ...heights)} : {})};
@@ -317,4 +319,9 @@ export function clearanceAt(plan: RoutePlan | null, objects: RoomObject[], p: Po
   }
   for (const w of plan?.walls ?? []) best = Math.min(best, segDist(p, w.a, w.b));
   return best;
+}
+
+/** Mission pads on the plan: number -> centre (room cm) and the height of what it lies on. */
+export function padsOf(objects: RoomObject[]): { pad: number; x: number; y: number; surfaceCm: number; name: string }[] {
+  return objects.filter((o) => o.pad).map((o) => ({ pad: o.pad!, x: Math.round(o.x * 100), y: Math.round(o.y * 100), surfaceCm: Math.round((o.heightM ?? (o.kind === 'table' ? 0.75 : 0)) * 100), name: o.name }));
 }

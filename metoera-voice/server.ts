@@ -9,7 +9,7 @@ import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { RealTello, type Detections, type DepthView } from './src/tello.ts';
-import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, planRoute, type Point, type RoomConfig } from './src/room.ts';
+import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, planRoute, padsOf, type Point, type RoomConfig } from './src/room.ts';
 import { missionGoTo } from './src/mission.ts';
 import { runCalibration, summary as calibrationSummary, type CalibrationReport } from './src/calibration.ts';
 import { landmarksOf, expectedInView, bearingOfX, solvePose, localizePrompt, parseSeen } from './src/landmarks.ts';
@@ -152,7 +152,7 @@ async function decidedGoTo(id: string, drone: RealTello, body: Record<string, un
   const name = typeof routed.place === 'string' ? routed.place.trim().toLowerCase() : null;
   const to = name ? map.places[name] : typeof routed.x === 'number' && typeof routed.y === 'number' ? {x:routed.x, y:routed.y} : null;
   if (!to || !plan) return drone.execute(routed);
-  const result = await missionGoTo(id, drone, {x:to.x, y:to.y, name:typeof body.place === 'string' ? body.place : `(${to.x}, ${to.y})`}, {
+  const result = await missionGoTo(id, drone, {x:to.x, y:to.y, name:typeof body.place === 'string' ? body.place : `(${to.x}, ${to.y})`, ...(typeof routed.pad === 'number' ? {pad:routed.pad} : {}), ...(typeof routed.minHeightCm === 'number' ? {minHeightCm:routed.minHeightCm} : {})}, {
     plan, objects:room.objects, people:() => redzone.people, decide:process.env.XAI_API_KEY ? askDecision : null,
     log:(event) => flightLog(id, event),
     onStep:(info) => { decisionsLive.set(id, {...info, at:Date.now()}); console.log(`${new Date().toLocaleTimeString()} ${label(id)} · step ${info.step}: ${info.action} (${info.by}${info.overruled ? `, overruled: ${info.overruled}` : ''}) ${info.reason} ${info.ms} ms`); },
@@ -201,7 +201,7 @@ function droneFromEnv(id: string, prefix: string): RealTello | null {
   const host = process.env[`${prefix}_IP`]?.trim();
   if (!host) return null;
   if (!isIpv4(host)) { console.log(`${prefix}_IP must be an IPv4 address (got "${host}"); that drone is off`); return null; }
-  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, start:startOf(prefix), depth:() => readDepth(id), mayTalk:() => mayTalk(id), surfaceAt:(x, y) => surfaceHeightAt(room.objects, x / 100, y / 100), odometryFit:odometryFits[id], onOdometryFit:(fit) => saveOdometryFit(id, fit), flightLog:(event) => flightLog(id, event), cameraAlwaysOn:process.env.CAMERA_ALWAYS_ON === '1', localize:(pose) => localizeFrom(id, pose)});
+  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, start:startOf(prefix), depth:() => readDepth(id), mayTalk:() => mayTalk(id), surfaceAt:(x, y) => surfaceHeightAt(room.objects, x / 100, y / 100), odometryFit:odometryFits[id], onOdometryFit:(fit) => saveOdometryFit(id, fit), flightLog:(event) => flightLog(id, event), cameraAlwaysOn:process.env.CAMERA_ALWAYS_ON === '1', localize:(pose) => localizeFrom(id, pose), pads:() => padsOf(room.objects)});
 }
 const drones = new Map<string, RealTello>();
 for (const [id, prefix] of FLEET) {

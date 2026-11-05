@@ -298,7 +298,7 @@ const buildTools=()=>[
   droneTool('memory','What this drone remembers: position in the room, the last actions, saved places and things it saw with their position'),
   droneTool('face','Turn this drone to face a point of the room map (x,y from memory)',{x:{type:'integer'},y:{type:'integer'}},['x','y']),
   droneTool('mark','Save the current position under a name (ricorda questo punto come …)',{name:{type:'string'}},['name']),
-  droneTool('go_to','Fly to a table or object of the room plan by its name (table 1 … table 6), or to a remembered place: home (where it took off), last_landing, previous, a name saved with mark, or room coordinates x,y in cm from memory. The server plans a way around tables, pillars and walls and stops next to a table, not above it. Drone must be flying',{place:{type:'string'},x:{type:'integer'},y:{type:'integer'}},[]),
+  droneTool('go_to','Fly to a table or object of the room plan by its name (table 1 … table 6), or to a remembered place: home (where it took off), last_landing, previous, a name saved with mark, or room coordinates x,y in cm from memory. The server plans a way around tables, pillars and walls and stops next to a table, not above it; a table with a mission pad is the exception: the drone goes over it and centres exactly on the pad. Drone must be flying',{place:{type:'string'},x:{type:'integer'},y:{type:'integer'}},[]),
   droneTool('calibrate','Calibration test (fai la calibrazione, testa la precisione): the drone must be on the ground on its take-off spot; it takes off, flies right, left, right, forward, back, forward, comes back to the start with its telemetry and lands, then reports the error of each move. Takes about a minute',{sizeCm:{type:'integer',minimum:20,maximum:80,description:'Size of the moves, default 50'},photo:{type:'boolean',description:'Also check the position with a photo'}},[]),
   droneTool('localize','Check where the drone really is: one photo, Grok vision recognises the pillars and tables of the room plan in it, and the position is corrected (dove sei esattamente, controlla la posizione, ricalibra la posizione). Must be flying; it is also done by itself at the end of a go_to when the position is in doubt'),
   droneTool('photo','Take a photo with the camera of this drone (with the object boxes) and show it on the page (fai una foto, scatta)'),
@@ -820,7 +820,8 @@ function flightData(id){
   const o=l.odometry||{}, a=l.attitude||{};
   const from=l.source==='telemetry'?`Position from the telemetry (${o.reading}; ${o.fitError}% unexplained)`:o.calibrated?'Position from the telemetry once it takes off':'Position from the commands until the telemetry is understood: it needs moves of at least 20 cm in two different directions, one of them sideways (for example forward 1 m, then left 1 m)';
   const dec=l.decision&&Date.now()-l.decision.at<30000?`Step ${l.decision.step}: ${l.decision.action} (${l.decision.by==='model'?`Grok, ${l.decision.ms} ms`:l.decision.by==='timeout'?'Grok too slow: hovering':'rules'}${l.decision.reason&&l.decision.by==='model'?`: ${l.decision.reason}`:''}${l.decision.overruled?`; rules changed it: ${l.decision.overruled}`:''})`:'';
-  return [dec, from, l.flying?`flown ${(o.flownCm/100).toFixed(2)} m · ${(o.fromTakeoffCm/100).toFixed(2)} m from take-off · ${o.speedCms} cm/s`:'', l.flying?`tilt ${a.pitch}° / ${a.roll}° · ground speed ${a.vgx}, ${a.vgy}, ${a.vgz}`:''].filter(Boolean).join(' · ');
+  const pad=l.padSeen?`over mission pad ${l.padSeen.pad} (${l.padSeen.fromCentreCm} cm from its centre)`:'';
+  return [dec, pad, from, l.flying?`flown ${(o.flownCm/100).toFixed(2)} m · ${(o.fromTakeoffCm/100).toFixed(2)} m from take-off · ${o.speedCms} cm/s`:'', l.flying?`tilt ${a.pitch}° / ${a.roll}° · ground speed ${a.vgx}, ${a.vgy}, ${a.vgz}`:''].filter(Boolean).join(' · ');
 }
 function surfaceText(d){ const s=d?.startSurface; if(!s) return ''; const what=s.heightCm>0?`on a ${(s.heightCm/100).toFixed(2)} m surface`:'on the floor'; return d.flight==='flying'?`took off ${what} (${s.source==='sensor'?'confirmed by the infrared sensor':s.source==='plan'?'from the plan, not yet checked':'assumed'})`:`${what} (${s.source==='plan'?'plan':'assumed'})`; }
 function droneDetail(id){ const d=droneById(id); const placed=Boolean(R().drones[id]); if(!placed) return 'not on the plan'; if(!d?.connected) return 'on the plan · not connected'; return `${d.flight==='flying'?`flying · ${Number.isFinite(d.heightAboveFloorCm)?`${(d.heightAboveFloorCm/100).toFixed(2)} m above the floor`:''}`:'on the ground'}${Number.isFinite(d.battery)?` · ${d.battery}%`:''}`; }
@@ -832,7 +833,7 @@ function renderList(){
     group('DRONES',ds.map(id=>row('drone',id,DRONE_LABEL[id]||id,droneDetail(id),Boolean(r.drones[id])))),
     group('PHONES',['1','2','3'].map(s=>row('phone',s,`Phone ${s}`,phoneDetail(s),typeof r.cameras[s]?.x==='number'))),
     group('RED ZONES',r.zones.length?r.zones.map(z=>row('zone',z.id,z.name,`${z.points.length} corners · ${fmt(area(z.points),1)} m²${mapLive?.zones?.find(q=>q.id===z.id)?.occupied?' · person inside':''}`,true)):[emptyRow('None yet: Add → Red zone')]),
-    group('TABLES AND OBJECTS',r.objects.length?r.objects.map(o=>row('object',o.id,o.name,`${Math.round(o.w*100)} × ${Math.round(o.d*100)} cm`,true)):[emptyRow('None yet: Add → Table')]),
+    group('TABLES AND OBJECTS',r.objects.length?r.objects.map(o=>row('object',o.id,o.name,`${Math.round(o.w*100)} × ${Math.round(o.d*100)} cm${o.pad?` · pad ${o.pad}`:''}`,true)):[emptyRow('None yet: Add → Table')]),
   );
 }
 function emptyRow(t){ const p=document.createElement('p'); p.className='row-empty'; p.textContent=t; return p; }
@@ -879,7 +880,11 @@ function renderInspector(){
     const kind=document.createElement('label'); kind.className='field'; kind.innerHTML='<span>Kind</span><select></select><small></small>';
     for(const k of OBJECT_KINDS){ const op=document.createElement('option'); op.value=k; op.textContent=k; op.selected=o.kind===k; kind.querySelector('select').append(op); }
     kind.querySelector('select').addEventListener('change',e=>set('kind')(e.target.value));
-    box.append(para(o.kind.toUpperCase(),'caption'),field('Name',o.name,set('name'),{type:'text',suffix:''}),kind,
+    // A Tello mission pad (1-8) in the middle of this table: exact positions over it.
+    const pad=document.createElement('label'); pad.className='field'; pad.innerHTML='<span>Mission pad</span><select></select><small></small>';
+    for(const v of ['',1,2,3,4,5,6,7,8]){ const op=document.createElement('option'); op.value=String(v); op.textContent=v===''?'none':`pad ${v}`; op.selected=(o.pad??'')===v; pad.querySelector('select').append(op); }
+    pad.querySelector('select').addEventListener('change',e=>{ const v=Number(e.target.value); if(v>=1&&v<=8) o.pad=v; else delete o.pad; void saveObjects(); });
+    box.append(para(o.kind.toUpperCase(),'caption'),field('Name',o.name,set('name'),{type:'text',suffix:''}),kind,pad,
       field('Centre from left',o.x,set('x'),{cm:'x'}),field('Centre from bottom',o.y,set('y'),{cm:'y'}),field('Width',o.w,set('w'),{cm:'size'}),field('Depth',o.d,set('d'),{cm:'size'}),field('Turned',o.rotation,set('rotation'),{step:5,suffix:'°'}),field('Height',o.heightM,set('heightM'),{cm:'size'}),
       para('Say "go to '+o.name+'": the drone flies around tables and pillars (dashed line on the plan) and stops 60 cm from its edge, not above it.'),
       btn('Duplicate',async()=>{ const c={...o,id:`o${Date.now()}`,name:`${o.kind} ${r.objects.length+1}`,x:o.x+o.w+0.3}; r.objects.push(c); sel={kind:'object',id:c.id}; await saveObjects(); }),
@@ -1116,7 +1121,8 @@ function draw(){
     const isSel=sel?.kind==='object'&&sel.id===o.id;
     const g=svgEl('g',{'data-kind':'object','data-id':o.id,class:'obj'+(isSel?' selected':'')});
     g.append(svgEl('polygon',{points:pts(rotated(o.x,o.y,o.w,o.d,o.rotation||0)),'stroke-width':px(isSel?2:1)}));
-    if(o.w*100/u>40) g.append(svgEl('text',{x:o.x*100,y:-o.y*100+px(4),'font-size':px(11),'text-anchor':'middle'},o.name));
+    if(o.w*100/u>40) g.append(svgEl('text',{x:o.x*100,y:-o.y*100+(o.pad?px(20):px(4)),'font-size':px(11),'text-anchor':'middle'},o.name));
+    if(o.pad){ g.append(svgEl('rect',{x:o.x*100-10,y:-o.y*100-10,width:20,height:20,rx:2,class:'pad'})); g.append(svgEl('text',{x:o.x*100,y:-o.y*100+px(3.5),'font-size':px(9),'text-anchor':'middle',class:'pad-label'},`m${o.pad}`)); }
     svg.append(g);
     if(isSel) svg.append(...handle('object',o.id,o.x,o.y,o.rotation||0,Math.max(o.w,o.d)*50+px(22)));
   }

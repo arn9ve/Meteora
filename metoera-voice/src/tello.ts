@@ -86,6 +86,8 @@ export type TelloOptions = {
   cameraIdleMs?: number;
   /** Time for the video to reach the vision service after streamon. */
   cameraWarmMs?: number;
+  /** Mission pads on the room plan (number, centre in room cm): exact positions when the drone is over one. */
+  pads?: () => { pad: number; x: number; y: number; surfaceCm: number; name: string }[];
   /** Where am I really: a photo, the plan and Grok vision (the server does it). Pose and result in room cm. */
   localize?: (pose: { x: number; y: number; heading: number }) => Promise<{ ok: true; x: number; y: number; seen: string[]; residualCm: number; note: string } | { ok: false; error: string }>;
 };
@@ -207,6 +209,9 @@ export class RealTello {
   #pad = -1;
   #padAt = 0;
   #padsSeen: Set<number> | null = null;
+  #padRel = { x: 0, y: 0, z: 0 };     // where the drone is relative to the pad it sees (cm, pad axes)
+  #padSnapAt = 0;
+  readonly #pads: TelloOptions['pads'] | null;
   #lastError: string | null = null;
 
   constructor(options: TelloOptions) {
@@ -233,6 +238,7 @@ export class RealTello {
     this.#cameraIdleMs = options.cameraIdleMs ?? 30000;
     this.#cameraWarmMs = options.cameraWarmMs ?? 2500;
     this.#localize = options.localize ?? null;
+    this.#pads = options.pads ?? null;
     this.#depth = options.depth ?? null;
     this.#settleMs = options.settleMs ?? 400;
     this.#mayTalk = options.mayTalk ?? (() => null);
@@ -428,6 +434,12 @@ export class RealTello {
     if (ready) return this.#fail(ready);
     if (['look', 'scan', 'approach', 'explore', 'face', 'describe', 'find'].includes(String(value.action))) await this.#cameraOn();
 
+    // Centre over a mission pad of the plan and take its exact position.
+    if (value.action === 'pad_center') {
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'pad'].includes(k)) || !Number.isInteger(value.pad)) return this.#fail('pad_center needs pad (1-8)');
+      return this.#padCenter(value.pad as number);
+    }
+
     // Where am I really: one photo, the plan, Grok vision.
     if (value.action === 'localize') {
       if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for localize');
@@ -450,6 +462,8 @@ export class RealTello {
       try {
         const up = await this.#motion('takeoff', 'takeoff', 20000, () => { this.#flight = 'flying'; });
         if (!up.ok) this.#stopOdometry();
+        // Pads on the plan: watch for them from now on (exact positions over them).
+        else if (this.#pads?.().length) await this.#ensurePads();
         return up;
       } finally { this.#takingOff = false; }
     }
@@ -760,7 +774,7 @@ export class RealTello {
     // Fly back to a remembered place (home, last_landing, previous, or one saved with mark) or
     // to room coordinates, in straight lines of at most 200 cm, then face the old heading.
     if (value.action === 'go_to') {
-      if (Object.keys(value).some((k) => !['droneId', 'action', 'place', 'x', 'y', 'minHeightCm', 'via', 'check'].includes(k))) return this.#fail('Unknown argument for go_to');
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'place', 'x', 'y', 'minHeightCm', 'via', 'check', 'pad'].includes(k))) return this.#fail('Unknown argument for go_to');
       // check: false = one leg of a decision mission: the mission decides when to look, not go_to.
       const autoCheck = value.check !== false;
       // Waypoints (cm) of a route around tables, pillars and walls, flown before the target.
@@ -803,6 +817,12 @@ export class RealTello {
           const move = await this.#motion('go_to', sdk, 20000);
           if (!move.ok) return move;
         }
+      }
+      // A table with a pad: centre on it, exact position (no photo needed).
+      if (Number.isInteger(value.pad)) {
+        const centred = await this.#padCenter(value.pad as number);
+        this.#world.record('go_to', typeof value.place === 'string' ? value.place : `pad ${value.pad}`);
+        return centred.ok ? { ...centred, action: 'go_to', note: 'Centred over the mission pad: exact position.' } as TelloResult : centred;
       }
       // Arrived, as far as it knows. In doubt: one photo fix, and one short correction if needed.
       let check: TelloResult | null = null;
@@ -1078,6 +1098,52 @@ export class RealTello {
     if (this.#pending.accept(text) || /^error\b/i.test(text)) this.#pending.resolve(text);
   }
 
+  /** Mission pad detection on (downward sensor). False when this drone has none. */
+  async #ensurePads(): Promise<boolean> {
+    if (this.#padsOn) return true;
+    for (const sdk of ['mon', 'mdirection 0']) {
+      const reply = await this.#request(sdk, isOk, 5000);
+      if (!reply || !isOk(reply)) return false;
+    }
+    this.#padsOn = true;
+    return true;
+  }
+
+  /**
+   * Flying over a pad of the plan, within 15 cm of its centre: the position is the pad's (the pad's
+   * own axes are not known, so only near the centre). At most every 2 s, and not during a move.
+   */
+  #padSnap(): void {
+    if (this.#flight !== 'flying' || this.#busy || Date.now() - this.#padSnapAt < 2000) return;
+    const known = this.#pads?.().find((p) => p.pad === this.#pad);
+    if (!known || Math.hypot(this.#padRel.x, this.#padRel.y) > 15) return;
+    const p = this.#world.pose, dx = known.x - p.x, dy = known.y - p.y;
+    this.#padSnapAt = Date.now();
+    if (Math.hypot(dx, dy) < 3) return;
+    this.#world.setXY(known.x, known.y); this.#odo.shift(dx, dy);
+    this.#flightLog?.({ event: 'pad-fix', pad: known.pad, name: known.name, shiftCm: Math.round(Math.hypot(dx, dy)), rel: this.#padRel });
+  }
+
+  /** Centre exactly over pad N (the drone does it with its own sensor) and take its position. */
+  async #padCenter(pad: number): Promise<TelloResult> {
+    const known = this.#pads?.().find((p) => p.pad === pad);
+    if (!known) return this.#fail(`No mission pad ${pad} on the room plan`);
+    if (this.#flight !== 'flying') return this.#fail('pad_center requires a flying drone');
+    if (!(await this.#ensurePads())) return this.#fail('This drone did not turn on mission pad detection');
+    const until = Date.now() + 1500;
+    while (Date.now() < until && !(this.#pad === pad && Date.now() - this.#padAt < 500)) await new Promise((r) => setTimeout(r, 100));
+    if (!(this.#pad === pad && Date.now() - this.#padAt < 500)) return this.#fail(`Pad ${pad} (${known.name}) is not under the drone: the position estimate is off; try localize, or move over it`);
+    const height = Math.max(50, Math.min(150, this.#padRel.z > 0 ? Math.abs(this.#padRel.z) : 80));
+    const r = await this.#request(`go 0 0 ${height} 30 m${pad}`, isOk, 15000);
+    if (!r || !isOk(r)) return this.#fail(`Could not centre over pad ${pad}: ${r ?? 'no reply'}`);
+    const p = this.#world.pose, dx = known.x - p.x, dy = known.y - p.y;
+    this.#world.setXY(known.x, known.y); this.#odo.shift(dx, dy);
+    this.#needFix = false; this.#flownAtFix = this.#odo.stats.flownCm;
+    this.#flightLog?.({ event: 'pad-center', pad, name: known.name, correctionCm: Math.round(Math.hypot(dx, dy)) });
+    this.#world.record('pad_center', `${known.name} (pad ${pad}), corrected ${Math.round(Math.hypot(dx, dy))} cm`);
+    return { ok: true, mode: 'real', action: 'pad_center', drone: this.snapshot(), pad, name: known.name, correctionCm: Math.round(Math.hypot(dx, dy)), pose: this.#world.pose } as TelloResult;
+  }
+
   /** Camera on (if it is not) and kept on for a while; waits for the first frames after switching on. */
   async #cameraOn(): Promise<boolean> {
     this.#cameraUntil = Date.now() + this.#cameraIdleMs;
@@ -1159,6 +1225,7 @@ export class RealTello {
       pose: { x: p.x, y: p.y, heading: p.heading, zFloor: (this.#flight === 'flying' ? p.z : 0) + base.heightCm },
       source: this.#odoActive && this.#odo.calibrated ? 'telemetry' : 'commands',
       odometry: this.#odo.stats, attitude: { ...this.#attitude }, tofCm: this.#tof, startSurface: base,
+      padSeen: Date.now() - this.#padAt < 1000 ? { pad: this.#pad, fromCentreCm: Math.round(Math.hypot(this.#padRel.x, this.#padRel.y)) } : null,
     };
   }
 
@@ -1239,7 +1306,11 @@ export class RealTello {
     this.#tof = tof !== null && tof >= 10 && tof < 800 ? tof : null;
     this.#learnBase();
     const mid = read('mid');
-    if (mid !== null && mid > 0) { this.#pad = mid; this.#padAt = Date.now(); this.#padsSeen?.add(mid); }
+    if (mid !== null && mid > 0) {
+      this.#pad = mid; this.#padAt = Date.now(); this.#padsSeen?.add(mid);
+      this.#padRel = { x: read('x') ?? 0, y: read('y') ?? 0, z: read('z') ?? 0 };
+      this.#padSnap();
+    }
     this.#lastStateAt = Date.now();
   }
 

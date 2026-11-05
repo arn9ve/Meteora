@@ -395,6 +395,8 @@ function phoneAI(slot: string): Promise<unknown> {
  * A target above a table (home, when it took off from one) also gets a safe height over it.
  */
 function routeGoTo(drone: RealTello, body: Record<string, unknown>): Record<string, unknown> | {error: string} {
+  const placed = room.drones[String(body.droneId)];
+  if (plan && placed && !placed.facingConfirmed) return {error:`${DRONE_NAMES[String(body.droneId)] ?? 'The drone'} does not know which way it faces in the room: set the direction of its camera on the plan (Room, select the drone, turn the arrow) and confirm it. Short moves like "forward 1 metre" still work.`};
   let command: Record<string, unknown> = body;
   const map = drone.map() as {pose: {x: number; y: number}; places: Record<string, {x: number; y: number}>};
   if (typeof body.place === 'string' && !drone.hasPlace(body.place)) {
@@ -593,7 +595,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
     // ---- Room panel: place drones and phones, calibrate phones, draw zones ----
     if (path === '/api/room/drone') {
       try {
-        const body = await readJson(req) as {id?: unknown; x?: unknown; y?: unknown; heading?: unknown; remove?: unknown};
+        const body = await readJson(req) as {id?: unknown; x?: unknown; y?: unknown; heading?: unknown; remove?: unknown; facingConfirmed?: unknown};
         const id = String(body?.id ?? '');
         const drone = drones.get(id);
         if (body.remove === true && drone) {
@@ -604,7 +606,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
         const heading = typeof body.heading === 'number' ? body.heading : room.drones[id]?.heading ?? 90;
         const refused = drone.placeAt({x:body.x * 100, y:body.y * 100, heading});
         if (refused) { json(res, 200, {ok:false, error:refused}); return; }
-        room.drones[id] = {x:Math.round(body.x * 100) / 100, y:Math.round(body.y * 100) / 100, heading:Math.round(heading)};
+        // Which way the camera looks must be confirmed by a person: it turns every "right" and "left".
+        const before = room.drones[id];
+        const facingConfirmed = body.facingConfirmed === true || (Boolean(before?.facingConfirmed) && before?.heading === Math.round(heading));
+        room.drones[id] = {x:Math.round(body.x * 100) / 100, y:Math.round(body.y * 100) / 100, heading:Math.round(heading), facingConfirmed};
         await saveConfig(roomPath, room);
         json(res, 200, {ok:true, drone:room.drones[id]});
       } catch { json(res, 400, {ok:false, error:'Invalid request'}); }

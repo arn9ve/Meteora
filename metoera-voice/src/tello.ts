@@ -744,10 +744,18 @@ export class RealTello {
         if (target.z !== undefined && target.z !== 0) target.z = Math.max(target.z, value.minHeightCm);
       }
       const stops: { x: number; y: number; z?: number }[] = [...(via as [number, number][]).map(([x, y]) => ({ x, y, ...(target!.z !== undefined ? { z: target!.z } : {}) })), target];
+      // Never chase the estimate: if the telemetry reading changes on the way, the position may
+      // jump, so stop and hover. Each stop gets its legs plus at most 2 short corrections.
+      const reading = this.#odo.version;
       for (const stop of stops) {
+        let last = Infinity;
         for (let leg = 0; leg < 8; leg += 1) {
           if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
+          if (this.#odo.version !== reading) return this.#fail('Stopped and hovering: the position from the telemetry was re-estimated on the way, so the rest of the route is not safe. Ask again.');
           const v = this.#world.vectorTo(stop);
+          if (v.distance < 25 && Math.abs(v.up) < 20) break;
+          if (leg > 0 && v.distance > last + 30) return this.#fail(`Stopped and hovering: after the last move the drone is farther from the target (${v.distance} cm) than before (${last} cm). It may not see the floor well.`);
+          last = v.distance;
           const sdk = moveSdk(v.forward, v.left, v.up, 200);
           if (!sdk) break;
           const move = await this.#motion('go_to', sdk, 20000);
@@ -890,6 +898,7 @@ export class RealTello {
       if (!before && this.#odo.calibrated) this.#world.followTelemetry(true);
     }
     if (reply === null) return this.#fail(this.#interrupted ? `${action} interrupted` : `No reply to ${action}`);
+    if (/no valid imu/i.test(reply)) return this.#fail(`${action} refused: the drone cannot see the floor well enough to hold its position (more light, or a floor with marks). It may have moved anyway`);
     if (!isOk(reply)) return this.#fail(`Drone rejected ${action}: ${reply.slice(0, 60)}`);
     onOk?.();
     this.#lastError = null;
@@ -1095,7 +1104,7 @@ export class RealTello {
     if (this.#odoActive) {
       if (this.#flight === 'landed' && !this.#takingOff) this.#stopOdometry();
       else {
-        const sample = { t: Date.now(), vgx: this.#attitude.vgx, vgy: this.#attitude.vgy, vgz: this.#attitude.vgz, heading: this.#world.pose.heading };
+        const sample = { t: Date.now(), vgx: this.#attitude.vgx, vgy: this.#attitude.vgy, vgz: this.#attitude.vgz, yaw: this.#heading ?? 0, heading: this.#world.pose.heading };
         this.#odo.add(sample);
         const at = this.#odo.position;
         if (at) { this.#world.followTelemetry(true); this.#world.setXY(at.x, at.y); }

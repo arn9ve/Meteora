@@ -7,7 +7,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 
 export type Point = [number, number];
 export type Plan = { units: 'm'; walls: { a: Point; b: Point }[]; above?: { solid: string; min: Point; max: Point; z_m: number }[]; bounds: { min: Point; max: Point } };
-export type Pose = { x: number; y: number; heading: number };
+export type Pose = { x: number; y: number; heading: number; facingConfirmed?: boolean };
 export type CameraConfig = { x?: number; y?: number; heading?: number; z?: number; tilt?: number; img?: Point[]; plan?: Point[]; h?: number[] | null };
 export type Zone = { id: string; name: string; points: Point[] };
 export type RoomObject = { id: string; name: string; kind: 'table' | 'shelf' | 'wall' | 'obstacle' | 'other'; x: number; y: number; w: number; d: number; rotation: number; heightM?: number };

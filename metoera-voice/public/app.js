@@ -765,7 +765,7 @@ $('#zoomFit').addEventListener('click',()=>{ viewTouched=false; fitView(); });
 try { new ResizeObserver(()=>{ if(view) viewTouched?applyView():fitView(); }).observe(mapSvg); } catch {}
 
 // ---- saving ----
-async function saveDrone(id){ const d=R().drones[id]; const j=await post('/api/room/drone',{id,x:d.x,y:d.y,heading:d.heading}); if(!j.ok) hint(j.error||'Could not place the drone'); await refreshRoom(); }
+async function saveDrone(id,facingConfirmed=false){ const d=R().drones[id]; const j=await post('/api/room/drone',{id,x:d.x,y:d.y,heading:d.heading,...(facingConfirmed?{facingConfirmed:true}:{})}); if(!j.ok) hint(j.error||'Could not place the drone'); await refreshRoom(); }
 async function savePhone(slot){ const c=R().cameras[slot]; const j=await post('/api/room/camera',{slot,x:c.x,y:c.y,heading:c.heading,...(Number.isFinite(c.z)?{z:c.z}:{}),...(Number.isFinite(c.tilt)?{tilt:c.tilt}:{})}); if(!j.ok) hint(j.error||'Could not place the phone'); await refreshRoom(); }
 async function saveZones(){ const j=await post('/api/room/zones',{zones:R().zones}); if(!j.ok) hint(j.error||'Could not save the zones'); await refreshRoom(); }
 async function saveObjects(){ const j=await post('/api/room/objects',{objects:R().objects}); if(!j.ok) hint(j.error||'Could not save the tables'); await refreshRoom(); }
@@ -814,7 +814,7 @@ function group(title,rows){ const g=document.createElement('div'); g.className='
 function flightData(id){
   const l=liveDrones[id]; if(!l?.connected) return '';
   const o=l.odometry||{}, a=l.attitude||{};
-  const from=l.source==='telemetry'?`Position from the telemetry (${o.reading}; ${o.fitError}% unexplained)`:o.calibrated?'Position from the telemetry once it takes off':`Position from the commands: the telemetry calibrates after ${Math.max(0,2-(o.moves||0))||1} more move${o.moves>=1?'':'s'} of at least 20 cm`;
+  const from=l.source==='telemetry'?`Position from the telemetry (${o.reading}; ${o.fitError}% unexplained)`:o.calibrated?'Position from the telemetry once it takes off':'Position from the commands until the telemetry is understood: it needs moves of at least 20 cm in two different directions, one of them sideways (for example forward 1 m, then left 1 m)';
   return [from, l.flying?`flown ${(o.flownCm/100).toFixed(2)} m · ${(o.fromTakeoffCm/100).toFixed(2)} m from take-off · ${o.speedCms} cm/s`:'', l.flying?`tilt ${a.pitch}° / ${a.roll}° · ground speed ${a.vgx}, ${a.vgy}, ${a.vgz}`:''].filter(Boolean).join(' · ');
 }
 function surfaceText(d){ const s=d?.startSurface; if(!s) return ''; const what=s.heightCm>0?`on a ${(s.heightCm/100).toFixed(2)} m surface`:'on the floor'; return d.flight==='flying'?`took off ${what} (${s.source==='sensor'?'confirmed by the infrared sensor':s.source==='plan'?'from the plan, not yet checked':'assumed'})`:`${what} (${s.source==='plan'?'plan':'assumed'})`; }
@@ -887,8 +887,13 @@ function droneInspector(box,id){
   const live=para('','note live-drone'); box.append(live,para('','note flight-data'));
   if(!p){ box.append(para('Not on the plan: the drone does not know where it is, so "go to table 1" and the nearest-drone choice cannot use it.'),btn('Place on the plan',()=>startMode({kind:'place',what:'drone',id,label:DRONE_LABEL[id]||id}),'dark')); updateInspectorLive(); return; }
   // Typing one number moves the drone from where it is now (not from where it was first placed).
-  const set=k=>v=>{ if(Number.isFinite(v)){ const at=posOf('drone',id)||p; R().drones[id]={x:at.x,y:at.y,heading:at.heading,[k]:v}; void saveDrone(id); } };
+  const set=k=>v=>{ if(Number.isFinite(v)){ const at=posOf('drone',id)||p; R().drones[id]={...p,x:at.x,y:at.y,heading:at.heading,[k]:v}; void saveDrone(id,k==='heading'||Boolean(p.facingConfirmed)); } };
   const now=posOf('drone',id)||p;
+  if(!p.facingConfirmed){
+    const warn=document.createElement('div'); warn.className='facing-warn';
+    warn.append(para('WHICH WAY DOES ITS CAMERA LOOK?','caption'),para(`Turn the arrow on the plan with the round handle (or type Facing) until it points where the camera of the real drone points, then confirm. Until then "go to table" is refused: every right and left depends on it.`,'note'),btn('The camera looks this way',async()=>{ await post('/api/room/drone',{id,x:now.x,y:now.y,heading:now.heading,facingConfirmed:true}); await refreshRoom(); },'dark'));
+    box.append(warn);
+  }
   box.append(field('From left wall',now.x,set('x'),{cm:'x'}),field('From bottom wall',now.y,set('y'),{cm:'y'}),field('Facing',now.heading,set('heading'),{step:5,suffix:'°'}),
     para(`Drawn at real size (${DRONE_SIZE_CM[id]?.join(' × ')||'10 × 10'} cm). Place it where it stands before take-off; it can only be moved while it is on the ground. 0° = facing right on the plan, 90° = up.`),
     btn('Move it on the plan',()=>startMode({kind:'place',what:'drone',id,label:DRONE_LABEL[id]||id})),
@@ -1036,7 +1041,7 @@ mapSvg.addEventListener?.('pointerup',async()=>{
   if(d.kind==='zone'||d.type==='vertex') await saveZones();
   else if(d.kind==='object') await saveObjects();
   else if(d.kind==='phone') await savePhone(d.id);
-  else if(d.kind==='drone') await saveDrone(d.id);
+  else if(d.kind==='drone') await saveDrone(d.id,d.type==='rotate'||Boolean(R().drones[d.id]?.facingConfirmed));
 });
 mapSvg.addEventListener?.('pointerleave',()=>{ $('#roomCursor').textContent=''; hidePhoneHover(); });
 // Hover a phone on the plan: its picture right there.
@@ -1135,7 +1140,11 @@ function draw(){
     g.append(svgEl('circle',{cx:x,cy:y,r:px(9),fill:'#fff',stroke:col,'stroke-width':px(2)}));
     g.append(svgEl('polygon',{points:pts(rotated(at.x,at.y,w/100,d/100,at.heading||0)),fill:col}));
     for(const [u2,v2] of [[1,1],[1,-1],[-1,1],[-1,-1]]){ const ox=(u2*w/2)*Math.cos(a)-(v2*d/2)*Math.sin(a), oy=(u2*w/2)*Math.sin(a)+(v2*d/2)*Math.cos(a); g.append(svgEl('circle',{cx:x+ox,cy:y-oy,r:2.4,fill:'none',stroke:col,'stroke-width':0.6})); }
-    g.append(svgEl('line',{x1:x,y1:y,x2:x+Math.cos(a)*Math.max(px(16),12),y2:y-Math.sin(a)*Math.max(px(16),12),stroke:col,'stroke-width':px(2.5),'stroke-linecap':'round'}));
+    // The camera direction: an arrow; dashed with a ? until a person confirmed it.
+    const ok=Boolean(r.drones[id]?.facingConfirmed), L=Math.max(px(30),20), ax=x+Math.cos(a)*L, ay=y-Math.sin(a)*L, hw=px(6);
+    g.append(svgEl('line',{x1:x,y1:y,x2:ax,y2:ay,stroke:col,'stroke-width':px(2.5),'stroke-linecap':'round',...(ok?{}:{'stroke-dasharray':`${px(4)} ${px(4)}`})}));
+    g.append(svgEl('polygon',{points:`${ax+Math.cos(a)*hw},${ay-Math.sin(a)*hw} ${ax+Math.cos(a+2.4)*hw},${ay-Math.sin(a+2.4)*hw} ${ax+Math.cos(a-2.4)*hw},${ay-Math.sin(a-2.4)*hw}`,fill:col}));
+    if(!ok) g.append(svgEl('text',{x:ax+px(6),y:ay-px(6),'font-size':px(13),'font-weight':700,fill:col},'?'));
     g.append(svgEl('text',{x:x+px(12),y:y+px(16),'font-size':px(12),'font-weight':600,fill:col},`${DRONE_LABEL[id]}${droneById(id)?.flight==='flying'?' · flying':''}`));
     svg.append(g);
     if(isSel&&droneById(id)?.flight!=='flying') svg.append(...handle('drone',id,at.x,at.y,at.heading||0,px(40)));

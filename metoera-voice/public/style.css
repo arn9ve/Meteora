@@ -253,3 +253,4 @@
 .map-svg .route-dot{fill:#111;fill-opacity:.55}
 .map-svg .trail{fill:none;stroke-opacity:.45;stroke-linecap:round;stroke-linejoin:round}
 .inspector .flight-data{color:#222}
+.facing-warn{width:100%;border:1px solid #e6c4c4;background:#fff7f7;border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:6px;align-items:flex-start}

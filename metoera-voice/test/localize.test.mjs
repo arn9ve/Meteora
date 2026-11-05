@@ -106,7 +106,7 @@ test('pan_report: looks left, ahead and right with a photo each, back to its hea
   const r = await d.execute({ droneId: 'tello', action: 'pan_report' });
   assert.equal(r.ok, true, r.error);
   assert.equal(asked.n, 3);
-  assert.match(asked.prompt, /Answer in Italian/);
+  assert.match(asked.prompt, /Answer in English/);
   assert.deepEqual(f.received.filter((c) => /^(cw|ccw) /.test(c)), ['ccw 60', 'cw 60', 'cw 60', 'ccw 60']);
   assert.match(r.report, /persona seduta/);
 });

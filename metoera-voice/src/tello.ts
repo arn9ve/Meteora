@@ -491,7 +491,7 @@ export class RealTello {
       const question = typeof value.question === 'string' && value.question.trim() ? value.question.trim().slice(0, 300) : 'Is there anyone here? For each person: where (left, ahead or right, and about how far), what they look like (clothes and colours, so they can be recognised) and what they are doing. If nobody is there, say so clearly and say what you see instead. Mention anything unusual (an open door, a bag left behind, something on the floor). Be concrete: no general phrases like "the area looks normal".';
       const awake = setInterval(() => { void this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 2000); }, 5000);
       let report: string | null;
-      try { report = await this.#askVision(photos, `These ${photos.length} photos come from an indoor security drone that has just arrived at a spot to check it: photo 1 looking ${deg}° to the left, photo 2 straight ahead, photo 3 ${deg}° to the right. Answer in Italian, in two or three short sentences, only from what is really in the photos. ${question}`); }
+      try { report = await this.#askVision(photos, `These ${photos.length} photos come from an indoor security drone that has just arrived at a spot to check it: photo 1 looking ${deg}° to the left, photo 2 straight ahead, photo 3 ${deg}° to the right. Answer in English, in two or three short sentences, only from what is really in the photos. ${question}`); }
       finally { clearInterval(awake); }
       if (!report) return this.#fail('Grok vision did not answer');
       this.#world.record('pan_report', report.slice(0, 80));

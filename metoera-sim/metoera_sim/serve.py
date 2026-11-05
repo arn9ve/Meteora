@@ -65,6 +65,7 @@ STATE_HZ = 10
 SYNTHETIC_PADS = {"b": (2.0, -1.0)}  # the magenta pad of check.synthetic_room()
 LOG_HZ = 5
 ROOM_CHECK_S = 1.0  # how often the venue looks for changes made on the Room panel
+NEAR_PERSON_M = 0.3  # the flight log notes a person this close to a flying drone
 RUNS = Path(__file__).resolve().parent.parent / "runs"
 
 
@@ -114,6 +115,7 @@ class Drone:
     last_sender: Optional[str] = None  # replies of moves that end later go there
     encoder: Optional[H264Encoder] = None
     sent_bytes: int = field(default=0)
+    near_person: bool = False  # for logging a near miss once, when it starts
 
     def poll(self) -> None:
         while True:
@@ -157,14 +159,22 @@ class Drone:
             kind = "would_hit" if event.startswith("blocked:") else "event"
             self.flight_log.write(self.name, kind, text=event)
 
-    def log_state(self, obstacles: Obstacles) -> None:
+    def log_state(self, obstacles) -> None:
         if not self.sim.sdk:
             return
         p = self.sim.pose
         airborne = self.sim.flying and self.sim.height_cm(self.sim.clock()) >= 10  # not spinning up on the pad
         clear = obstacles.clearance(p) if airborne else math.inf
+        person = obstacles.person_clearance(p) if airborne and hasattr(obstacles, "person_clearance") else math.inf
+        cm = lambda m: None if math.isinf(m) else round(m * 100, 1)  # noqa: E731
         self.flight_log.write(self.name, "state", x=round(p.x, 3), y=round(p.y, 3), z=round(p.z, 3), yaw=round(p.yaw, 1),
-                              flying=self.sim.flying, clearance_cm=None if math.isinf(clear) else round(clear * 100, 1))
+                              flying=self.sim.flying, clearance_cm=cm(clear), person_clearance_cm=cm(person))
+        near = person < NEAR_PERSON_M
+        if near and not self.near_person:
+            text = f"a person within {person * 100:.0f} cm of the drone"
+            log(self.name, f"!! {text}")
+            self.flight_log.write(self.name, "near_person", text=text, cm=cm(person))
+        self.near_person = near
 
     def send_state(self) -> None:
         if self.commander and self.sim.sdk:
@@ -173,13 +183,16 @@ class Drone:
             except OSError:
                 pass
 
-    def send_frame(self, renderer, splats) -> None:
+    def send_frame(self, renderer, splats_for) -> None:
+        """One video frame; `splats_for(camera pose)` gives the scene seen from there (the people
+        turn to face the camera)."""
         if not (self.commander and self.sim.video):
             return
         if self.encoder is None:
             self.encoder = H264Encoder(renderer.k.width, renderer.k.height)
             log(self.name, f"video: {self.encoder.name}, {renderer.k.width}x{renderer.k.height} at {FPS} fps to {self.commander}:{VIDEO_PORT}")
-        view = renderer.render(splats, camera_pose(self.sim.pose), yuv420p=True)
+        eye = camera_pose(self.sim.pose)
+        view = renderer.render(splats_for(eye), eye, yuv420p=True)
         for chunk in datagrams(self.encoder.encode(view.yuv)):
             try:
                 self.video_out.sendto(chunk, (self.commander, VIDEO_PORT))
@@ -256,10 +269,12 @@ def venue_changed(world: World) -> Optional[World]:
         return None
 
 
-def follow_room(world: World, drones: list[Drone], margin: float):
+def follow_room(world: World, drones: list[Drone], margin: float, crowd, since_start):
     """The Room panel changed .room.json (the venue was rebuilt with its furniture): carry a
     landed drone to the spot it was moved to on the plan, as a person would."""
-    obstacles = Obstacles(world.splats, margin=margin)
+    from .people import Composer, WithPeople
+
+    obstacles = WithPeople(Obstacles(world.splats, margin=margin), crowd, since_start)
     for d in drones:
         d.sim.obstacles = obstacles
         x, y, z, heading = world.starts[d.name]
@@ -269,7 +284,7 @@ def follow_room(world: World, drones: list[Drone], margin: float):
             log(d.name, f"carried to ({x:+.2f}, {y:+.2f}), facing {heading:.0f} deg (moved on the Room panel)")
             d.flight_log.write(d.name, "event", text=f"carried to {x:.2f},{y:.2f} facing {heading:.0f}")
     log("room", f"venue rebuilt from the Room panel: {len(world.splats):,} Gaussians")
-    return world, world.splats, obstacles
+    return world, obstacles, Composer(world.splats, crowd)
 
 
 def main(argv=None) -> int:
@@ -288,6 +303,8 @@ def main(argv=None) -> int:
     p.add_argument("--imu-errors", type=float, default=0.0,
                    help="chance that a move answers `error No valid imu` (default 0; half of those move anyway)")
     p.add_argument("--no-log", action="store_true", help="no flight log in runs/")
+    p.add_argument("--people", default=None,
+                   help="people.json of who stands and walks where (default in the venue: venue/people.json; none elsewhere)")
     a = p.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)  # the log shows up at once, even in a file
 
@@ -302,10 +319,20 @@ def main(argv=None) -> int:
     world = load(a.scene, a.max_gaussians, a.margin)
     splats, mission_pads = world.splats, world.mission_pads
     flight_log = FlightLog(None if a.no_log else RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}.jsonl")
-    obstacles = Obstacles(splats, margin=a.margin)
+    from .people import Composer, Crowd, WithPeople, load_people
+
+    walkers = load_people(Path(a.people)) if a.people else (load_people() if a.scene == "venue" else [])
+    crowd = Crowd(walkers) if walkers else None
+    started = time.monotonic()
+    since_start = lambda: time.monotonic() - started  # noqa: E731  (the people's clock)
+    obstacles = WithPeople(Obstacles(splats, margin=a.margin), crowd, since_start)
+    composer = Composer(splats, crowd)
     renderer = Renderer()
-    print(f"{len(splats):,} Gaussians ({len(obstacles.points):,} solid) loaded in {time.perf_counter() - t0:.1f} s; "
+    print(f"{len(splats):,} Gaussians ({len(obstacles.static.points):,} solid) loaded in {time.perf_counter() - t0:.1f} s; "
           f"the drone is a {98 + 2000 * a.margin:.0f} x {92.5 + 2000 * a.margin:.0f} x {41 + 2000 * a.margin:.0f} mm box")
+    for w in walkers:
+        print(f"  person: {w.name}, " + (f"standing at {w.path[0]}" if len(w.path) == 1 else
+                                         f"walking {len(w.path)} points at {w.speed} m/s from {w.start_after:.0f} s"))
 
     drones: list[Drone] = []
     for i, name in enumerate(names):
@@ -356,11 +383,12 @@ def main(argv=None) -> int:
             if now >= next_room:
                 changed = venue_changed(world)
                 if changed:
-                    world, splats, obstacles = follow_room(changed, drones, a.margin)
+                    world, obstacles, composer = follow_room(changed, drones, a.margin, crowd, since_start)
                 next_room = now + ROOM_CHECK_S
             if now >= next_frame:
+                t_people = since_start()
                 for d in drones:
-                    d.send_frame(renderer, splats)
+                    d.send_frame(renderer, lambda eye: composer.for_eye(t_people, (eye.x, eye.y)))
                 next_frame = max(next_frame + frame_period, now)  # fell behind: skip frames, don't catch up
     except KeyboardInterrupt:
         print("stopped")

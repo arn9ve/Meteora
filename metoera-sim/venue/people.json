@@ -1,0 +1,16 @@
+[
+  {
+    "name": "man in a beige coat",
+    "photo": { "image": "bus.jpg", "box": [47, 399, 239, 904] },
+    "path": [[6.2, 3.6]]
+  },
+  {
+    "name": "man in a dark coat and red shirt",
+    "photo": { "image": "bus.jpg", "box": [223, 408, 344, 860] },
+    "path": [[10.8, 4.5], [10.8, -3.0], [10.0, -3.0], [10.0, 4.5]],
+    "speed": 0.7,
+    "wait": 4,
+    "loop": true,
+    "start_after": 15
+  }
+]

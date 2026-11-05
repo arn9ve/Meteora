@@ -5,8 +5,8 @@ The drone is a box: Ryze's 98 x 92.5 x 41 mm (Tello EDU, TLW004) plus a margin o
 include, and the error in the scan. The RoboMaster TT is the same airframe; its expansion
 board makes it taller, which the margin covers too.
 
-Only still things are known: the scan is frozen in time, so a person walking into a blind
-spot is not simulated.
+A scan is frozen in time. People who walk are simulated in the venue (people.py): a move into
+one is refused like a move into a wall; one walking into a hovering drone is only logged.
 
 The check uses the centres of the Gaussians that are solid enough (opacity >= 0.3, as the
 viewer's floor pick). A handful of them must be in the way (`min_count`) before a move
@@ -59,12 +59,13 @@ class Blocked:
     gap_cm: Optional[int] = None  # moves: from the drone's body to the obstacle
     free_cm: Optional[int] = None  # moves: how far it may go, keeping the margin
     free_deg: Optional[int] = None  # turns: how far it could turn
+    what: str = "obstacle"  # or "person" (people.py)
 
     @property
     def message(self) -> str:
         if self.direction == "turn":
-            return f"no room to turn: obstacle after {self.free_deg} degrees"
-        return f"obstacle {self.gap_cm} cm {WHERE[self.direction]}: at most {self.free_cm} cm"
+            return f"no room to turn: {self.what} after {self.free_deg} degrees"
+        return f"{self.what} {self.gap_cm} cm {WHERE[self.direction]}: at most {self.free_cm} cm"
 
 
 def _sweep(p: torch.Tensor, d: tuple[float, float, float], h: tuple[float, float, float]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -89,6 +90,13 @@ class Obstacles:
         self.points = splats.means[splats.opacities >= min_opacity].to(torch.float32)
         self.margin = margin
         self.min_count = min_count
+
+    @classmethod
+    def of_points(cls, points: torch.Tensor, margin: float = MARGIN_M, min_count: int = 5) -> "Obstacles":
+        """Solid points [N, 3] given directly (the people's cylinders)."""
+        self = cls.__new__(cls)
+        self.points, self.margin, self.min_count = points.to(torch.float32), margin, min_count
+        return self
 
     def _local(self, body: Pose) -> torch.Tensor:
         """Every point in the drone's frame: [N, 3] forward, left, up from the body centre."""

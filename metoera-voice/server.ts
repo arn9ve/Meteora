@@ -279,9 +279,28 @@ function droneFromEnv(id: string, prefix: string): RealTello | null {
   const host = process.env[`${prefix}_IP`]?.trim();
   if (!host) return null;
   if (!isIpv4(host)) { console.log(`${prefix}_IP must be an IPv4 address (got "${host}"); that drone is off`); return null; }
-  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, start:startOf(prefix), depth:() => readDepth(id), mayTalk:() => mayTalk(id), surfaceAt:(x, y) => surfaceHeightAt(room.objects, x / 100, y / 100), odometryFit:odometryFits[id], onOdometryFit:(fit) => saveOdometryFit(id, fit), flightLog:(event) => flightLog(id, event), cameraAlwaysOn:process.env.CAMERA_ALWAYS_ON === '1', localize:(pose) => localizeFrom(id, pose), pads:() => padsOf(room.objects), survey:surveyFrom});
+  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, start:startOf(prefix), depth:() => readDepth(id), mayTalk:() => mayTalk(id), surfaceAt:(x, y) => surfaceHeightAt(room.objects, x / 100, y / 100), odometryFit:odometryFits[id], onOdometryFit:(fit) => saveOdometryFit(id, fit), flightLog:(event) => flightLog(id, event), cameraAlwaysOn:process.env.CAMERA_ALWAYS_ON === '1', localize:(pose) => localizeFrom(id, pose), pads:() => padsOf(room.objects), survey:surveyFrom, onLinkBack:() => void linkBackHome(id)});
 }
 const drones = new Map<string, RealTello>();
+
+/** The link came back after a loss in flight: home (its take-off spot) with the normal route and checks, then land. */
+async function linkBackHome(id: string) {
+  const drone = drones.get(id);
+  if (!drone) return;
+  console.log(`${new Date().toLocaleTimeString()} ${label(id)} · link back: flying home and landing`);
+  flightLog(id, {event:'link-home-start'});
+  try {
+    const body = {droneId:id, action:'go_to', place:'home'};
+    let r: Record<string, unknown> = {ok:false};
+    if (drone.snapshot().flight === 'flying') {
+      if (decisionOn) r = await decidedGoTo(id, drone, body) as Record<string, unknown>;
+      else { const c = routeGoTo(drone, body); if (!('error' in c)) { const {face: _f, label: _l, centre: _c, zone: _z, ...plain} = c as Record<string, unknown>; r = await drone.execute(plain) as Record<string, unknown>; } }
+    }
+    flightLog(id, {event:'link-home-done', ok:r.ok, error:r.error});
+    // Lost again on the way: #watchLink handles it (backs up again or lands). Otherwise land here.
+    if (drone.link !== 'lost' && drone.snapshot().flight === 'flying') await drone.forceLand();
+  } finally { drone.linkHandled(); }
+}
 for (const [id, prefix] of FLEET) {
   const drone = droneFromEnv(id, prefix);
   if (drone) drones.set(id, drone);

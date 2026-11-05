@@ -666,6 +666,7 @@ async function onIntrusion(e){
   showZoneAlert(`Person in ${e.name}${sending?' · sending the nearest drone':''}`);
   log(e.name,`Person at ${e.x.toFixed(1)}, ${e.y.toFixed(1)} m`);
   const zoneIt=String(e.name).replace(/^zone\b/i,'zona');
+  if(!socket&&!$('#startVoice').disabled) { try { start(); } catch {} }
   notifyGrok(`${e.name}: phone ${e.slot||''} sees a person. ${sending?`Say right now, in the person's language, in one short sentence: you saw a person in ${e.name} and you are going to check. The nearest drone is taking off and flying there by itself: do NOT call any drone tool for this.`:`Tell the person in one short sentence and offer to send a drone (go_to place "${e.name}").`}`,true,sending?`Ho visto una persona nella ${zoneIt}. Vado a controllare.`:`C'è una persona nella ${zoneIt}.`);
   if(!sending) return;
   try {
@@ -688,8 +689,13 @@ async function runZoneMission(e,run){
     const r=await runOnDrone(id,'go_to',{place:e.name});
     void refreshDrone();
     const zoneIt=String(e.name).replace(/^zone\b/i,'zona');
-    notifyGrok(r.insideZone?`${name} is inside ${e.name}${r.checkedWithPhoto?', confirmed with a photo':''}.${r.report?` It looked left, ahead and right; Grok vision reports: ${r.report} Tell the person this report in two short sentences.`:' Say it in a few words.'}`:`${name} did not get inside ${e.name}: ${r.error||'unknown'}${r.where?` (it is ${r.where})`:''}. Say it in one short sentence.`,true,
-      r.insideZone?`${nameOf(id).replace(/^Drone \d · /,'')} è nella ${zoneIt}. ${r.report||''}`:`${nameOf(id).replace(/^Drone \d · /,'')} non è riuscito a entrare nella ${zoneIt}.`);
+    const short=nameOf(id).replace(/^Drone \d · /,'');
+    const ask=`Cosa faccio? Resto qui a controllare, mi avvicino alla persona, o torno a casa e atterro?`;
+    // Arrived: the report of what it sees, then ask what to do. It hovers there until told.
+    notifyGrok(r.insideZone
+      ?`${short} arrived inside ${e.name}${r.checkedWithPhoto?' (position confirmed with a photo)':''} and is hovering there, waiting. ${r.report?`It looked left, ahead and right. What it saw: ${r.report}`:'It has no report from the camera.'} Speak now, in Italian: first say it arrived in ${zoneIt}, then give exactly what it saw (who, where, what they look like, what they do; keep the concrete details, add nothing), then ask: "${ask}" Then wait for the answer. Stay: call nothing. Come closer: approach with label person. Home: go_to place home, then land.`
+      :`${short} did not get inside ${e.name}: ${r.error||'unknown'}${r.where?` (it is ${r.where})`:''}. Say in Italian, in one short sentence, what went wrong and where it is now, then ask: "Riprovo o torno a casa?"`,true,
+      r.insideZone?`${short} è arrivato nella ${zoneIt}. ${r.report||''} ${ask}`:`${short} non è riuscito a entrare nella ${zoneIt}. Riprovo o torno a casa?`);
   } finally { if(longTask[id]==='zone') delete longTask[id]; }
 }
 async function cameraCommand(slot,command){
@@ -765,7 +771,8 @@ function startLive(){
     for(const d of data.drones||[]){
       const was=liveDrones[d.id]; liveDrones[d.id]=d;
       // Link lost while flying: said at once (the server tells it to land; the Tello also lands by itself).
-      if(was?.connected&&!d.connected&&was.flying) { const n=nameOf(d.id).replace(/^Drone \d · /,''); log(n,'Link lost while flying: landing'); notifyGrok(`${n} lost its link while flying; it is told to land and lands by itself within 15 s. Say it in one short sentence.`,true,`Ho perso il collegamento con ${n}: sta atterrando da solo.`); }
+      if(was?.connected&&!d.connected&&was.flying) { const n=nameOf(d.id).replace(/^Drone \d · /,''); log(n,'Wi-Fi lost while flying: backing up toward home'); notifyGrok(`${n} lost the Wi-Fi link while flying: it backs up toward home; when the link is back it flies home and lands, otherwise it lands where it is. Say it in one short sentence in Italian.`,true,`Ho perso il segnale con ${n}: torno verso casa.`); }
+      if(was&&was.link!=='back'&&d.link==='back') { const n=nameOf(d.id).replace(/^Drone \d · /,''); log(n,'Wi-Fi back: flying home and landing'); notifyGrok(`The Wi-Fi link to ${n} is back: it is flying home to its take-off spot and will land there. Say it in one short sentence in Italian.`,true,`Segnale ripreso: ${n} torna a casa e atterra.`); }
       // A new flight plan for a drone this person flies: Grok says it before the drone moves.
       // Said by the page that sent the flight (or the pilot's page): what it is doing and why, before it moves.
       if(d.plan&&d.plan.at!==was?.plan?.at&&was&&(longTask[d.id]||drones.find(x=>x.id===d.id)?.pilot?.me)&&Date.now()-d.plan.at<8000) notifyGrok(`${nameOf(d.id)} is thinking out loud, before moving: ${d.plan.text} Say this reasoning to the person in two short sentences, in their language (where it is, what it saw, where the target is and what it will do), then that it is going.`,true);

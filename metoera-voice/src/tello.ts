@@ -48,6 +48,12 @@ export type TelloOptions = {
   localPort?: number;
   statePort?: number;
   keepaliveMs?: number;
+  /** The link came back after a loss while flying: the server flies it home and lands it. */
+  onLinkBack?: () => void;
+  /** How long without telemetry counts as a lost link while flying (ms). */
+  linkLostMs?: number;
+  /** Still lost this long after the loss: land where it is (ms). */
+  linkLandMs?: number;
   minTakeoffBattery?: number;
   hoverMs?: number;
   maxMoveCm?: number;
@@ -198,6 +204,16 @@ export class RealTello {
   // When to look: after the drone could not see the floor, after an aborted route, or when the
   // position comes from commands only, the next route starts (and every route ends) with a photo fix.
   #needFix = false;
+  // Where it flew this flight (room cm, every 20 cm): on a lost link it backs up along it, toward home.
+  #trail: { x: number; y: number }[] = [];
+  #onLinkBack: (() => void) | null = null;
+  #linkLostMs = 2500;
+  #linkLandMs = 12000;
+  #lostSince = 0;
+  #retreat: { sent: boolean; ok: boolean; dx: number; dy: number } | null = null;
+  #lastLandTry = 0;
+  #linkWatch: ReturnType<typeof setInterval> | null = null;
+  #linkState: 'ok' | 'lost' | 'back' = 'ok';
   #flownAtFix = 0;
   readonly #flightLog: ((event: Record<string, unknown>) => void) | null;
   // Start surface: the plan gives a first guess at takeoff; the ToF confirms or corrects it once
@@ -238,6 +254,9 @@ export class RealTello {
     this.#odo.fit = options.odometryFit ?? null;
     this.#onFit = options.onOdometryFit ?? null;
     this.#flightLog = options.flightLog ?? null;
+    this.#onLinkBack = options.onLinkBack ?? null;
+    this.#linkLostMs = options.linkLostMs ?? 2500;
+    this.#linkLandMs = options.linkLandMs ?? 12000;
     this.#cameraAlwaysOn = options.cameraAlwaysOn ?? false;
     this.#cameraIdleMs = options.cameraIdleMs ?? 30000;
     this.#cameraWarmMs = options.cameraWarmMs ?? 2500;
@@ -469,10 +488,10 @@ export class RealTello {
       }
       await this.#motion('pan_report', `ccw ${deg}`, 15000); // back to where it faced
       if (!photos.length) return this.#fail('No pictures from the camera');
-      const question = typeof value.question === 'string' && value.question.trim() ? value.question.trim().slice(0, 300) : 'Is there anyone here? How many people, what are they doing, where are they (left, ahead, right)? Anything unusual?';
+      const question = typeof value.question === 'string' && value.question.trim() ? value.question.trim().slice(0, 300) : 'Is there anyone here? For each person: where (left, ahead or right, and about how far), what they look like (clothes and colours, so they can be recognised) and what they are doing. If nobody is there, say so clearly and say what you see instead. Mention anything unusual (an open door, a bag left behind, something on the floor). Be concrete: no general phrases like "the area looks normal".';
       const awake = setInterval(() => { void this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 2000); }, 5000);
       let report: string | null;
-      try { report = await this.#askVision(photos, `These ${photos.length} photos come from an indoor security drone that has just arrived at a spot to check it: photo 1 looking ${deg}° to the left, photo 2 straight ahead, photo 3 ${deg}° to the right. Answer in Italian, briefly (two or three short sentences) and only from the photos. ${question}`); }
+      try { report = await this.#askVision(photos, `These ${photos.length} photos come from an indoor security drone that has just arrived at a spot to check it: photo 1 looking ${deg}° to the left, photo 2 straight ahead, photo 3 ${deg}° to the right. Answer in Italian, in two or three short sentences, only from what is really in the photos. ${question}`); }
       finally { clearInterval(awake); }
       if (!report) return this.#fail('Grok vision did not answer');
       this.#world.record('pan_report', report.slice(0, 80));
@@ -1098,6 +1117,8 @@ export class RealTello {
     if (this.#cameraAlwaysOn) this.#video = isOk((await this.#request('streamon', isOk, 3000)) ?? '');
     this.#keepalive = setInterval(() => this.#keepaliveTick(), this.#keepaliveMs);
     this.#keepalive.unref();
+    this.#linkWatch ??= setInterval(() => this.#watchLink(), 500);
+    this.#linkWatch.unref?.();
     return null;
   }
 
@@ -1106,11 +1127,8 @@ export class RealTello {
   #keepaliveTick(): void {
     // Flying but no telemetry for 3 s: the link is bad. Keeping the drone awake would stop it from
     // landing by itself (5 Nov: it stayed up), so tell it to land instead, every tick, skipping the queue.
-    if (this.#flight === 'flying' && this.#lastStateAt && Date.now() - this.#lastStateAt > 3000) {
-      this.#flightLog?.({ event: 'link-lost', sinceMs: Date.now() - this.#lastStateAt });
-      void this.#request('land', isOk, 2000, true);
-      return;
-    }
+    // Link lost while flying: never keep it awake (#watchLink backs it up toward home, then lands it).
+    if (this.#lostSince) return;
     if (this.#busy || this.#pending) return;
     const run = this.#queue.then(async () => {
       await this.#stopDone;
@@ -1124,6 +1142,72 @@ export class RealTello {
     });
     this.#queue = run.catch(() => undefined);
   }
+
+  /**
+   * Lost Wi-Fi while flying (no telemetry for #linkLostMs): stop what it was doing and send ONE
+   * move back along the way it came (up to 2 m toward home: that path was free, and nearer home
+   * the signal is better). Sent once, never repeated, because a relative move that arrived twice
+   * would fly it twice as far. Link back: the server flies it home with the normal checks and
+   * lands it. Still lost after 12 s: land where it is (the Tello also lands by itself after 15 s
+   * without commands).
+   */
+  #watchLink(): void {
+    const now = Date.now();
+    const stale = this.#lastStateAt ? now - this.#lastStateAt : 0;
+    if (this.#flight !== 'flying') { this.#lostSince = 0; this.#retreat = null; this.#linkState = 'ok'; return; }
+    if (stale > this.#linkLostMs) {
+      if (!this.#lostSince) {
+        this.#lostSince = now; this.#linkState = 'lost';
+        this.#generation += 1; // the running mission or move stops
+        this.#pending?.resolve(null); this.#pending = null;
+        const to = this.#retreatPoint();
+        const v = to ? this.#world.vectorTo(to) : null;
+        const sdk = v ? moveSdk(v.forward, v.left, 0, 200) : null;
+        this.#flightLog?.({ event: 'link-lost', sinceMs: stale, retreatTo: to, sdk });
+        if (sdk && to) {
+          const r = { sent: true, ok: false, dx: to.x - this.#world.pose.x, dy: to.y - this.#world.pose.y };
+          this.#retreat = r;
+          void this.#request(sdk, isOk, 10000, true).then((reply) => { if (reply && isOk(reply)) r.ok = true; this.#flightLog?.({ event: 'retreat-reply', reply }); });
+        }
+      } else if (now - this.#lostSince > this.#linkLandMs && now - this.#lastLandTry > 1500) {
+        this.#lastLandTry = now;
+        this.#flightLog?.({ event: 'link-lost-land', sinceMs: stale });
+        void this.#request('land', isOk, 1500, true);
+      }
+      return;
+    }
+    if (this.#lostSince) {
+      // Back. Where it is now: the move back was done if the drone said ok; otherwise unsure.
+      const r = this.#retreat;
+      if (r?.ok) { const p = this.#world.pose; this.#world.setXY(p.x + r.dx, p.y + r.dy); this.#odo.shift(r.dx, r.dy); }
+      else if (r?.sent) this.#needFix = true;
+      this.#flightLog?.({ event: 'link-back', lostMs: now - this.#lostSince, retreatDone: r?.ok ?? false });
+      this.#lostSince = 0; this.#retreat = null; this.#linkState = 'back';
+      this.#onLinkBack?.();
+    }
+  }
+
+  /** About 1.5 m back along the trail of this flight, or toward the take-off spot without one. */
+  #retreatPoint(): { x: number; y: number } | null {
+    const p = this.#world.pose;
+    let walked = 0, prev = { x: p.x, y: p.y };
+    for (let i = this.#trail.length - 1; i >= 0; i -= 1) {
+      const q = this.#trail[i];
+      walked += Math.hypot(q.x - prev.x, q.y - prev.y); prev = q;
+      if (walked >= 150 || Math.hypot(q.x - p.x, q.y - p.y) >= 150) return { x: q.x, y: q.y };
+    }
+    if (this.#trail.length) return this.#trail[0];
+    const home = this.#takeoffAt;
+    if (!home) return null;
+    const d = Math.hypot(home.x - p.x, home.y - p.y);
+    if (d < 25) return null;
+    const k = Math.min(1, 150 / d);
+    return { x: p.x + (home.x - p.x) * k, y: p.y + (home.y - p.y) * k };
+  }
+
+  /** ok, lost (backing up / landing), or back (the server is flying it home). */
+  get link(): 'ok' | 'lost' | 'back' { return this.#linkState; }
+  linkHandled(): void { if (this.#linkState === 'back') this.#linkState = 'ok'; }
 
   #open(): Promise<void> {
     if (this.#command) return Promise.resolve();
@@ -1326,7 +1410,7 @@ export class RealTello {
   live() {
     const p = this.#world.pose, base = this.#currentBase();
     return {
-      id: this.#id, flying: this.#flight === 'flying', connected: Date.now() - this.#lastStateAt < 3000,
+      id: this.#id, flying: this.#flight === 'flying', connected: Date.now() - this.#lastStateAt < 3000, link: this.#linkState,
       pose: { x: p.x, y: p.y, heading: p.heading, zFloor: (this.#flight === 'flying' ? p.z : 0) + base.heightCm },
       source: this.#odoActive && this.#odo.calibrated ? 'telemetry' : 'commands',
       odometry: this.#odo.stats, attitude: { ...this.#attitude }, tofCm: this.#tof, startSurface: base,
@@ -1339,6 +1423,7 @@ export class RealTello {
     this.#baseSamples = [];
     const p = this.#world.pose;
     this.#takeoffAt = { x: p.x, y: p.y };
+    this.#trail = [{ x: p.x, y: p.y }];
     this.#base = this.#planBase();
   }
 
@@ -1409,6 +1494,8 @@ export class RealTello {
         this.#odo.add(sample);
         const at = this.#odo.position;
         if (at) { this.#world.followTelemetry(true); this.#world.setXY(at.x, at.y); }
+        const w = this.#world.pose, last = this.#trail[this.#trail.length - 1];
+        if (this.#flight === 'flying' && (!last || Math.hypot(w.x - last.x, w.y - last.y) >= 20)) { this.#trail.push({ x: w.x, y: w.y }); if (this.#trail.length > 600) this.#trail.shift(); }
         this.#flightLog?.({ event: 'sample', ...sample, h: this.#heightCm, yaw: this.#heading, tof: read('tof'), pitch: this.#attitude.pitch, roll: this.#attitude.roll, x: at ? Math.round(at.x) : null, y: at ? Math.round(at.y) : null });
       }
     }

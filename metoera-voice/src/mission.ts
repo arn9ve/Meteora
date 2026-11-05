@@ -69,7 +69,7 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
   for (let step = 1; step <= maxSteps; step += 1) {
     if (drone.generation !== generation) return { ok: false, error: 'Mission stopped (stop, land or emergency)', steps: step - 1, choices };
     if (!drone.live().flying) return { ok: false, error: 'The drone landed: mission over', steps: step - 1, choices };
-    if (drone.live().connected === false) return { ok: false, error: 'Lost the link to the drone: it is told to land, and the Tello lands by itself after 15 s without commands', steps: step - 1, choices, linkLost: true };
+    if (drone.live().connected === false) return { ok: false, error: 'Lost the Wi-Fi link: the drone backs up toward home; when the link is back it flies home and lands, otherwise it lands where it is', steps: step - 1, choices, linkLost: true };
     const live = drone.live(), at: Point = [live.pose.x / 100, live.pose.y / 100];
     const remainingCm = Math.round(Math.hypot(target.x - live.pose.x, target.y - live.pose.y));
     // Tables are obstacles only when the drone flies lower than 50 cm above them; pillars and walls always.

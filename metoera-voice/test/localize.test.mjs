@@ -111,17 +111,45 @@ test('pan_report: looks left, ahead and right with a photo each, back to its hea
   assert.match(r.report, /persona seduta/);
 });
 
-test('flying with no telemetry for 3 s: no more keep-awake, it is told to land', async (t) => {
+async function linkRig(t, opts = {}) {
   const s = dgram.createSocket('udp4'); await new Promise((r) => s.bind(0, '127.0.0.1', r)); const statePort = s.address().port; await new Promise((r) => s.close(r));
   const f = await fake();
-  let telemetry = true;
+  const rig = { f, telemetry: true };
   const tx = dgram.createSocket('udp4');
-  const timer = setInterval(() => { if (telemetry) tx.send('pitch:0;roll:0;yaw:0;tof:80;h:80;bat:80;', statePort, '127.0.0.1'); }, 50);
-  const d = new RealTello({ host: '127.0.0.1', port: f.port, localPort: 0, statePort, expectedSerial: SERIAL, cameraWarmMs: 0, keepaliveMs: 200 });
-  t.after(() => { clearInterval(timer); tx.close(); d.close(); f.close(); });
-  await d.execute({ droneId: 'tello', action: 'takeoff' });
-  await new Promise((r) => setTimeout(r, 300));
-  telemetry = false;                                  // the link goes bad: no more telemetry
-  await new Promise((r) => setTimeout(r, 3800));
-  assert.ok(f.received.filter((c) => c === 'land').length >= 1, JSON.stringify(f.received.slice(-6)));
+  const timer = setInterval(() => { if (rig.telemetry) tx.send('pitch:0;roll:0;yaw:0;tof:80;h:80;bat:80;', statePort, '127.0.0.1'); }, 50);
+  rig.d = new RealTello({ host: '127.0.0.1', port: f.port, localPort: 0, statePort, expectedSerial: SERIAL, cameraWarmMs: 0, keepaliveMs: 200, linkLostMs: 500, linkLandMs: 1500, ...opts });
+  t.after(() => { clearInterval(timer); tx.close(); rig.d.close(); f.close(); });
+  await rig.d.execute({ droneId: 'tello', action: 'takeoff' });
+  await sleep(300);
+  return rig;
+}
+
+test('lost Wi-Fi in flight: no keep-awake, ONE move back along its way toward home, then land if still lost', async (t) => {
+  const rig = await linkRig(t); const { f, d } = rig;
+  const r = await d.execute({ droneId: 'tello', action: 'move', direction: 'forward', centimeters: 100 });
+  assert.equal(r.ok, true);
+  await sleep(300);
+  const before = f.received.length;
+  rig.telemetry = false;
+  await sleep(2600);
+  const after = f.received.slice(before);
+  const backs = after.filter((c) => /^(back|go) /.test(c));
+  assert.equal(backs.length, 1, JSON.stringify(after));
+  assert.match(backs[0], /^back (9\d|100)$/);
+  assert.ok(!after.slice(after.indexOf(backs[0])).includes('battery?'), JSON.stringify(after)); // no keep-awake once lost
+  assert.ok(after.includes('land'), JSON.stringify(after));
+});
+
+test('lost Wi-Fi then back: the server is told to fly it home', async (t) => {
+  let back = 0;
+  const rig = await linkRig(t, { onLinkBack: () => { back += 1; }, linkLandMs: 60000 });
+  rig.telemetry = false;
+  await sleep(900);
+  assert.equal(rig.d.link, 'lost');
+  rig.telemetry = true;
+  await sleep(800);
+  assert.equal(back, 1);
+  assert.equal(rig.d.link, 'back');
+  rig.d.linkHandled();
+  assert.equal(rig.d.link, 'ok');
 });

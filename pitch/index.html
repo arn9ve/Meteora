@@ -52,7 +52,7 @@
 
 <main class="deck" id="deck">
 
-  <section class="slide dots" id="cover" data-title="Meteora" data-grok="Hi, I am Grok. I fly Meteora's drones. When a camera sees something strange, I send a drone to look first.">
+  <section class="slide dots" id="cover" data-title="Meteora">
     <canvas class="field" aria-hidden="true"></canvas>
     <div class="brand"><svg viewBox="0 0 60 60" aria-hidden="true"><use href="#logo-mark"/></svg><span>Meteora</span></div>
     <h1 class="display">Drone patrol that checks when a camera sees something strange.</h1>
@@ -63,13 +63,13 @@
     </div>
   </section>
 
-  <section class="slide red dots" id="problem" data-title="The problem" data-grok="A site this big has cameras everywhere, and every alert needs someone to walk over and check.">
+  <section class="slide red dots" id="problem" data-title="The problem">
     <p class="eyebrow"><span class="num">01</span> The problem</p>
     <div class="grid2 wide-left">
       <div class="stack" style="gap:22px">
         <h2 class="display" style="font-size:clamp(40px,5.6vw,92px)">A big site needs a closer look.</h2>
         <div class="facts">
-          <div><svg class="m-icon"><use href="#i-building"/></svg><span><b style="font-weight:400">55,000 m²</b> in one site, watched by cameras.</span></div>
+          <div><svg class="m-icon"><use href="#i-building"/></svg><span>55,000 m² in one site, watched by cameras.</span></div>
           <div><svg class="m-icon"><use href="#i-bell"/></svg><span>Every alert needs a guard to walk over and check.</span></div>
           <div><svg class="m-icon"><use href="#i-clock"/></svg><span>Real intruders wait in the same queue as wind, shadows and cats.</span></div>
         </div>
@@ -97,32 +97,34 @@
     </div>
   </section>
 
-  <section class="slide dots" id="answer" data-title="Our answer" data-grok="So instead of a guard, a drone goes first. It looks, it understands, and only then it calls a person.">
+  <section class="slide dots" id="answer" data-title="Our answer">
     <p class="eyebrow"><span class="num">02</span> Our answer</p>
     <h2 class="display" style="font-size:clamp(40px,5.6vw,92px)">Send a drone to look <span class="red">first.</span></h2>
     <div class="beats">
-      <div class="beat"><span class="k">1</span><h3>Detect</h3><p>A camera sees a person inside a red zone.</p></div>
-      <div class="beat"><span class="k">2</span><h3>Fly</h3><p>The nearest drone takes off by itself and flies there.</p></div>
-      <div class="beat"><span class="k">3</span><h3>Report</h3><p>It understands the scene and tells the guard what is going on. People move only when it matters.</p></div>
+      <div class="beat"><div class="beat-head"><span class="k">1</span><span class="bicon"><svg class="m-icon"><use href="#i-zone"/></svg></span></div><h3>Detect</h3><p>A camera sees a person inside a red zone.</p></div>
+      <div class="beat"><div class="beat-head"><span class="k">2</span><span class="bicon"><svg class="m-icon"><use href="#i-drone"/></svg></span></div><h3>Fly</h3><p>The nearest drone takes off by itself and flies there.</p></div>
+      <div class="beat"><div class="beat-head"><span class="k">3</span><span class="bicon"><svg class="m-icon"><use href="#i-bell"/></svg></span></div><h3>Report</h3><p>It understands the scene and tells the guard what is going on. People move only when it matters.</p></div>
     </div>
   </section>
 
-  <section class="slide" id="detect" data-title="Anything can be a detector" data-grok="Anything that sees can raise the alarm. Today I watch for people, in the zones you draw.">
+  <section class="slide" id="detect" data-title="Anything can be a detector">
     <p class="eyebrow"><span class="num">03</span> Detect</p>
     <div class="grid2">
-      <div class="stack" style="gap:18px">
+      <div class="stack" style="gap:20px">
         <h2 class="title">Anything that sees can be a detector.</h2>
-        <p class="lead">Meteora is built so any source can raise an alarm. Today it watches for people inside the red zones you draw.</p>
-        <div class="sources">
-          <span class="m-chip"><span class="m-dot is-on"></span>Phones · today</span>
-          <span class="m-chip"><span class="m-dot"></span>IP cameras · next</span>
-          <span class="m-chip"><span class="m-dot"></span>Door and motion sensors · next</span>
+        <div class="tt">
+          <div class="tt-col">
+            <span class="m-caption">Today</span>
+            <div class="src on"><span class="sicon"><svg class="m-icon"><use href="#i-phone"/></svg></span><div><b>Phones</b><span>Any phone opens a link and watches for people inside the red zones you draw.</span></div></div>
+          </div>
+          <div class="tt-col">
+            <span class="m-caption">Tomorrow</span>
+            <div class="src"><span class="sicon"><svg class="m-icon"><use href="#i-cctv"/></svg></span><div><b>The site’s IP cameras</b><span>The cameras already on the walls.</span></div></div>
+            <div class="src"><span class="sicon"><svg class="m-icon"><use href="#i-door"/></svg></span><div><b>Door contacts</b><span>A door that opens at the wrong time.</span></div></div>
+            <div class="src"><span class="sicon"><svg class="m-icon"><use href="#i-sensor"/></svg></span><div><b>Motion detectors</b><span>Movement in an empty room.</span></div></div>
+          </div>
         </div>
-        <div class="case">
-          <span class="time">Case · security door · 02:21</span>
-          <p>Someone walks through the security door into the server room. Nobody is on the access list at this hour.</p>
-          <div class="arrow"><svg class="m-icon"><use href="#i-arrow"/></svg>Zone alarm, the nearest drone is on its way.</div>
-        </div>
+        <p class="small">One alarm, whatever the source: the nearest drone goes to look.</p>
       </div>
       <div class="row" style="align-items:flex-start;gap:14px">
         <figure class="media" style="margin:0;flex:0 0 34%"><div class="frame"><img src="media/phone-detector.gif" alt="A phone camera with a red box: a person walks into it and the phone raises the alarm"></div><figcaption><span class="tag real">Real</span> The phone</figcaption></figure>
@@ -131,13 +133,13 @@
     </div>
   </section>
 
-  <section class="slide dots" id="nearest" data-title="The nearest drone goes" data-grok="I pick the nearest free drone, it takes off on its own, and the others keep watching their areas.">
+  <section class="slide dots" id="nearest" data-title="The nearest drone goes">
     <p class="eyebrow"><span class="num">04</span> Efficiency</p>
     <h2 class="title">The nearest drone goes. By itself.</h2>
     <div class="grid2 wide-left">
       <div class="map">
         <canvas id="effMap" aria-label="Animated site map: an alarm in a zone, the nearest of three drones flies there, reports and flies back"></canvas>
-        <div class="legend"><span><span class="m-dot is-on"></span>Drone on its spot</span><span><span class="m-dot is-alarm"></span>Alarm</span><span><span class="m-dot"></span>Camera</span></div>
+        <div class="legend"><span><svg class="m-icon" style="width:16px;height:16px"><use href="#i-drone"/></svg>Drone</span><span style="color:var(--m-red)"><svg class="m-icon" style="width:16px;height:16px"><use href="#i-person"/></svg>Person</span><span><svg class="m-icon" style="width:16px;height:16px"><use href="#i-cctv"/></svg>Camera</span></div>
       </div>
       <div class="stack" style="gap:16px">
         <div class="kpis">
@@ -151,71 +153,87 @@
     </div>
   </section>
 
-  <section class="slide" id="report" data-title="The drone reports" data-grok="When it arrives, the drone understands what it sees and writes the report for the guard.">
+  <section class="slide red dots" id="report" data-title="The drone reports">
     <p class="eyebrow"><span class="num">05</span> Report</p>
     <div class="grid2 wide-left">
-      <figure class="media" style="margin:0"><div class="frame"><img src="media/drone-sees-person.gif" alt="The drone camera finds the person, confidence 0.94, while the report is written"></div><figcaption><span class="tag real">Real</span> The drone camera finds the person and writes what it sees. 3× speed.</figcaption></figure>
-      <div class="stack" style="gap:16px">
+      <div class="stack" style="gap:14px">
         <h2 class="title">The drone reports.</h2>
-        <div class="report">
-          <header><span class="m-caption is-red">Report · Zone 1</span><span class="m-caption">Black · 14:02</span></header>
-          <dl>
-            <dt>Found</dt><dd>1 person · confidence 0.94</dd>
-            <dt>Who</dt><dd class="desc">A man stands in front of the drone, centre frame. Dark curly hair, short beard, black long-sleeve shirt with a graphic print.</dd>
-            <dt>Where</dt><dd class="desc">In front of a large window with vertical bars, next to a sign reading ESTINTORI.</dd>
-          </dl>
-          <footer><span class="m-chip">Stay and watch</span><span class="m-chip">Go closer</span><span class="m-chip">Fly home</span></footer>
+        <figure class="media" style="margin:0"><div class="frame"><img src="media/drone-sees-person.gif" alt="The drone camera finds the person, confidence 0.94, while the report is written"></div><figcaption style="color:rgba(255,255,255,.85)"><span class="tag real">Real</span> The drone camera, 3× speed.</figcaption></figure>
+        <div class="how">
+          <span><svg class="m-icon"><use href="#i-camera"/></svg>3 photos: left, ahead, right</span>
+          <span><svg class="m-icon"><use href="#i-person"/></svg>Person detector: 1 person, 0.94</span>
+          <span><svg class="m-icon"><use href="#i-grok"/></svg>Grok vision writes it down</span>
         </div>
-        <p class="small">Words from the real report. The guard picks what happens next.</p>
+      </div>
+      <div class="report">
+        <header><span class="m-caption is-red">Report · Zone 1</span><span class="m-caption">Created by Meteora’s AI · Black · 14:02</span></header>
+        <dl>
+          <dt>Found</dt><dd>1 person · confidence 0.94</dd>
+          <dt>Who</dt><dd class="desc">A man stands in front of the drone, centre frame. Dark curly hair, short beard, black long-sleeve shirt with a graphic print.</dd>
+          <dt>Where</dt><dd class="desc">In front of a large window with vertical bars, next to a sign reading ESTINTORI.</dd>
+          <dt>Not said</dt><dd class="desc">No names, no guesses about intentions: only what is in the photos.</dd>
+        </dl>
+        <footer><span class="m-chip">Stay and watch</span><span class="m-chip">Go closer</span><span class="m-chip">Fly home</span></footer>
       </div>
     </div>
   </section>
 
-  <section class="slide dots" id="talk" data-title="Talk to the drones" data-grok="You can also just talk to me, like to a colleague on the radio.">
+  <section class="slide dots" id="talk" data-title="Talk to the drones">
     <p class="eyebrow"><span class="num">06</span> Voice pilot</p>
-    <div class="grid2 wide-right">
-      <div class="stack" style="gap:14px;align-items:flex-start">
-        <h2 class="title">Talk to it like a colleague.</h2>
-        <canvas class="wave" id="talkWave" aria-hidden="true"></canvas>
-        <figure class="media" style="margin:0;width:min(250px,100%)"><div class="frame"><img src="media/voice-panel.gif" alt="The real Grok panel: a question about both drones and the answer"></div><figcaption><span class="tag real">Real</span> The live panel</figcaption></figure>
-      </div>
+    <h2 class="title">Talk to it like a colleague. Watch it think.</h2>
+    <div class="grid2" style="align-items:start">
       <div class="chat" id="chat">
-        <div class="msg you"><span class="who">You</span><p>Black, go to Zone 1.</p></div>
-        <div class="msg grok"><span class="who">Grok</span><p>On my way. Six metres, around pillar three.</p><span class="action"><span class="m-dot is-alarm"></span>go_to · Zone 1</span></div>
-        <div class="msg you"><span class="who">You</span><p>What do you see?</p></div>
-        <div class="msg grok"><span class="who">Grok</span><p>One person by the door, dark jacket, walking in.</p><span class="action"><span class="m-dot is-alarm"></span>pan_report · 3 photos</span></div>
-        <div class="msg you"><span class="who">You</span><p>Stay and watch.</p></div>
-        <div class="msg grok"><span class="who">Grok</span><p>Holding here. I will tell you if anything changes.</p></div>
+        <div class="msg you" data-steps=""><span class="avatar"><svg class="m-icon"><use href="#i-user"/></svg></span><div><span class="who">You</span><p>Black, go to Zone 1.</p></div></div>
+        <div class="msg grok" data-steps="0 1 2"><span class="avatar"><svg class="m-icon"><use href="#i-grok"/></svg></span><div><span class="who">Grok</span><p>On my way. Six metres, around pillar three.</p></div></div>
+        <div class="msg you" data-steps=""><span class="avatar"><svg class="m-icon"><use href="#i-user"/></svg></span><div><span class="who">You</span><p>What do you see?</p></div></div>
+        <div class="msg grok" data-steps="3 4 5"><span class="avatar"><svg class="m-icon"><use href="#i-grok"/></svg></span><div><span class="who">Grok</span><p>One person by the door, dark jacket, walking in.</p></div></div>
+        <div class="msg you" data-steps=""><span class="avatar"><svg class="m-icon"><use href="#i-user"/></svg></span><div><span class="who">You</span><p>Stay and watch.</p></div></div>
+        <div class="msg grok" data-steps="6"><span class="avatar"><svg class="m-icon"><use href="#i-grok"/></svg></span><div><span class="who">Grok</span><p>Holding here. I will tell you if anything changes.</p></div></div>
+      </div>
+      <div class="think">
+        <span class="m-caption">What Grok does</span>
+        <ol id="thinkSteps">
+          <li><svg class="m-icon"><use href="#i-mic"/></svg><div><b>Understands</b><span>go_to · drone Black · Zone 1</span></div></li>
+          <li><svg class="m-icon"><use href="#i-route"/></svg><div><b>Plans the route</b><span>6 m, around pillar 3, 80 cm clear</span></div></li>
+          <li><svg class="m-icon"><use href="#i-drone"/></svg><div><b>Takes off and flies</b><span>checks the way ahead before each leg</span></div></li>
+          <li><svg class="m-icon"><use href="#i-check"/></svg><div><b>Inside Zone 1</b><span>position confirmed on the plan</span></div></li>
+          <li><svg class="m-icon"><use href="#i-camera"/></svg><div><b>Looks around</b><span>3 photos: left, ahead, right</span></div></li>
+          <li><svg class="m-icon"><use href="#i-eye"/></svg><div><b>Understands the scene</b><span>1 person, described</span></div></li>
+          <li><svg class="m-icon"><use href="#i-hand"/></svg><div><b>Waits for you</b><span>hovering, keeps watching</span></div></li>
+        </ol>
       </div>
     </div>
   </section>
 
-  <section class="slide" id="venue" data-title="The site at real size" data-grok="I know the site at real size. Walk it once with a phone and the plan builds itself.">
+  <section class="slide" id="venue" data-title="The site at real size">
     <p class="eyebrow"><span class="num">07</span> The site</p>
     <div class="grid2 wide-left">
       <div class="stack" style="gap:16px">
-        <h2 class="title">The site at real size, scanned with a phone.</h2>
+        <h2 class="title">The site at real size.</h2>
         <figure class="media venue-3d" style="margin:0"><div class="frame"><img src="media/room-3d.gif" alt="The hall in 3D with drones, phones and red zones"></div><figcaption>Walls, pillars, tables, where every camera looks, the drones and the red zones. A red zone takes four clicks.</figcaption></figure>
         <p class="lead" style="font-size:clamp(15px,1.25vw,19px)">Walk the site once with a LiDAR phone: walls, pillars and tables appear at real size, and each camera phone finds where it stands and looks.</p>
       </div>
-      <div class="iphone" aria-label="Meteora Scan on an iPhone: the camera view with LiDAR points and the floor plan building itself">
-        <div class="screen">
-          <div class="island"></div>
-          <div class="sb"><span>9:41</span><i>5G <b></b></i></div>
-          <div class="app">
-            <header><b>Meteora Scan</b><span class="m-dot is-alarm"></span></header>
-            <div class="cam"><canvas id="lidar" aria-hidden="true"></canvas><span>LiDAR</span></div>
-            <div class="plan"><canvas id="scanCanvas" aria-hidden="true"></canvas></div>
-            <div class="status"><span id="scanState">Walls · pillars · tables</span><span id="scanPct">100%</span></div>
-            <div class="go">Send to Meteora</div>
-            <div class="home"></div>
+      <div class="stack" style="align-items:center;gap:12px">
+        <div class="iphone" aria-label="Meteora Scan on an iPhone: the real room with LiDAR points, and the floor plan building itself">
+          <div class="screen">
+            <div class="island"></div>
+            <div class="sb"><span>9:41</span><i>5G <b></b></i></div>
+            <div class="app">
+              <header><b>Meteora Scan</b><span class="m-dot is-alarm"></span></header>
+              <div class="cam"><img src="media/room-real.jpg" alt=""><canvas id="lidar" aria-hidden="true"></canvas><span>LiDAR</span></div>
+              <div class="plan"><canvas id="scanCanvas" aria-hidden="true"></canvas></div>
+              <div class="status"><span id="scanState">Walls · pillars · tables</span><span id="scanPct">100%</span></div>
+              <div class="go">Send to Meteora</div>
+              <div class="home"></div>
+            </div>
           </div>
         </div>
+        <span class="tag next">Next · Meteora Scan</span>
       </div>
     </div>
   </section>
 
-  <section class="slide red dots" id="grok" data-title="One Grok, the whole loop" data-grok="One Grok runs the whole loop. I know when to send a drone, and when to stay quiet.">
+  <section class="slide red dots" id="grok" data-title="One Grok, the whole loop">
     <p class="eyebrow"><span class="num">08</span> Why Grok</p>
     <h2 class="title" style="max-width:24ch">One Grok runs the whole loop, and knows when to act.</h2>
     <div class="grid2" style="align-items:start">
@@ -237,34 +255,47 @@
     </div>
   </section>
 
-  <section class="slide" id="numbers" data-title="Fast enough" data-grok="It finds where it is by itself, goes by itself, and is there before anyone could walk over.">
+  <section class="slide" id="numbers" data-title="Fast enough">
     <p class="eyebrow"><span class="num">09</span> Speed</p>
     <h2 class="title">Fast enough to check before anyone walks over.</h2>
-    <div class="grid2" style="align-items:start">
-      <div class="grid3" style="grid-template-columns:repeat(2,minmax(0,1fr))">
-        <div class="cell stat"><span class="v">0.6–1.1<small> s</small></span><span class="k">Grok decides the next step</span><span class="tag real src">Venue</span></div>
-        <div class="cell stat"><span class="v">2.8<small> s</small></span><span class="k">Reads four photos and finds where the drone is</span><span class="tag real src">Venue</span></div>
-        <div class="cell stat"><span class="v">0.11<small> s</small></span><span class="k">Checks the way ahead before every leg</span><span class="tag real src">Venue</span></div>
-        <div class="cell stat"><span class="v">11<small> cm</small></span><span class="k">Average error per move, 15 cm at worst</span><span class="tag real src">Calibration flight</span></div>
-      </div>
-      <div class="stack" style="gap:18px">
+    <div class="speed">
+      <div class="sbox">
         <span class="m-caption">Alarm to eyes on the spot</span>
-        <div class="bars">
-          <div class="bar us"><span>Meteora · nearest drone</span><span class="track"><span class="fill" style="width:10%"></span></span><b>22 s</b></div>
-          <div class="bar"><span>Guard from the control room, 300 m on foot</span><span class="track"><span class="fill" style="width:100%"></span></span><b>3.6 min</b></div>
-          <div class="bar"><span>Camera only, nobody free</span><span class="track"><span class="fill" style="width:100%;background:repeating-linear-gradient(90deg,#b5b5b5 0 6px,transparent 6px 10px)"></span></span><b>queue</b></div>
-        </div>
-        <p class="small">Meteora: a simulated mission, 5.8 m with take-off and look-around. Guard: estimate at walking speed, 1.4 m/s.</p>
+        <span class="v">22<small> s</small></span>
+        <div class="cmp"><span>Meteora</span><span class="track"><span class="fill us" style="width:10%"></span></span><b>22 s</b></div>
+        <div class="cmp"><span>Guard, 300 m on foot</span><span class="track"><span class="fill" style="width:100%"></span></span><b>3.6 min</b></div>
+        <span class="src"><span class="tag sim">Simulated mission</span><span class="tag">Guard: estimate, 1.4 m/s</span></span>
+      </div>
+      <div class="sbox">
+        <span class="m-caption">Next decision in a mission</span>
+        <span class="v">0.6–1.1<small> s</small></span>
+        <div class="cmp"><span>Grok</span><span class="track"><span class="fill us" style="width:30%"></span></span><b>≈1 s</b></div>
+        <div class="cmp"><span>Remote operator</span><span class="track"><span class="fill" style="width:100%"></span></span><b>≈3 s</b></div>
+        <span class="src"><span class="tag real">Venue</span><span class="tag">Operator: estimate</span></span>
+      </div>
+      <div class="sbox">
+        <span class="m-caption">Check of the way ahead</span>
+        <span class="v">0.11<small> s</small></span>
+        <div class="cmp"><span>Depth model</span><span class="track"><span class="fill us" style="width:44%"></span></span><b>0.11 s</b></div>
+        <div class="cmp"><span>Human reaction</span><span class="track"><span class="fill" style="width:100%"></span></span><b>≈0.25 s</b></div>
+        <span class="src"><span class="tag real">Venue</span><span class="tag">Human: typical</span></span>
+      </div>
+      <div class="sbox">
+        <span class="m-caption">Knows where it is</span>
+        <span class="v">85<small> %</small></span>
+        <div class="cmp"><span>Move accuracy</span><span class="track"><span class="fill us" style="width:85%"></span></span><b>85%</b></div>
+        <div class="cmp"><span>Finds itself from 4 photos</span><span class="track"><span class="fill us" style="width:28%"></span></span><b>2.8 s</b></div>
+        <span class="src"><span class="tag real">Calibration flight</span><span class="tag real">Venue</span></span>
       </div>
     </div>
   </section>
 
-  <section class="slide dots" id="safety" data-title="People stay in charge" data-grok="I never decide alone what happens to a person. I look, I report, and I ask.">
+  <section class="slide green dots" id="safety" data-title="People stay in charge">
     <p class="eyebrow"><span class="num">10</span> Safety</p>
     <h2 class="title">People stay in charge.</h2>
     <div class="grid3">
       <div class="cell"><svg class="m-icon"><use href="#i-hand"/></svg><h3>Asks before acting</h3><p>In the zone, Grok reports and asks: stay and watch, go closer, or fly home.</p></div>
-      <div class="cell"><svg class="m-icon" style="color:var(--m-red)"><use href="#i-land"/></svg><h3>Emergency land</h3><p>One button, always on screen. It cancels every command and lands every drone.</p></div>
+      <div class="cell"><svg class="m-icon"><use href="#i-land"/></svg><h3>Emergency land</h3><p>One button, always on screen. It cancels every command and lands every drone.</p></div>
       <div class="cell"><svg class="m-icon"><use href="#i-wifi"/></svg><h3>Lost signal, safe return</h3><p>If the Wi-Fi drops, the drone backs up along its path and flies home, or lands after 12 s.</p></div>
       <div class="cell"><svg class="m-icon"><use href="#i-user"/></svg><h3>One pilot per drone</h3><p>Whoever takes off flies it until it lands. Nobody else can command it.</p></div>
       <div class="cell"><svg class="m-icon"><use href="#i-route"/></svg><h3>Keeps its distance</h3><p>80 cm from pillars, 50 cm from walls, and stops 60 cm before anything it sees.</p></div>
@@ -272,43 +303,63 @@
     </div>
   </section>
 
-  <section class="slide" id="market" data-title="Ready in an afternoon" data-grok="The kit is ready to go. Any site with cameras and few guards can run it the same afternoon.">
-    <p class="eyebrow"><span class="num">11</span> Go to market</p>
-    <h2 class="title">One kit. Ready in an afternoon.</h2>
+  <section class="slide" id="market" data-title="Possible go to market">
+    <p class="eyebrow"><span class="num">11</span> Possible go to market</p>
+    <h2 class="title">One kit, possibly live in an afternoon.</h2>
     <div class="market">
-      <div class="places">
-        <div class="place"><svg class="m-icon"><use href="#i-factory"/></svg>Plants</div>
-        <div class="place"><svg class="m-icon"><use href="#i-warehouse"/></svg>Warehouses</div>
-        <div class="place"><svg class="m-icon"><use href="#i-server"/></svg>Data centres</div>
-        <div class="place"><svg class="m-icon"><use href="#i-parking"/></svg>Car parks</div>
+      <div class="tiles">
+        <div class="tile"><svg class="m-icon"><use href="#i-factory"/></svg><span>Plants</span></div>
+        <div class="tile"><svg class="m-icon"><use href="#i-warehouse"/></svg><span>Warehouses</span></div>
+        <div class="tile"><svg class="m-icon"><use href="#i-server"/></svg><span>Data centres</span></div>
+        <div class="tile"><svg class="m-icon"><use href="#i-parking"/></svg><span>Car parks</span></div>
       </div>
       <div class="kit">
         <div class="row" style="justify-content:space-between;align-items:center"><span class="m-caption is-red">Meteora kit</span><span class="m-caption">Off the shelf</span></div>
         <div class="items">
           <div><svg class="m-icon"><use href="#i-drone"/></svg>2 drones</div>
-          <div><svg class="m-icon"><use href="#i-phone"/></svg>Any phone as camera</div>
+          <div><svg class="m-icon"><use href="#i-phone"/></svg>Phones as cameras</div>
           <div><svg class="m-icon"><use href="#i-laptop"/></svg>1 laptop</div>
           <div><svg class="m-icon"><use href="#i-grok"/></svg>Grok</div>
         </div>
         <div class="kit-claim"><p>From box to live<br><span class="red">in an afternoon.</span></p><span class="small">Nothing to install on the phones, no new cameras, no wiring: the drones use the site Wi-Fi.</span></div>
         <div class="timeline">
-          <div><b>14:00</b>Drones on the Wi-Fi</div>
+          <div><b>14:00</b>Drones on Wi-Fi</div>
           <div><b>14:30</b>Scan the site</div>
           <div><b>15:30</b>Phones in place</div>
-          <div><b>16:00</b>Draw red zones</div>
+          <div><b>16:00</b>Red zones</div>
           <div><b>16:30</b>Live</div>
         </div>
       </div>
-      <div class="places">
-        <div class="place"><svg class="m-icon"><use href="#i-museum"/></svg>Museums</div>
-        <div class="place"><svg class="m-icon"><use href="#i-campus"/></svg>Campuses</div>
-        <div class="place"><svg class="m-icon"><use href="#i-hospital"/></svg>Hospitals</div>
-        <div class="place"><svg class="m-icon"><use href="#i-shop"/></svg>Retail</div>
+      <div class="tiles">
+        <div class="tile"><svg class="m-icon"><use href="#i-museum"/></svg><span>Museums</span></div>
+        <div class="tile"><svg class="m-icon"><use href="#i-campus"/></svg><span>Campuses</span></div>
+        <div class="tile"><svg class="m-icon"><use href="#i-hospital"/></svg><span>Hospitals</span></div>
+        <div class="tile"><svg class="m-icon"><use href="#i-shop"/></svg><span>Retail</span></div>
       </div>
     </div>
   </section>
 
-  <section class="slide red dots" id="close" data-title="Thank you" data-grok="Thank you. Ask me anything about Meteora.">
+  <section class="slide dots" id="commands" data-title="Everything by voice">
+    <p class="eyebrow"><span class="num">12</span> Everything by voice</p>
+    <h2 class="title">Say it. The drones do it.</h2>
+    <div class="bento">
+      <div class="bt"><svg class="m-icon"><use href="#i-drone"/></svg><b>Take off and land</b><q>Black, take off.</q></div>
+      <div class="bt w2"><svg class="m-icon"><use href="#i-route"/></svg><b>Go anywhere on the plan</b><q>Go to table 1, then table 2.</q></div>
+      <div class="bt red"><svg class="m-icon"><use href="#i-zone"/></svg><b>Check a zone</b><q>Go to Zone 1.</q></div>
+      <div class="bt"><svg class="m-icon"><use href="#i-camera"/></svg><b>Take a photo</b><q>Take a photo.</q></div>
+      <div class="bt"><svg class="m-icon"><use href="#i-eye"/></svg><b>Describe</b><q>What do you see?</q></div>
+      <div class="bt w2"><svg class="m-icon"><use href="#i-scan"/></svg><b>Look all around and count</b><q>Do a 360 and count the people.</q></div>
+      <div class="bt w2"><svg class="m-icon"><use href="#i-person"/></svg><b>Find someone</b><q>Find the person in the green shirt and go closer.</q></div>
+      <div class="bt"><svg class="m-icon"><use href="#i-home"/></svg><b>Remember a spot</b><q>Mark this as position 1.</q></div>
+      <div class="bt"><svg class="m-icon"><use href="#i-arrow"/></svg><b>Go back</b><q>Go back to position 1.</q></div>
+      <div class="bt"><svg class="m-icon"><use href="#i-plan"/></svg><b>Where are you?</b><q>Where is Black?</q></div>
+      <div class="bt w2"><svg class="m-icon"><use href="#i-drone"/></svg><b>Both drones at once</b><q>Black to table 1, Red to table 5.</q></div>
+      <div class="bt"><svg class="m-icon"><use href="#i-check"/></svg><b>Calibrate</b><q>Run the calibration test.</q></div>
+      <div class="bt alarm w2"><svg class="m-icon"><use href="#i-land"/></svg><b>Stop, land</b><q>Land now.</q></div>
+    </div>
+  </section>
+
+  <section class="slide red dots" id="close" data-title="Thank you">
     <div class="brand"><svg viewBox="0 0 60 60" aria-hidden="true"><use href="#logo-mark"/></svg><span style="color:#fff">Meteora</span></div>
     <h2 class="display">Look first, then alert.</h2>
     <p class="lead">Grok Bot Hackathon · Pavia 2026 · Track D, proposed by Riello</p>
@@ -320,13 +371,10 @@
 
 </main>
 
-<div class="voice" aria-live="polite">
-  <canvas id="voiceDots" width="192" height="96" aria-hidden="true"></canvas>
-  <div><div class="who">Grok</div><div class="line" id="voiceLine"></div></div>
-</div>
+<div class="voice" aria-hidden="true"><canvas id="voiceDots" width="192" height="96"></canvas></div>
 <nav class="rail" id="rail" aria-label="Slides"></nav>
 <div class="controls">
-  <span class="count" id="count">01 / 13</span>
+  <span class="count" id="count">01 / 14</span>
   <button class="m-btn" id="prev" aria-label="Previous slide">←</button>
   <button class="m-btn" id="next" aria-label="Next slide">→</button>
   <button class="m-btn" id="ovBtn">All slides</button>

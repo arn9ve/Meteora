@@ -38,8 +38,9 @@
     document.getElementById('count').textContent = `${pad(i + 1)} / ${pad(slides.length)}`;
     const id = slides[i].id;
     if (location.hash.slice(1) !== id) history.replaceState(null, '', `#${id}`);
-    speak(slides[i].dataset.grok || '');
+    speak();
     document.body.classList.toggle('on-red', slides[i].classList.contains('red'));
+    document.body.classList.toggle('on-green', slides[i].classList.contains('green'));
     slides.forEach((s, k) => s.classList.toggle('is-active', k === i));
     if (slides[i].id === 'talk') playChat();
     if (slides[i].id === 'nearest') effStart = performance.now();
@@ -69,18 +70,9 @@
   const fromHash = () => { const i = slides.findIndex((s) => s.id === location.hash.slice(1)); if (i >= 0) go(i, false); };
   addEventListener('hashchange', fromHash);
 
-  // ---------- the voice of Grok: words light up as it "speaks" ----------
-  const line = document.getElementById('voiceLine');
-  let speakTimer = 0, speakingUntil = 0;
-  function speak(text) {
-    clearInterval(speakTimer);
-    line.textContent = '';
-    const words = text.split(' ').map((w) => { const s = document.createElement('span'); s.className = 'w'; s.textContent = w + ' '; line.append(s); return s; });
-    if (reduce) { words.forEach((w) => w.classList.add('on')); return; }
-    let k = 0;
-    speakingUntil = performance.now() + words.length * 190 + 400;
-    speakTimer = setInterval(() => { if (k < words.length) words[k++].classList.add('on'); else clearInterval(speakTimer); }, 190);
-  }
+  // ---------- the voice of Grok: only the dots, a short pulse on each slide ----------
+  let speakingUntil = 0;
+  function speak() { speakingUntil = performance.now() + 1600; }
 
   // ---------- the dot field: small marks, a band that moves with the voice ----------
   const shapes = ['circle', 'diamond', 'triangle', 'square', 'circle'];
@@ -114,7 +106,7 @@
   }
   const cover = document.querySelector('#cover canvas.field');
   const drawCover = field(cover, { spacing: 30, size: 2.6, band: 0.55, live: () => current === 0 && performance.now() < speakingUntil });
-  const drawVoice = field(document.getElementById('voiceDots'), { spacing: 12, size: 1.6, band: 0.5, live: () => performance.now() < speakingUntil, white: true });
+  const drawVoice = field(document.getElementById('voiceDots'), { spacing: 12, size: 1.6, band: 0.5, live: () => performance.now() < speakingUntil || (talkingGrok && performance.now() < talkingUntil), white: true });
 
   // ---------- Meteora Scan: the plan builds itself as the phone walks ----------
   const scan = document.getElementById('scanCanvas');
@@ -165,6 +157,22 @@
   }
 
 
+  // Draw a sprite icon on a canvas (paths, circles, rects of the symbol), centred at x,y.
+  function drawIcon(g, id, x, y, size, color, width = 1.6) {
+    const sym = document.getElementById(id); if (!sym) return;
+    g.save(); g.translate(x - size / 2, y - size / 2); g.scale(size / 24, size / 24);
+    g.strokeStyle = color; g.lineWidth = width * 24 / size * (size / 24); g.lineCap = 'round'; g.lineJoin = 'round';
+    g.fillStyle = '#ffffff'; g.fillRect(2, 2, 20, 20);
+    for (const el of sym.children) {
+      const t = el.tagName.toLowerCase(); g.beginPath();
+      if (t === 'path') { g.stroke(new Path2D(el.getAttribute('d'))); continue; }
+      if (t === 'circle') g.arc(+el.getAttribute('cx'), +el.getAttribute('cy'), +el.getAttribute('r'), 0, Math.PI * 2);
+      if (t === 'rect') g.rect(+el.getAttribute('x'), +el.getAttribute('y'), +el.getAttribute('width'), +el.getAttribute('height'));
+      if (el.getAttribute('fill') === 'currentColor') { g.fillStyle = color; g.fill(); } else g.stroke();
+    }
+    g.restore();
+  }
+
   // ---------- efficiency: an alarm, the nearest of three drones goes, reports, comes back ----------
   let effStart = performance.now();
   const eff = document.getElementById('effMap'), eg = eff.getContext('2d');
@@ -185,14 +193,14 @@
     zones.forEach((q, k) => { const hot = k === 0 && alarm; eg.fillStyle = hot ? `rgba(198,40,40,${0.12 + 0.1 * Math.abs(Math.sin(t / 300))})` : 'rgba(198,40,40,0.06)'; eg.strokeStyle = 'rgba(198,40,40,0.8)'; eg.lineWidth = 1; eg.fillRect(X(q[0]), Y(q[1]), X(q[0] + q[2]) - X(q[0]), Y(q[1] + q[3]) - Y(q[1])); eg.strokeRect(X(q[0]), Y(q[1]), X(q[0] + q[2]) - X(q[0]), Y(q[1] + q[3]) - Y(q[1])); });
     eg.fillStyle = '#c62828'; eg.font = '11px Arial'; eg.fillText(alarm ? 'ZONE 1 · PERSON' : 'ZONE 1', X(z[0]), Y(z[1]) - 6);
     eg.fillStyle = '#8b8b8b'; eg.fillText('ZONE 2', X(zones[1][0]), Y(zones[1][1]) - 6);
-    for (const [x, y] of camsE) { eg.strokeStyle = '#8b8b8b'; eg.strokeRect(X(x) - 4, Y(y) - 4, 8, 8); }
-    if (alarm) { const px = X(z[0] + z[2] * 0.6), py = Y(z[1] + z[3] * 0.55); eg.fillStyle = '#202020'; eg.beginPath(); eg.arc(px, py, 5, 0, Math.PI * 2); eg.fill(); }
+    for (const [x, y] of camsE) drawIcon(eg, 'i-cctv', X(x), Y(y), 20, '#8b8b8b');
+    if (alarm) drawIcon(eg, 'i-person', X(z[0] + z[2] * 0.7), Y(z[1] + z[3] * 0.5), 26, '#c62828');
     // the nearest dock to the zone centre
     const zc = [z[0] + z[2] / 2, z[1] + z[3] / 2];
     const dist = docks.map(([x, y]) => Math.hypot(x - zc[0], (y - zc[1]) * 0.62));
     const best = dist.indexOf(Math.min(...dist));
     docks.forEach(([x, y], k) => {
-      eg.strokeStyle = '#202020'; eg.lineWidth = 1; eg.strokeRect(X(x) - 9, Y(y) - 9, 18, 18);
+      eg.strokeStyle = '#d0d0d0'; eg.lineWidth = 1; eg.strokeRect(X(x) - 16, Y(y) - 16, 32, 32);
       if (alarm && T < 2400) { eg.setLineDash([3, 4]); eg.strokeStyle = k === best ? '#c62828' : '#d0d0d0'; eg.beginPath(); eg.moveTo(X(x), Y(y)); eg.lineTo(X(zc[0]), Y(zc[1])); eg.stroke(); eg.setLineDash([]); eg.fillStyle = k === best ? '#c62828' : '#9b9b9b'; eg.fillText(`${(dist[k] * 40).toFixed(0)} m`, (X(x) + X(zc[0])) / 2 + 4, (Y(y) + Y(zc[1])) / 2 - 4); }
     });
     // drone path: out (2.4–5.4 s), hold and report (5.4–8 s), back (8–10.4 s)
@@ -200,51 +208,40 @@
       let dx = x, dy = y;
       if (k === best) { const out = ease((T - 2400) / 3000), back = ease((T - 8000) / 2400); const tx = zc[0] - 0.02, ty = zc[1]; dx = lerp(lerp(x, tx, out), x, back); dy = lerp(lerp(y, ty, out), y, back); }
       const flying = k === best && T > 2400 && T < 10400;
-      eg.fillStyle = k === best ? '#111111' : '#202020';
-      eg.beginPath(); eg.arc(X(dx), Y(dy), flying ? 7 : 5, 0, Math.PI * 2); eg.fill();
-      if (flying) { eg.strokeStyle = 'rgba(17,17,17,.35)'; eg.beginPath(); eg.arc(X(dx), Y(dy), 12 + 2 * Math.sin(t / 90), 0, Math.PI * 2); eg.stroke(); }
+      if (flying) { eg.strokeStyle = 'rgba(17,17,17,.25)'; eg.beginPath(); eg.arc(X(dx), Y(dy), 20 + 2 * Math.sin(t / 90), 0, Math.PI * 2); eg.stroke(); }
+      drawIcon(eg, 'i-drone', X(dx), Y(dy), flying ? 30 : 24, '#111111');
     });
     if (T > 5400 && T < 8200) { const bx = X(zc[0]) - 150, by = Y(z[1]) - 46; eg.fillStyle = '#ffffff'; eg.strokeStyle = '#202020'; eg.fillRect(bx, by, 140, 30); eg.strokeRect(bx, by, 140, 30); eg.fillStyle = '#202020'; eg.font = '12px Arial'; eg.fillText('Report: 1 person, door', bx + 8, by + 19); }
     const stage = !alarm ? 'Watching' : T < 2400 ? 'Alarm · picking the nearest drone' : T < 5400 ? 'Flying to Zone 1' : T < 8000 ? 'Reporting' : T < 10400 ? 'Back to its spot' : 'Watching';
     eg.fillStyle = '#8b8b8b'; eg.font = '11px Arial'; eg.fillText(stage.toUpperCase(), X(0) + 8, Y(0) + 18);
   }
 
-  // ---------- voice: the conversation plays, words light up as they are said ----------
+  // ---------- voice: the conversation plays, and the steps Grok takes light up ----------
   const chat = document.getElementById('chat');
   const msgs = [...chat.querySelectorAll('.msg')];
+  const think = document.querySelector('.think'), steps = [...document.querySelectorAll('#thinkSteps li')];
   msgs.forEach((m) => { const p = m.querySelector('p'); const words = p.textContent.split(' '); p.textContent = ''; words.forEach((w) => { const s = document.createElement('span'); s.className = 'w'; s.textContent = w + ' '; p.append(s); }); });
-  let chatTimer = 0;
+  let chatTimer = 0, talkingUntil = 0, talkingGrok = false;
   function playChat() {
     clearTimeout(chatTimer);
     if (reduce) return;
-    msgs.forEach((m) => { m.classList.remove('playing', 'old'); m.querySelectorAll('.w').forEach((w) => w.classList.add('on')); });
+    think.classList.add('playing'); steps.forEach((x) => x.classList.remove('done', 'now'));
+    msgs.forEach((m) => { m.classList.add('playing'); m.classList.remove('old'); m.querySelectorAll('.w').forEach((w) => w.classList.remove('on')); });
     let k = 0;
     const next = () => {
-      if (k >= msgs.length) { chatTimer = setTimeout(playChat, 4000); return; }
+      if (k >= msgs.length) { steps.forEach((x) => { x.classList.remove('now'); x.classList.add('done'); }); chatTimer = setTimeout(playChat, 5000); return; }
       msgs.forEach((m, j) => m.classList.toggle('old', j < k - 1));
       const m = msgs[k], ws = [...m.querySelectorAll('.w')];
-      msgs.slice(k).forEach((q) => { q.classList.add('playing'); q.querySelectorAll('.w').forEach((w) => w.classList.remove('on')); });
       talkingUntil = performance.now() + ws.length * 170 + 300; talkingGrok = m.classList.contains('grok');
       ws.forEach((w, j) => setTimeout(() => w.classList.add('on'), j * 170));
-      chatTimer = setTimeout(() => { m.classList.remove('playing'); k++; next(); }, ws.length * 170 + 900);
+      const own = (m.dataset.steps || '').split(' ').filter(Boolean).map(Number);
+      steps.forEach((x) => x.classList.remove('now'));
+      own.forEach((n, j) => setTimeout(() => { steps.forEach((x) => x.classList.remove('now')); steps[n].classList.add('now', 'done'); }, j * 600));
+      chatTimer = setTimeout(() => { m.classList.remove('playing'); k++; next(); }, Math.max(ws.length * 170, own.length * 600) + 900);
     };
     next();
   }
-  let talkingUntil = 0, talkingGrok = false;
-  const wave = document.getElementById('talkWave'), wg = wave.getContext('2d');
-  let ww = 0, wh = 0;
-  const fitWave = () => { const r = wave.getBoundingClientRect(); const d = Math.min(2, devicePixelRatio || 1); ww = r.width; wh = r.height; wave.width = ww * d; wave.height = wh * d; wg.setTransform(d, 0, 0, d, 0, 0); };
-  fitWave(); new ResizeObserver(fitWave).observe(wave);
-  function drawWave(t) {
-    wg.clearRect(0, 0, ww, wh);
-    const live = performance.now() < talkingUntil, n = Math.floor(ww / 14);
-    for (let i = 0; i < n; i++) {
-      const amp = live ? (0.35 + 0.65 * Math.abs(Math.sin(i * 0.7 + t / 120) * Math.sin(i * 0.23 + t / 340))) : 0.12;
-      const h = Math.max(3, amp * wh * 0.9);
-      wg.fillStyle = live ? (talkingGrok ? '#c62828' : '#202020') : '#d6d6d6';
-      wg.fillRect(i * 14 + 4, (wh - h) / 2, 4, h);
-    }
-  }
+  const drawWave = () => {};
 
   // ---------- the phone camera: LiDAR points landing on the room ----------
   const lid = document.getElementById('lidar'), lg = lid.getContext('2d');
@@ -253,22 +250,20 @@
   fitLid(); new ResizeObserver(fitLid).observe(lid);
   function drawLidar(t) {
     const g = lg; g.clearRect(0, 0, lw, lh);
-    g.fillStyle = '#2b2b2b'; g.fillRect(0, 0, lw, lh);
-    // a corridor in perspective: floor, walls, a pillar
-    const vx = lw * 0.5 + Math.sin(t / 2400) * lw * 0.08, vy = lh * 0.42;
-    g.strokeStyle = 'rgba(255,255,255,.25)'; g.lineWidth = 1;
-    for (const [x, y] of [[0, lh], [lw, lh], [0, 0], [lw, 0]]) { g.beginPath(); g.moveTo(x, y); g.lineTo(vx, vy); g.stroke(); }
-    for (let i = 1; i < 6; i++) { const k = i / 6; g.strokeStyle = `rgba(255,255,255,${0.08 + k * 0.12})`; g.strokeRect(vx - vx * k, vy - vy * k, (lw) * k, (lh) * k); }
-    const sweep = (t / 2600) % 1;
-    for (let i = 0; i < 140; i++) {
-      const a = (i * 137.5) % 360, r = ((i * 53) % 100) / 100;
-      const px = vx + Math.cos(a) * r * lw * 0.6, py = vy + Math.sin(a) * r * lh * 0.7;
-      if (px < 0 || px > lw || py < 0 || py > lh) continue;
-      const seen = (((px / lw) + 0.0001) < sweep) || reduce;
-      g.fillStyle = seen ? (r < 0.35 ? '#c62828' : 'rgba(255,255,255,.85)') : 'rgba(255,255,255,.15)';
-      g.fillRect(px, py, 2, 2);
+    const sweep = reduce ? 1 : (t / 3200) % 1.15;
+    // a mesh of points on the real room: floor lines, wall lines, table edge
+    for (let i = 0; i < 260; i++) {
+      const u = ((i * 61) % 97) / 97, v = ((i * 37) % 89) / 89;
+      const x = u * lw, y = lh * (0.18 + v * 0.8);
+      if (x / lw > sweep) continue;
+      const near = v > 0.62;
+      g.fillStyle = near ? 'rgba(198,40,40,.95)' : 'rgba(255,255,255,.9)';
+      g.fillRect(x, y, near ? 2.5 : 2, near ? 2.5 : 2);
     }
-    g.strokeStyle = 'rgba(198,40,40,.9)'; g.beginPath(); g.moveTo(sweep * lw, 0); g.lineTo(sweep * lw, lh); g.stroke();
+    g.strokeStyle = 'rgba(255,255,255,.55)'; g.lineWidth = 1;
+    const lines = [[0, 0.58, 1, 0.5], [0, 0.78, 0.55, 0.62], [0.55, 0.62, 1, 0.66], [0.55, 0.62, 0.55, 0.1]];
+    for (const [a, b, c, d] of lines) { const e = Math.min(c, sweep); if (e <= a) continue; g.beginPath(); g.moveTo(a * lw, b * lh); g.lineTo(e * lw, (b + (d - b) * ((e - a) / (c - a || 1))) * lh); g.stroke(); }
+    if (sweep < 1) { g.strokeStyle = 'rgba(198,40,40,.95)'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(sweep * lw, 0); g.lineTo(sweep * lw, lh); g.stroke(); }
   }
 
   // ---------- one frame loop for everything that moves ----------

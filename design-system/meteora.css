@@ -16,6 +16,7 @@
   --m-red: #c62828;          /* alarm, red zones, Grok speaking, Emergency land */
   --m-red-deep: #a51f1f;     /* red pressed */
   --m-red-soft: #fbeceb;     /* red zone fill */
+  --m-green: #1f6f4a;        /* safe: only for safety and 'all clear' */
   --m-black-drone: #111111;  /* drone Black */
   --m-red-drone: #c62828;    /* drone Red */
 

@@ -413,3 +413,14 @@ body.on-green .controls .count { color: rgba(255,255,255,.85); }
   .bento { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .bt.w2 { grid-column: span 2; }
 }
+
+/* Print / PDF: one slide per 1920x1080 page, no navigation */
+@page { size: 1920px 1080px; margin: 0; }
+@media print {
+  html, body { height: auto; overflow: visible; }
+  .deck { height: auto; overflow: visible; scroll-snap-type: none; }
+  .slide { height: 1080px; min-height: 1080px; width: 1920px; break-after: page; page-break-after: always; border: 0; }
+  .rail, .controls, .voice, .overview { display: none !important; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .queue ul, .loop .pulse { animation: none; }
+}

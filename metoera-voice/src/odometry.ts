@@ -72,6 +72,19 @@ export class Odometry {
   }
 
   get calibrated(): boolean { return this.#fit !== null; }
+
+  /**
+   * Every confirmed move of this flight: what was commanded and what the telemetry measured with
+   * the current reading (room cm). Empty before the reading is known.
+   */
+  moveReport(): { commanded: [number, number]; measured: [number, number]; errorCm: number }[] {
+    const f = this.#fit; if (!f) return [];
+    return this.#moves.map((m) => {
+      let x = 0, y = 0;
+      for (let i = m.from; i < m.to; i++) { const [a, b] = this.#step(this.#samples[i - 1], this.#samples[i], f, f.scale); x += a; y += b; }
+      return { commanded: [Math.round(m.dx), Math.round(m.dy)] as [number, number], measured: [Math.round(x), Math.round(y)] as [number, number], errorCm: Math.round(Math.hypot(m.dx - x, m.dy - y)) };
+    });
+  }
   /** Changes whenever the reading changes: a route in progress must not chase the jump. */
   get version(): number { return this.#version; }
   get fit(): Reading | null { return this.#fit ? { ...this.#fit } : null; }

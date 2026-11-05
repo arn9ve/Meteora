@@ -251,6 +251,9 @@ export class RealTello {
     return null;
   }
 
+  /** Commanded vs measured for every confirmed move of this flight (see Odometry.moveReport). */
+  odometryReport() { return { moves: this.#odo.moveReport(), stats: this.#odo.stats }; }
+
   /** Changes on stop, land now and cut motors: a mission running elsewhere must end then. */
   get generation(): number { return this.#generation; }
 

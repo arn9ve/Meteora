@@ -11,6 +11,7 @@ import { loadEnvFile } from 'node:process';
 import { RealTello, type Detections, type DepthView } from './src/tello.ts';
 import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, planRoute, type Point, type RoomConfig } from './src/room.ts';
 import { missionGoTo } from './src/mission.ts';
+import { runCalibration, summary as calibrationSummary, type CalibrationReport } from './src/calibration.ts';
 import { landmarksOf, expectedInView, bearingOfX, solvePose, localizePrompt, parseSeen } from './src/landmarks.ts';
 import { Claims, CLAIMS_PORT, describeElsewhere, parsePeers, udpTransport } from './src/claims.ts';
 import { Pilots, TAKEOFF } from './src/pilots.ts';
@@ -126,6 +127,23 @@ async function askDecision(prompt: string): Promise<string | null> {
 }
 // The last decision of each drone, for the live map.
 const decisionsLive = new Map<string, {step: number; action: string; reason: string; by: string; overruled: string | null; ms: number; at: number}>();
+// Calibration tests: the latest report of each drone (also saved in flights/), and its progress live.
+const calibrations = new Map<string, CalibrationReport>();
+const calibrationRunning = new Map<string, string[]>();
+async function calibrate(id: string, drone: RealTello, body: Record<string, unknown>) {
+  const lines: string[] = []; calibrationRunning.set(id, lines);
+  try {
+    const report = await runCalibration(id, drone, {sizeCm:typeof body.sizeCm === 'number' ? body.sizeCm : 50, photo:body.photo === true, onNote:(l) => { lines.push(l); console.log(`${label(id)} calibration · ${l}`); }});
+    calibrations.set(id, report);
+    await saveCalibration(report);
+    return {ok:report.ok, mode:'real', action:'calibrate', ...(report.error ? {error:report.error} : {}), summary:calibrationSummary(report), report};
+  } finally { calibrationRunning.delete(id); }
+}
+async function saveCalibration(r: CalibrationReport) {
+  await mkdir(flightsDir, {recursive:true}).catch(() => undefined);
+  await writeFile(join(flightsDir, `calibration-${r.drone}-${r.at.replace(/[:.]/g, '-')}.json`), JSON.stringify(r, null, 2)).catch(() => undefined);
+}
+
 /** go_to in the air: a mission decided step by step (model + rules), along the route of the plan. */
 async function decidedGoTo(id: string, drone: RealTello, body: Record<string, unknown>) {
   const routed = routeGoTo(drone, body);
@@ -603,6 +621,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
     req.on('close', () => clearInterval(timer));
     return;
   }
+  // The latest calibration test of a drone, and its progress while it runs.
+  if (req.method === 'GET' && path === '/api/calibration') {
+    const id = url.searchParams.get('drone') ?? '';
+    const r = calibrations.get(id) ?? null;
+    json(res, 200, {running:calibrationRunning.get(id) ?? null, report:r, summary:r ? calibrationSummary(r) : null});
+    return;
+  }
   // Preview of the way a drone would fly to a table or place (nothing moves).
   if (req.method === 'GET' && path === '/api/route') {
     const droneId = url.searchParams.get('drone') ?? '', drone = drones.get(droneId);
@@ -620,7 +645,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
   const video = /^\/video\/([a-z]+)$/.exec(path);
   // Only this laptop's drones stream here; another laptop's drone sends its video to that laptop.
   if (req.method === 'GET' && video && drones.has(video[1]) && refusal(video[1]) === null) { await proxyVideo(video[1], res); return; }
-  if (req.method === 'POST' && ['/session','/api/command','/api/emergency','/api/pilot','/api/nearest','/api/room/drone','/api/room/camera','/api/room/zones','/api/room/objects','/api/cameras/command','/api/redzone/claim','/api/pad-nav/claim','/api/pad-nav/phase'].includes(path)) {
+  if (req.method === 'POST' && ['/session','/api/command','/api/emergency','/api/pilot','/api/nearest','/api/room/drone','/api/room/camera','/api/room/zones','/api/room/objects','/api/cameras/command','/api/redzone/claim','/api/pad-nav/claim','/api/pad-nav/phase','/api/calibration/measured'].includes(path)) {
     if (!req.headers.origin || !allowedOrigins.has(req.headers.origin)) { json(res, 403, {error:'Unauthorized origin'}); return; }
     // Emergency buttons: they skip the command queue and cancel whatever is waiting in it.
     if (path === '/api/emergency') {
@@ -749,6 +774,19 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
       } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
       return;
     }
+    // The person measured how far from its take-off spot the drone landed after a calibration test.
+    if (path === '/api/calibration/measured') {
+      try {
+        const body = await readJson(req) as {drone?: unknown; cm?: unknown};
+        const r = calibrations.get(String(body?.drone ?? ''));
+        if (!r) { json(res, 200, {ok:false, error:'No calibration test to complete'}); return; }
+        if (typeof body.cm !== 'number' || !Number.isFinite(body.cm) || body.cm < 0 || body.cm > 1000) { json(res, 400, {ok:false, error:'cm: 0 to 1000'}); return; }
+        r.measuredLandingCm = Math.round(body.cm);
+        await saveCalibration(r);
+        json(res, 200, {ok:true, summary:calibrationSummary(r), report:r});
+      } catch { json(res, 400, {ok:false, error:'Invalid request'}); }
+      return;
+    }
     // Pad-nav: voice UI claims cam1→Black mission and reports Grok describe / phase.
     if (path === '/api/pad-nav/claim') {
       try {
@@ -849,6 +887,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
             else if (action === 'stop' && plain) timed(res, 200, await drone.stop());
             else if (action === 'emergency' && plain) timed(res, 200, await drone.killMotors());
             else if (action === 'photo' && plain) timed(res, 200, await takePhoto(id));
+            else if (action === 'calibrate') timed(res, 200, await calibrate(id, drone, body as Record<string, unknown>));
             // A spoken "land" is always sent to the drone, whatever the server believes about its
             // state (a lost takeoff reply must never block a landing), and it skips the queue.
             else if (action === 'land' && plain) timed(res, 200, await drone.forceLand());

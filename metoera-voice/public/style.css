@@ -254,3 +254,10 @@
 .map-svg .trail{fill:none;stroke-opacity:.45;stroke-linecap:round;stroke-linejoin:round}
 .inspector .flight-data{color:#222}
 .facing-warn{width:100%;border:1px solid #e6c4c4;background:#fff7f7;border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.cal-test{width:100%;border-top:1px solid #eee;padding-top:10px;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.cal-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.cal-row label,.cal-measure label{margin:0;font-size:11px;color:#555;display:flex;gap:6px;align-items:center}
+.cal-row select,.cal-cm{border:1px solid #e3e3e3;border-radius:8px;padding:4px 6px;font:inherit;font-size:12px;background:#fafafa;width:auto}
+.cal-cm{width:70px}
+.cal-log{width:100%;max-height:180px;overflow:auto;margin:0;font-size:10px;line-height:1.5;color:#555;background:#f7f7f6;border-radius:8px;padding:6px 8px;white-space:pre-wrap}
+.cal-log:empty{display:none}

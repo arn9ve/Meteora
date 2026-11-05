@@ -299,6 +299,7 @@ const buildTools=()=>[
   droneTool('face','Turn this drone to face a point of the room map (x,y from memory)',{x:{type:'integer'},y:{type:'integer'}},['x','y']),
   droneTool('mark','Save the current position under a name (ricorda questo punto come …)',{name:{type:'string'}},['name']),
   droneTool('go_to','Fly to a table or object of the room plan by its name (table 1 … table 6), or to a remembered place: home (where it took off), last_landing, previous, a name saved with mark, or room coordinates x,y in cm from memory. The server plans a way around tables, pillars and walls and stops next to a table, not above it. Drone must be flying',{place:{type:'string'},x:{type:'integer'},y:{type:'integer'}},[]),
+  droneTool('calibrate','Calibration test (fai la calibrazione, testa la precisione): the drone must be on the ground on its take-off spot; it takes off, flies right, left, right, forward, back, forward, comes back to the start with its telemetry and lands, then reports the error of each move. Takes about a minute',{sizeCm:{type:'integer',minimum:20,maximum:80,description:'Size of the moves, default 50'},photo:{type:'boolean',description:'Also check the position with a photo'}},[]),
   droneTool('localize','Check where the drone really is: one photo, Grok vision recognises the pillars and tables of the room plan in it, and the position is corrected (dove sei esattamente, controlla la posizione, ricalibra la posizione). Must be flying; it is also done by itself at the end of a go_to when the position is in doubt'),
   droneTool('photo','Take a photo with the camera of this drone (with the object boxes) and show it on the page (fai una foto, scatta)'),
   droneTool('flip','Flip in a direction; needs at least 50% battery',{direction:dir(['left','right','forward','back'])},['direction']),
@@ -900,8 +901,38 @@ function droneInspector(box,id){
     para(`Drawn at real size (${DRONE_SIZE_CM[id]?.join(' × ')||'10 × 10'} cm). Place it where it stands before take-off; it can only be moved while it is on the ground. 0° = facing right on the plan, 90° = up.`),
     btn('Move it on the plan',()=>startMode({kind:'place',what:'drone',id,label:DRONE_LABEL[id]||id})),
     btn('Remove from the plan',()=>void removeFromPlan('drone',id),'danger'));
+  box.append(calibrationBox(id));
   updateInspectorLive();
 }
+// Calibration test: take off from the table, a pattern that returns to the start on paper,
+// back to the start with the telemetry, land; then the person measures where it landed.
+let calTimer=0;
+function calibrationBox(id){
+  const box=document.createElement('div'); box.className='cal-test';
+  box.innerHTML='<p class="caption">CALIBRATION TEST</p><p class="note">From its take-off spot: right, left, right, forward, back, forward, then back to the start and landing. Each move is measured with the telemetry. With 50 cm moves a drone in the middle of a table stays above the table. Stay next to Cut motors.</p><div class="cal-row"><label>Moves <select class="cal-size"><option value="30">30 cm</option><option value="50" selected>50 cm</option><option value="80">80 cm</option></select></label><label><input type="checkbox" class="cal-photo"> with a photo check</label></div><div class="cal-actions"></div><pre class="cal-log"></pre><p class="note strong cal-summary"></p><div class="cal-measure" hidden><label>It landed <input type="number" min="0" max="1000" step="1" class="cal-cm"> cm from where it took off</label></div>';
+  const start=btn('Start the test',async()=>{
+    const size=Number(box.querySelector('.cal-size').value), photo=box.querySelector('.cal-photo').checked;
+    if(!confirm(`${DRONE_LABEL[id]} on its take-off spot (the one on the plan), 2 m around it clear, you next to Cut motors. It takes off, flies ${size}-${2*size} cm moves for about a minute, comes back and lands. Start?`)) return;
+    start.disabled=true; box.querySelector('.cal-summary').textContent='Running…';
+    pollCalibration(id,box);
+    const r=await runOnDrone(id,'calibrate',{sizeCm:size,photo});
+    clearInterval(calTimer); start.disabled=false;
+    showCalibration(box,r.report||null,r.summary||r.error);
+  },'dark');
+  box.querySelector('.cal-actions').append(start);
+  box.querySelector('.cal-cm').addEventListener('change',async e=>{ const j=await post('/api/calibration/measured',{drone:id,cm:Number(e.target.value)}); showCalibration(box,j.report||null,j.summary||j.error); });
+  void fetch(`/api/calibration?drone=${id}`,{cache:'no-store'}).then(r=>r.json()).then(j=>{ if(j.report) showCalibration(box,j.report,j.summary); if(j.running) pollCalibration(id,box); }).catch(()=>{});
+  return box;
+}
+function pollCalibration(id,box){ clearInterval(calTimer); calTimer=setInterval(async()=>{ try { const j=await (await fetch(`/api/calibration?drone=${id}`,{cache:'no-store'})).json(); if(j.running) box.querySelector('.cal-log').textContent=j.running.join('\n'); else clearInterval(calTimer); } catch {} },1000); }
+function showCalibration(box,report,text){
+  box.querySelector('.cal-summary').textContent=text||'';
+  if(!report) return;
+  box.querySelector('.cal-log').textContent=[...report.moves.map(m=>`${m.command.padEnd(12)} measured ${m.measuredCm??'?'} cm · error ${m.errorCm??'?'} cm`),...report.log].join('\n');
+  box.querySelector('.cal-measure').hidden=!report.landed;
+  if(report.measuredLandingCm!==null) box.querySelector('.cal-cm').value=report.measuredLandingCm;
+}
+
 let aiTimer=0, aiSlot='';
 function phoneInspector(box,slot){
   const r=R(); const c=r.cameras[slot]; const s=slotOf(slot);

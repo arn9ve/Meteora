@@ -9,14 +9,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .detect import find_best
-from .service import UnknownDrone, VisionService
+from .service import DepthUnavailable, UnknownDrone, VisionService
 
 log = logging.getLogger("metoera.vision.http")
 
 BOUNDARY = "metoeraframe"
 
 # Endpoints about one feed: with several drones they need ?drone=<id> (there is no default drone).
-PER_DRONE_ROUTES = ("/detections", "/find", "/frame.jpg", "/stream")
+PER_DRONE_ROUTES = ("/detections", "/find", "/frame.jpg", "/stream", "/depth")
 
 INDEX_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>metoera-vision</title>
 <style>body{font-family:system-ui;background:#111;color:#eee;margin:16px}img{max-width:100%;border:1px solid #333}
@@ -150,9 +150,17 @@ def make_handler(service: VisionService, allowed_origins: list[str], stream_fps:
                         self._send(200, jpg, "image/jpeg")
                 elif route == "/stream":
                     self._stream(drone)
+                elif route == "/depth":
+                    try:
+                        self._json(service.depth_result(drone))
+                    except DepthUnavailable as e:
+                        out = {"error": str(e), "depth": service.depth_health()}
+                        if service.multi:
+                            out["drone"] = drone
+                        self._json(out, 503)
                 else:
                     self._json({"error": "not found",
-                                "endpoints": ["/health", "/detections", "/find?label=", "/frame.jpg", "/stream"]}, 404)
+                                "endpoints": ["/health", "/detections", "/find?label=", "/frame.jpg", "/stream", "/depth"]}, 404)
             except (BrokenPipeError, ConnectionResetError):
                 pass
 

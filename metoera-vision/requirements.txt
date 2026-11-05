@@ -2,3 +2,7 @@
 ultralytics==8.4.202   # AGPL-3.0 - pulls torch, torchvision, opencv-python, numpy
 av==19.0.2             # PyAV (BSD) - bundles FFmpeg libs for H.264 decode
 pytest==9.2.0
+transformers==5.22.1   # Apache-2.0 - Depth Anything V2 metric depth (/depth)
+huggingface_hub==2.4.0 # Apache-2.0 - model download (pulled by transformers)
+tokenizers==0.23.3     # pulled by transformers
+safetensors==0.8.0     # pulled by transformers

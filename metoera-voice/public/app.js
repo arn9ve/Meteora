@@ -779,7 +779,9 @@ async function removeFromPlan(kind,id){
 async function refreshRoom(){ await loadRoom(); inspectorKey=''; await renderMap(); }
 
 // ---- what is selected, and the list ----
-function select(kind,id){ sel=kind?{kind,id:String(id)}:null; mode=mode?.kind==='calibrate'&&sel?.kind==='phone'&&sel.id===mode.slot?mode:null; inspectorKey=''; renderSide(); scheduleDraw(); }
+function select(kind,id){ sel=kind?{kind,id:String(id)}:null; mode=mode?.kind==='calibrate'&&sel?.kind==='phone'&&sel.id===mode.slot?mode:null; inspectorKey=''; renderSide(); scheduleDraw();
+  // Bring the details into view: on a short screen they sit below the list.
+  if(sel){ const side=document.querySelector?.('.room-side'), ins=$('#inspector'); if(side&&ins?.offsetTop!==undefined) side.scrollTo?.({top:Math.max(0,ins.offsetTop-side.offsetTop-8),behavior:'smooth'}); } }
 function startMode(m){ mode=m; inspectorKey=''; mapSvg.classList.toggle('placing',Boolean(m)); renderSide(); scheduleDraw();
   hint(!m?'':m.kind==='place'?`Click on the plan where ${m.label} is. Then drag the round handle to turn it.`:m.kind==='zone'?'Click the corners of the zone. Click the first corner again, or Finish, to close it.':m.kind==='table'?'Click where the centre of the table is.':m.kind==='calibrate'?'Click a floor spot in the phone picture, then the same spot on the plan. Four times.':''); }
 $('#addTable').addEventListener('click',()=>startMode({kind:'table'}));
@@ -888,6 +890,7 @@ function droneInspector(box,id){
   const r=R(); const p=r.drones[id];
   box.append(para(`DRONE · ${(DRONE_LABEL[id]||id).toUpperCase()}`,'caption'));
   const live=para('','note live-drone'); box.append(live,para('','note flight-data'));
+  if(p) box.append(calibrationBox(id));
   if(!p){ box.append(para('Not on the plan: the drone does not know where it is, so "go to table 1" and the nearest-drone choice cannot use it.'),btn('Place on the plan',()=>startMode({kind:'place',what:'drone',id,label:DRONE_LABEL[id]||id}),'dark')); updateInspectorLive(); return; }
   // Typing one number moves the drone from where it is now (not from where it was first placed).
   const set=k=>v=>{ if(Number.isFinite(v)){ const at=posOf('drone',id)||p; R().drones[id]={...p,x:at.x,y:at.y,heading:at.heading,[k]:v}; void saveDrone(id,k==='heading'||Boolean(p.facingConfirmed)); } };
@@ -901,7 +904,6 @@ function droneInspector(box,id){
     para(`Drawn at real size (${DRONE_SIZE_CM[id]?.join(' × ')||'10 × 10'} cm). Place it where it stands before take-off; it can only be moved while it is on the ground. 0° = facing right on the plan, 90° = up.`),
     btn('Move it on the plan',()=>startMode({kind:'place',what:'drone',id,label:DRONE_LABEL[id]||id})),
     btn('Remove from the plan',()=>void removeFromPlan('drone',id),'danger'));
-  box.append(calibrationBox(id));
   updateInspectorLive();
 }
 // Calibration test: take off from the table, a pattern that returns to the start on paper,

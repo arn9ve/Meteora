@@ -2165,5 +2165,9 @@
   }
  ],
  "height_m": 4.3,
- "measured": "Pillars 1.20 x 0.70 m, 3.60 m apart; inside length 22.80 m; height 4.30 m (drawing of 5 Nov 2026)."
+ "measured": "Pillars 1.20 x 0.70 m, 3.60 m apart; inside length 22.80 m; height 4.30 m (drawing of 5 Nov 2026).",
+ "inside_origin": [
+  -11.42,
+  -3.75
+ ]
 }

@@ -9,7 +9,7 @@ import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { RealTello, type Detections, type DepthView } from './src/tello.ts';
-import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, type Point, type RoomConfig } from './src/room.ts';
+import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, planRoute, type Point, type RoomConfig } from './src/room.ts';
 import { Claims, CLAIMS_PORT, describeElsewhere, parsePeers, udpTransport } from './src/claims.ts';
 import { Pilots, TAKEOFF } from './src/pilots.ts';
 
@@ -371,6 +371,32 @@ function phoneAI(slot: string): Promise<unknown> {
   return result;
 }
 
+/**
+ * go_to by name or coordinates becomes a route around tables, pillars and walls: the server knows
+ * the room, the drone only follows waypoints (`via`). A table name is resolved to a spot next to it.
+ * A target above a table (home, when it took off from one) also gets a safe height over it.
+ */
+function routeGoTo(drone: RealTello, body: Record<string, unknown>): Record<string, unknown> | {error: string} {
+  let command: Record<string, unknown> = body;
+  const map = drone.map() as {pose: {x: number; y: number}; places: Record<string, {x: number; y: number}>};
+  if (typeof body.place === 'string' && !drone.hasPlace(body.place)) {
+    const target = resolveObjectPlace(room.objects, body.place, map.pose);
+    if (target) { const {place: _place, ...rest} = body; command = {...rest, ...target}; }
+  }
+  if (!plan) return command;
+  const name = typeof command.place === 'string' ? command.place.trim().toLowerCase() : null;
+  const to = name ? map.places[name] : typeof command.x === 'number' && typeof command.y === 'number' ? {x:command.x, y:command.y} : null;
+  if (!to) return command;
+  const route = planRoute(plan, room.objects, [map.pose.x / 100, map.pose.y / 100], [to.x / 100, to.y / 100]);
+  if (route === null) return {error:'No safe way there: tables, pillars or walls block every path'};
+  const via = route.slice(0, -1).map(([x, y]) => [Math.round(x * 100), Math.round(y * 100)]);
+  const under = surfaceHeightAt(room.objects, to.x / 100, to.y / 100);
+  const minHeight = typeof under === 'number' && under > 0 ? Math.min(250, under + 50) : undefined;
+  // The route already goes around tables, so no climb over them; only over a table it ends above.
+  const {minHeightCm: _straightLineClimb, ...rest} = command;
+  return {...rest, ...(via.length ? {via} : {}), ...(minHeight ? {minHeightCm:minHeight} : {})};
+}
+
 async function redzoneView() {
   const slotIds = ['1', '2', '3'];
   const pad = padNavState as {state?: unknown; missions?: {cam1?: unknown}} | null;
@@ -476,6 +502,17 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
       if (!upstream.ok) { res.writeHead(404).end(); return; }
       res.writeHead(200, {'Content-Type':'image/jpeg', 'Cache-Control':'no-store'}).end(Buffer.from(await upstream.arrayBuffer()));
     } catch { res.writeHead(503).end(); }
+    return;
+  }
+  // Preview of the way a drone would fly to a table or place (nothing moves).
+  if (req.method === 'GET' && path === '/api/route') {
+    const droneId = url.searchParams.get('drone') ?? '', drone = drones.get(droneId);
+    if (!drone) { json(res, 400, {ok:false, error:'drone required'}); return; }
+    const cmd = routeGoTo(drone, {droneId, action:'go_to', place:url.searchParams.get('place') ?? ''});
+    if ('error' in cmd) { json(res, 200, {ok:false, error:cmd.error}); return; }
+    const pose = (drone.map() as {pose: {x: number; y: number}}).pose;
+    const end = typeof cmd.x === 'number' ? [cmd.x, cmd.y] : null;
+    json(res, 200, {ok:true, from:[pose.x, pose.y], via:cmd.via ?? [], to:end, minHeightCm:cmd.minHeightCm ?? null});
     return;
   }
   // What a phone sees, in words (Grok vision on its still picture), only when the page asks.
@@ -714,12 +751,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
             // state (a lost takeoff reply must never block a landing), and it skips the queue.
             else if (action === 'land' && plain) timed(res, 200, await drone.forceLand());
             else {
-              let command = body;
-              if (action === 'go_to' && typeof body.place === 'string' && !drone.hasPlace(body.place)) {
-                const target = resolveObjectPlace(room.objects, body.place, drone.map().pose);
-                if (target) { const {place, ...rest} = body; command = {...rest, ...target}; }
-              }
-              timed(res, 200, await drone.execute(command));
+              const command = action === 'go_to' ? routeGoTo(drone, body) : body;
+              if ('error' in command) timed(res, 200, {ok:false, mode:'real', error:command.error});
+              else timed(res, 200, await drone.execute(command));
             }
           } finally {
             pilots.end(id);

@@ -220,3 +220,88 @@ export function surfaceHeightAt(objects: RoomObject[], x: number, y: number, mar
   }
   return edge ? null : 0;
 }
+
+type RoutePlan = { walls: { a: Point; b: Point }[]; bounds: { min: Point; max: Point }; pillars?: { x: number; y: number; w: number; d: number }[] };
+function segDist(p: Point, a: Point, b: Point): number {
+  const dx = b[0] - a[0], dy = b[1] - a[1], l = dx * dx + dy * dy;
+  const t = l ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l)) : 0;
+  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+}
+/**
+ * A way from `from` to `to` (m) that keeps `clearanceM` from walls, pillars and objects (tables):
+ * A* on a `cellM` grid, then shortened to straight legs. Returns the waypoints after `from`
+ * (the last one is `to`), [] when already there, or null when there is no way.
+ * A start inside an obstacle (a drone taking off from a table) first leaves it by the shortest way.
+ */
+export function planRoute(plan: RoutePlan, objects: RoomObject[], from: Point, to: Point, clearanceM = 0.45, cellM = 0.2): Point[] | null {
+  const x0 = plan.bounds.min[0], y0 = plan.bounds.min[1];
+  const nx = Math.ceil((plan.bounds.max[0] - x0) / cellM) + 1, ny = Math.ceil((plan.bounds.max[1] - y0) / cellM) + 1;
+  const rects = [...objects.map((o) => ({ x: o.x, y: o.y, w: o.w, d: o.d, r: o.rotation })), ...(plan.pillars ?? []).map((p) => ({ ...p, r: 0 }))];
+  const blockedAt = (p: Point) => {
+    for (const r of rects) {
+      const a = r.r * Math.PI / 180, dx = p[0] - r.x, dy = p[1] - r.y;
+      const u = Math.abs(dx * Math.cos(a) + dy * Math.sin(a)) - r.w / 2, v = Math.abs(-dx * Math.sin(a) + dy * Math.cos(a)) - r.d / 2;
+      if (Math.hypot(Math.max(u, 0), Math.max(v, 0)) < clearanceM) return true;
+    }
+    for (const w of plan.walls) if (segDist(p, w.a, w.b) < clearanceM) return true;
+    return false;
+  };
+  const centre = (i: number, j: number): Point => [x0 + i * cellM, y0 + j * cellM];
+  const cellOf = (p: Point): [number, number] => [Math.round((p[0] - x0) / cellM), Math.round((p[1] - y0) / cellM)];
+  const blocked = new Uint8Array(nx * ny);
+  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) blocked[i * ny + j] = blockedAt(centre(i, j)) ? 1 : 0;
+  const free = (i: number, j: number) => i >= 0 && j >= 0 && i < nx && j < ny && !blocked[i * ny + j];
+  // Nearest free cell (breadth first) for a start or goal that sits in a blocked cell.
+  const nearestFree = ([si, sj]: [number, number]): [number, number] | null => {
+    if (free(si, sj)) return [si, sj];
+    const seen = new Set([si * ny + sj]); let q: [number, number][] = [[si, sj]];
+    for (let r = 0; r < 40 && q.length; r++) {
+      const next: [number, number][] = [];
+      for (const [i, j] of q) for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const a = i + di, b = j + dj, k = a * ny + b;
+        if (a < 0 || b < 0 || a >= nx || b >= ny || seen.has(k)) continue;
+        if (free(a, b)) return [a, b];
+        seen.add(k); next.push([a, b]);
+      }
+      q = next;
+    }
+    return null;
+  };
+  const s = nearestFree(cellOf(from)), g = nearestFree(cellOf(to));
+  if (!s || !g) return null;
+  // A*, 8 neighbours, no corner cutting.
+  const N = nx * ny, cost = new Float64Array(N).fill(Infinity), prev = new Int32Array(N).fill(-1), done = new Uint8Array(N);
+  const gk = g[0] * ny + g[1], h = (k: number) => Math.hypot(Math.floor(k / ny) - g[0], (k % ny) - g[1]);
+  const open: number[] = [s[0] * ny + s[1]]; cost[open[0]] = 0;
+  while (open.length) {
+    let bi = 0; for (let i = 1; i < open.length; i++) if (cost[open[i]] + h(open[i]) < cost[open[bi]] + h(open[bi])) bi = i;
+    const k = open.splice(bi, 1)[0];
+    if (done[k]) continue; done[k] = 1;
+    if (k === gk) break;
+    const i = Math.floor(k / ny), j = k % ny;
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      const a = i + di, b = j + dj;
+      if (!free(a, b) || (di && dj && (!free(i + di, j) || !free(i, j + dj)))) continue;
+      const nk = a * ny + b, c = cost[k] + Math.hypot(di, dj);
+      if (c < cost[nk]) { cost[nk] = c; prev[nk] = k; open.push(nk); }
+    }
+  }
+  if (!done[gk]) return null;
+  const cells: Point[] = [];
+  for (let k = gk; k !== -1; k = prev[k]) cells.unshift(centre(Math.floor(k / ny), k % ny));
+  // Straighten: from each point, jump to the farthest point still in a clear straight line.
+  const clear = (a: Point, b: Point) => { const n = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / (cellM / 4)); for (let t = 1; t < n; t++) if (blockedAt([a[0] + (b[0] - a[0]) * t / n, a[1] + (b[1] - a[1]) * t / n])) return false; return true; };
+  const startFree = free(...cellOf(from));
+  const path: Point[] = startFree ? [] : [cells[0]];
+  let at: Point = startFree ? from : cells[0];
+  let i = 0;
+  const goal: Point = free(...cellOf(to)) ? to : cells[cells.length - 1];
+  const pts = [...cells.slice(1, -1), goal];
+  while (i < pts.length) {
+    let j = pts.length - 1;
+    while (j > i && !clear(at, pts[j])) j--;
+    path.push(pts[j]); at = pts[j]; i = j + 1;
+  }
+  const r2 = (p: Point): Point => [Math.round(p[0] * 100) / 100, Math.round(p[1] * 100) / 100];
+  return Math.hypot(goal[0] - from[0], goal[1] - from[1]) < 0.05 ? [] : path.map(r2);
+}

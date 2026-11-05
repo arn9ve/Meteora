@@ -298,7 +298,7 @@ const buildTools=()=>[
   droneTool('memory','What this drone remembers: position in the room, the last actions, saved places and things it saw with their position'),
   droneTool('face','Turn this drone to face a point of the room map (x,y from memory)',{x:{type:'integer'},y:{type:'integer'}},['x','y']),
   droneTool('mark','Save the current position under a name (ricorda questo punto come …)',{name:{type:'string'}},['name']),
-  droneTool('go_to','Fly back to a remembered place: home (where it first took off), last_landing, previous (before its last move), a name saved with mark, or room coordinates x,y in cm from memory. Drone must be flying',{place:{type:'string'},x:{type:'integer'},y:{type:'integer'}},[]),
+  droneTool('go_to','Fly to a table or object of the room plan by its name (table 1 … table 6), or to a remembered place: home (where it took off), last_landing, previous, a name saved with mark, or room coordinates x,y in cm from memory. The server plans a way around tables, pillars and walls and stops next to a table, not above it. Drone must be flying',{place:{type:'string'},x:{type:'integer'},y:{type:'integer'}},[]),
   droneTool('photo','Take a photo with the camera of this drone (with the object boxes) and show it on the page (fai una foto, scatta)'),
   droneTool('flip','Flip in a direction; needs at least 50% battery',{direction:dir(['left','right','forward','back'])},['direction']),
   droneTool('speed','Set the speed used by later moves',{cmPerSecond:{type:'integer',minimum:10,maximum:100}},['cmPerSecond']),
@@ -520,7 +520,7 @@ let roomData=null; // {plan, room:{drones, cameras, zones}}
 function zoneNote(){
   const zones=roomData?.room?.zones||[], objects=roomData?.room?.objects||[];
   const z=zones.length?` Red zones drawn on the room plan (metres): ${zones.map(q=>`${q.name} around (${(q.points.reduce((s,p)=>s+p[0],0)/q.points.length).toFixed(1)}, ${(q.points.reduce((s,p)=>s+p[1],0)/q.points.length).toFixed(1)})`).join(', ')}. Phones watch them; when a person enters one you get an automatic update with where the person is.`:'';
-  const o=objects.length?` Things on the room plan, by name: ${objects.map(q=>`${q.name} (${q.kind}, ${q.w}x${q.d} m)`).join(', ')}. To go to one (vai al tavolo 1), call go_to with place set to its name: the server flies the drone next to it, not above it.`:'';
+  const o=objects.length?` Things on the room plan, by name: ${objects.map(q=>`${q.name} (${q.kind}, ${q.w}x${q.d} m)`).join(', ')}. To go to one (vai al tavolo 1), call go_to with place set to its name: the server flies around tables and pillars and stops next to it, not above it. For a tour (fai il giro dei tavoli, passa da tutti i tavoli) call go_to once per table in the order asked (default table 1, 2, 3 … in order), all in one reply so they run one after the other, then go_to home if they ask to come back. Moves the person gives in metres or centimetres (vai avanti di un metro e mezzo) are relative moves with move: split anything over 100 cm into steps of at most 100 cm.`:'';
   return z+o;
 }
 function handleRedzone(rz){
@@ -704,6 +704,12 @@ const droneById=id=>drones.find(d=>d.id===id);
 const livePose=id=>mapLive?.drones?.find(d=>d.id===id)?.pose;
 const fmt=(v,n=2)=>Number.isFinite(v)?v.toFixed(n):'–';
 function hint(text){ $('#roomHint').textContent=text||''; }
+// Everything shown in centimetres from the inside corner of the room: from the left end wall (x)
+// and from the long wall at the bottom of the plan (y). The plan and the drones keep metres/cm
+// around the room centre inside; this is only how numbers are shown and typed.
+const origin=()=>roomData?.plan?.inside_origin||roomData?.plan?.bounds?.min||[0,0];
+const cmX=m=>Math.round((m-origin()[0])*100), cmY=m=>Math.round((m-origin()[1])*100);
+function where(xm,ym){ return `${cmX(xm)} cm from the left wall · ${cmY(ym)} cm from the bottom wall`; }
 
 // ---- view: zoom and pan ----
 function upp(){ const w=mapSvg.clientWidth||600; return view?view.w/w:1; } // cm per screen pixel
@@ -796,18 +802,22 @@ function renderList(){
     group('DRONES',ds.map(id=>row('drone',id,DRONE_LABEL[id]||id,droneDetail(id),Boolean(r.drones[id])))),
     group('PHONES',['1','2','3'].map(s=>row('phone',s,`Phone ${s}`,phoneDetail(s),typeof r.cameras[s]?.x==='number'))),
     group('RED ZONES',r.zones.length?r.zones.map(z=>row('zone',z.id,z.name,`${z.points.length} corners · ${fmt(area(z.points),1)} m²${mapLive?.zones?.find(q=>q.id===z.id)?.occupied?' · person inside':''}`,true)):[emptyRow('None yet: Add → Red zone')]),
-    group('TABLES AND OBJECTS',r.objects.length?r.objects.map(o=>row('object',o.id,o.name,`${fmt(o.w)} × ${fmt(o.d)} m`,true)):[emptyRow('None yet: Add → Table')]),
+    group('TABLES AND OBJECTS',r.objects.length?r.objects.map(o=>row('object',o.id,o.name,`${Math.round(o.w*100)} × ${Math.round(o.d*100)} cm`,true)):[emptyRow('None yet: Add → Table')]),
   );
 }
 function emptyRow(t){ const p=document.createElement('p'); p.className='row-empty'; p.textContent=t; return p; }
 function area(pts){ let a=0; for(let i=0;i<pts.length;i++){ const [x1,y1]=pts[i],[x2,y2]=pts[(i+1)%pts.length]; a+=x1*y2-x2*y1; } return Math.abs(a)/2; }
 
 // ---- the inspector: numbers in metres, and the actions for what is selected ----
-function field(label,value,onChange,{step=0.05,suffix='m',type='number'}={}){
+function field(label,value,onChange,{step=0.05,suffix='m',type='number',cm=null}={}){
+  // cm: 'x' / 'y' = a position in cm from the inside corner; 'size' = a length in cm. Stored in metres.
   const l=document.createElement('label'); l.className='field';
   const s=document.createElement('span'); s.textContent=label;
-  const i=document.createElement('input'); i.type=type; if(type==='number'){ i.step=String(step); i.value=Number.isFinite(value)?String(Math.round(value*100)/100):''; } else i.value=value??'';
-  i.addEventListener('change',()=>onChange(type==='number'?Number(i.value):i.value.trim()));
+  const i=document.createElement('input'); i.type=type;
+  const off=cm==='x'?origin()[0]:cm==='y'?origin()[1]:0;
+  if(cm){ step=1; suffix='cm'; }
+  if(type==='number'){ i.step=String(step); i.value=Number.isFinite(value)?String(cm?Math.round((value-off)*100):Math.round(value*100)/100):''; } else i.value=value??'';
+  i.addEventListener('change',()=>{ if(type!=='number') return onChange(i.value.trim()); const n=Number(i.value); if(i.value===''||!Number.isFinite(n)) return; onChange(cm?n/100+off:n); });
   const u=document.createElement('small'); u.textContent=suffix;
   l.append(s,i,u); return l;
 }
@@ -840,8 +850,8 @@ function renderInspector(){
     for(const k of OBJECT_KINDS){ const op=document.createElement('option'); op.value=k; op.textContent=k; op.selected=o.kind===k; kind.querySelector('select').append(op); }
     kind.querySelector('select').addEventListener('change',e=>set('kind')(e.target.value));
     box.append(para(o.kind.toUpperCase(),'caption'),field('Name',o.name,set('name'),{type:'text',suffix:''}),kind,
-      field('Centre x',o.x,set('x')),field('Centre y',o.y,set('y')),field('Width',o.w,set('w')),field('Depth',o.d,set('d')),field('Turned',o.rotation,set('rotation'),{step:5,suffix:'°'}),field('Height',o.heightM,set('heightM'),{suffix:'m'}),
-      para('Say "go to '+o.name+'": the drone stops next to it, not above it, and climbs over anything taller in the way when the height is set.'),
+      field('Centre from left',o.x,set('x'),{cm:'x'}),field('Centre from bottom',o.y,set('y'),{cm:'y'}),field('Width',o.w,set('w'),{cm:'size'}),field('Depth',o.d,set('d'),{cm:'size'}),field('Turned',o.rotation,set('rotation'),{step:5,suffix:'°'}),field('Height',o.heightM,set('heightM'),{cm:'size'}),
+      para('Say "go to '+o.name+'": the drone flies around tables and pillars (dashed line on the plan) and stops 60 cm from its edge, not above it.'),
       btn('Duplicate',async()=>{ const c={...o,id:`o${Date.now()}`,name:`${o.kind} ${r.objects.length+1}`,x:o.x+o.w+0.3}; r.objects.push(c); sel={kind:'object',id:c.id}; await saveObjects(); }),
       btn('Delete',()=>void deleteSelected(),'danger'));
   }
@@ -852,7 +862,7 @@ function droneInspector(box,id){
   const live=para('','note live-drone'); box.append(live);
   if(!p){ box.append(para('Not on the plan: the drone does not know where it is, so "go to table 1" and the nearest-drone choice cannot use it.'),btn('Place on the plan',()=>startMode({kind:'place',what:'drone',id,label:DRONE_LABEL[id]||id}),'dark')); updateInspectorLive(); return; }
   const set=k=>v=>{ if(Number.isFinite(v)){ p[k]=v; void saveDrone(id); } };
-  box.append(field('Position x',p.x,set('x')),field('Position y',p.y,set('y')),field('Facing',p.heading,set('heading'),{step:5,suffix:'°'}),
+  box.append(field('From left wall',p.x,set('x'),{cm:'x'}),field('From bottom wall',p.y,set('y'),{cm:'y'}),field('Facing',p.heading,set('heading'),{step:5,suffix:'°'}),
     para(`Drawn at real size (${DRONE_SIZE_CM[id]?.join(' × ')||'10 × 10'} cm). Place it where it stands before take-off; it can only be moved while it is on the ground. 0° = facing right on the plan, 90° = up.`),
     btn('Move it on the plan',()=>startMode({kind:'place',what:'drone',id,label:DRONE_LABEL[id]||id})),
     btn('Remove from the plan',()=>void removeFromPlan('drone',id),'danger'));
@@ -871,8 +881,8 @@ function phoneInspector(box,slot){
   if(!c||typeof c.x!=='number'){ box.append(para('Not on the plan: place it where it stands and turn it the way it looks, so the people it sees appear on the plan.'),btn('Place on the plan',()=>startMode({kind:'place',what:'phone',id:slot,label:`phone ${slot}`}),'dark')); }
   else {
     const set=k=>v=>{ if(Number.isFinite(v)){ c[k]=v; void savePhone(slot); } };
-    box.append(field('Position x',c.x,set('x')),field('Position y',c.y,set('y')),field('Looks at',c.heading,set('heading'),{step:5,suffix:'°'}),
-      field('Height',c.z,set('z'),{step:0.05,suffix:'m'}),field('Tilt down',c.tilt,set('tilt'),{step:1,suffix:'°'}),
+    box.append(field('From left wall',c.x,set('x'),{cm:'x'}),field('From bottom wall',c.y,set('y'),{cm:'y'}),field('Looks at',c.heading,set('heading'),{step:5,suffix:'°'}),
+      field('Height',c.z,set('z'),{cm:'size'}),field('Tilt down',c.tilt,set('tilt'),{step:1,suffix:'°'}),
       para('Height = from the floor to the phone. Tilt down = 0° looking level, 90° looking straight at the floor. With both set, people are placed where the line from the phone through their feet meets the floor.'),
       para(c.calibrated?'Calibrated: people are placed exactly where their feet touch the floor.':'People are placed from where they are in the picture and how tall they look (about ±1 m at 5 m). For exact spots, calibrate below.'),
       btn('Remove from the plan',()=>void removeFromPlan('phone',slot),'danger'));
@@ -901,7 +911,7 @@ function phoneInspector(box,slot){
 }
 function updateInspectorLive(){
   const box=$('#inspector');
-  if(sel?.kind==='drone'){ const el=box.querySelector('.live-drone'); const d=droneById(sel.id); if(el) el.textContent=[droneDetail(sel.id),surfaceText(d),d?.connected&&Number.isFinite(d.tofCm)?`infrared below: ${d.tofCm} cm`:''].filter(Boolean).join(' · '); }
+  if(sel?.kind==='drone'){ const el=box.querySelector('.live-drone'); const d=droneById(sel.id); const at=posOf('drone',sel.id); if(el) el.textContent=[at?`${where(at.x,at.y)}${Number.isFinite(d?.heightAboveFloorCm)?` · ${d.heightAboveFloorCm} cm above the floor`:''}`:'',droneDetail(sel.id),surfaceText(d),d?.connected&&Number.isFinite(d.tofCm)?`infrared below: ${d.tofCm} cm`:''].filter(Boolean).join(' · '); }
   if(sel?.kind==='phone'){
     const s=slotOf(sel.id); const v=box.querySelector('.phone-live'); if(!v) return;
     const img=v.querySelector('img');
@@ -965,7 +975,7 @@ mapSvg.addEventListener?.('pointerdown',async evt=>{
 mapSvg.addEventListener?.('pointermove',evt=>{
   if(!view) return;
   const p=svgPoint(evt);
-  $('#roomCursor').textContent=`x ${fmt(p.m[0])} m · y ${fmt(p.m[1])} m`;
+  $('#roomCursor').textContent=where(p.m[0],p.m[1]);
   if(mode?.kind==='zone'){ mode.cursor=p.m; scheduleDraw(); }
   if(!drag) return;
   const r=R();
@@ -1079,6 +1089,11 @@ function draw(){
     g.append(svgEl('circle',{cx:p.x*100,cy:-p.y*100,r:Math.max(px(6),20),class:'dot','stroke-width':px(2)}));
     svg.append(g);
   }
+  if(routePreview?.to&&sel?.kind==='object'){
+    const line=[routePreview.from,...routePreview.via,routePreview.to].map(([x,y])=>`${x},${-y}`).join(' ');
+    svg.append(svgEl('polyline',{points:line,class:'route','stroke-width':px(2),'stroke-dasharray':`${px(6)} ${px(5)}`}));
+    for(const [x,y] of routePreview.via) svg.append(svgEl('circle',{cx:x,cy:-y,r:px(3.5),class:'route-dot'}));
+  }
   // Drones: real size, plus a marker that stays visible when zoomed out.
   for(const id of ['tello','rmtt']){
     const at=drag?.kind==='drone'&&drag.id===id||drag?.type==='rotate'&&drag.id===id?r.drones[id]:posOf('drone',id);
@@ -1110,13 +1125,25 @@ function update3d(){ view3d?.update({plan:roomData?.plan,room:R(),live:mapLive,s
 $('#view2d').addEventListener?.('click',()=>void setView3d(false));
 $('#view3d').addEventListener?.('click',()=>void setView3d(true));
 
+// The way a drone would take to the selected table (dashed on the plan), from the first placed drone.
+let routePreview=null, routeKey='';
+async function refreshRoute(){
+  const o=sel?.kind==='object'?R().objects.find(q=>q.id===sel.id):null;
+  const id=['tello','rmtt'].find(d=>R().drones[d]);
+  const key=o&&id?JSON.stringify([o,id,R().drones[id],livePose(id)]):'';
+  if(key===routeKey) return; routeKey=key;
+  if(!key){ routePreview=null; return; }
+  try { const j=await (await fetch(`/api/route?drone=${id}&place=${encodeURIComponent(o.name)}`,{cache:'no-store'})).json(); routePreview=j.ok?{...j,drone:id}:null; if(!j.ok) hint(j.error); } catch { routePreview=null; }
+  scheduleDraw();
+}
+
 async function renderMap(){
   if(!roomData){ await loadRoom(); }
   if(!view&&roomData) fitView();
   try { const r=await fetch('/api/map',{cache:'no-store'}); const data=await r.json(); if(r.ok&&Array.isArray(data.drones)) mapLive=data; } catch {}
   // Keep local edits while dragging; otherwise take the server's room (another page may edit it too).
   if(!drag&&!mode) { try { const r=await fetch('/api/room',{cache:'no-store'}); if(r.ok){ const fresh=await r.json(); fresh.room.objects??=[]; roomData=fresh; } } catch {} }
-  renderSide(); scheduleDraw(); update3d();
+  renderSide(); void refreshRoute(); scheduleDraw(); update3d();
   const people=mapLive?.people?.length||0;
   $('#mapNote').textContent=`${people?`${people} ${people===1?'person':'people'} seen by the phones · `:''}grid 1 m · scroll to zoom`;
 }

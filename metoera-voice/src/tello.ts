@@ -694,7 +694,10 @@ export class RealTello {
     // Fly back to a remembered place (home, last_landing, previous, or one saved with mark) or
     // to room coordinates, in straight lines of at most 200 cm, then face the old heading.
     if (value.action === 'go_to') {
-      if (Object.keys(value).some((k) => !['droneId', 'action', 'place', 'x', 'y', 'minHeightCm'].includes(k))) return this.#fail('Unknown argument for go_to');
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'place', 'x', 'y', 'minHeightCm', 'via'].includes(k))) return this.#fail('Unknown argument for go_to');
+      // Waypoints (cm) of a route around tables, pillars and walls, flown before the target.
+      const via = value.via === undefined ? [] : value.via;
+      if (!Array.isArray(via) || via.length > 30 || !via.every((p) => Array.isArray(p) && p.length === 2 && p.every((n) => typeof n === 'number' && Number.isFinite(n)))) return this.#fail('via must be up to 30 [x, y] points in cm');
       if (this.#flight !== 'flying') return this.#fail('go_to requires a flying drone: take off first');
       let target: { x: number; y: number; z?: number; heading?: number } | null = null;
       if (typeof value.place === 'string' && value.place.trim()) {
@@ -711,13 +714,16 @@ export class RealTello {
         }
         if (target.z !== undefined && target.z !== 0) target.z = Math.max(target.z, value.minHeightCm);
       }
-      for (let leg = 0; leg < 8; leg += 1) {
-        if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
-        const v = this.#world.vectorTo(target);
-        const sdk = moveSdk(v.forward, v.left, v.up, 200);
-        if (!sdk) break;
-        const move = await this.#motion('go_to', sdk, 20000);
-        if (!move.ok) return move;
+      const stops: { x: number; y: number; z?: number }[] = [...(via as [number, number][]).map(([x, y]) => ({ x, y, ...(target!.z !== undefined ? { z: target!.z } : {}) })), target];
+      for (const stop of stops) {
+        for (let leg = 0; leg < 8; leg += 1) {
+          if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
+          const v = this.#world.vectorTo(stop);
+          const sdk = moveSdk(v.forward, v.left, v.up, 200);
+          if (!sdk) break;
+          const move = await this.#motion('go_to', sdk, 20000);
+          if (!move.ok) return move;
+        }
       }
       if (target.heading !== undefined) {
         const turn = this.#world.turnTo(target.heading);

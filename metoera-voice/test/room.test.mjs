@@ -81,3 +81,42 @@ test('a phone 2 m up, tilted 45° down: feet at the picture centre are 2 m ahead
   assert.equal(floorFromMount({ ...cam, tilt: 0 }, { x: 0.45, y: 0.1, w: 0.1, h: 0.3 }), null);
   assert.equal(floorFromMount({ ...cam, z: 0 }, { x: 0.45, y: 0.3, w: 0.1, h: 0.2 }), null);
 });
+
+test('route goes around a table, never through it, and leaves a table it starts on', async () => {
+  const { planRoute } = await import('../src/room.ts');
+  const box = (x0, y0, x1, y1) => [[[x0, y0], [x1, y0]], [[x1, y0], [x1, y1]], [[x1, y1], [x0, y1]], [[x0, y1], [x0, y0]]].map(([a, b]) => ({ a, b }));
+  const plan = { walls: box(0, 0, 10, 6), bounds: { min: [0, 0], max: [10, 6] } };
+  const table = { id: 't', name: 'table 1', kind: 'table', x: 5, y: 3, w: 1.8, d: 1.8, rotation: 0 };
+  const route = planRoute(plan, [table], [1, 3], [9, 3]);
+  assert.ok(route && route.length >= 2, JSON.stringify(route));
+  assert.deepEqual(route[route.length - 1], [9, 3]);
+  // No leg passes within 0.4 m of the table.
+  let at = [1, 3];
+  for (const p of route) {
+    for (let t = 0; t <= 1; t += 0.02) {
+      const x = at[0] + (p[0] - at[0]) * t, y = at[1] + (p[1] - at[1]) * t;
+      const u = Math.max(Math.abs(x - 5) - 0.9, 0), v = Math.max(Math.abs(y - 3) - 0.9, 0);
+      assert.ok(Math.hypot(u, v) > 0.4, `leg through the table at ${x.toFixed(2)},${y.toFixed(2)}`);
+    }
+    at = p;
+  }
+  // Straight when nothing is in the way.
+  assert.deepEqual(planRoute(plan, [], [1, 1], [9, 5]), [[9, 5]]);
+  // Starting on the table: the first point is just off it.
+  const off = planRoute(plan, [table], [5, 3], [9, 3]);
+  const [fx, fy] = off[0];
+  assert.ok(Math.hypot(Math.max(Math.abs(fx - 5) - 0.9, 0), Math.max(Math.abs(fy - 3) - 0.9, 0)) >= 0.4, JSON.stringify(off));
+  // Walled in: no way.
+  assert.equal(planRoute({ ...plan, walls: [...plan.walls, ...box(7, -1, 7.01, 7)] }, [], [1, 3], [9, 3]), null);
+});
+
+test('route on the real room with the 6 tables is found quickly', async () => {
+  const { planRoute, loadPlan } = await import('../src/room.ts');
+  const plan = await loadPlan(new URL('../room/capannone-gragnani.json', import.meta.url).pathname);
+  const T = (n, x, y) => ({ id: `t${n}`, name: `table ${n}`, kind: 'table', x, y, w: 1.8, d: 1.8, rotation: 0, heightM: 0.75 });
+  const tables = [T(1, 0.41, -0.66), T(2, 1.94, 2.54), T(3, 4.21, -1.37), T(4, 4.71, 1.95), T(5, 8.17, -1.37), T(6, 8.70, 1.95)];
+  const t0 = Date.now();
+  const route = planRoute(plan, tables, [0.41, -0.66], [9.5, 4.5]);
+  assert.ok(route && route.length >= 1, 'no route');
+  assert.ok(Date.now() - t0 < 1500, `slow: ${Date.now() - t0} ms`);
+});

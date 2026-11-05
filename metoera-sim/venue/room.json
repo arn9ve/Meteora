@@ -4,7 +4,7 @@
     "rmtt": { "x": 4.21, "y": -1.37, "heading": 90, "facingConfirmed": true }
   },
   "cameras": {
-    "1": { "x": 11.2, "y": 5.0, "heading": 264, "z": 2.2, "tilt": 18 },
+    "1": { "x": 11.2, "y": 2.0, "heading": 260, "z": 2.2, "tilt": 22 },
     "2": { "x": -2.0, "y": 5.3, "heading": 300, "z": 2.4, "tilt": 15 }
   },
   "zones": [

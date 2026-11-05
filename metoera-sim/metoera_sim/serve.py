@@ -45,6 +45,7 @@ import math
 import select
 import socket
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -303,6 +304,8 @@ def main(argv=None) -> int:
     p.add_argument("--imu-errors", type=float, default=0.0,
                    help="chance that a move answers `error No valid imu` (default 0; half of those move anyway)")
     p.add_argument("--no-log", action="store_true", help="no flight log in runs/")
+    p.add_argument("--no-phones", action="store_true", help="no simulated red-zone phones in the venue")
+    p.add_argument("--phones-idle", action="store_true", help="phones wait for the console's watch, like real ones")
     p.add_argument("--people", default=None,
                    help="people.json of who stands and walks where (default in the venue: venue/people.json; none elsewhere)")
     a = p.parse_args(argv)
@@ -359,6 +362,31 @@ def main(argv=None) -> int:
     if world.room_mtime is not None:
         print("The Room panel's tables, drone spots and phones are followed while this runs.")
 
+    # The phones draw the same scene from their own thread: one at a time with the drones' video,
+    # because the people's Gaussians are rewritten in place for each camera.
+    scene_lock = threading.Lock()
+    current = {"composer": composer}
+    phones = None
+    if a.scene == "venue" and not a.no_phones:
+        from . import venue
+        from .camera import Intrinsics
+        from .phones import Phones, yolo_people
+
+        renderers: dict[Intrinsics, Renderer] = {}
+
+        def render_phone(pose: Pose, k: Intrinsics):
+            r = renderers.get(k) or renderers.setdefault(k, Renderer(k))
+            with scene_lock:
+                return r.render(current["composer"].for_eye(since_start(), (pose.x, pose.y)), pose).image
+
+        base = venue.sim_env().get("REDZONE_URL", "http://127.0.0.1:18801")
+        phones = Phones(base, render_phone, yolo_people(), watching=not a.phones_idle, log=lambda text: log("phone", text))
+        phones.place(venue.room_config().get("cameras", {}))
+        if phones.phones:
+            print(f"Phones {', '.join(sorted(phones.phones))} talk to the red-zone service at {base}:\n"
+                  "  metoera-redzone:  node --env-file=../metoera-sim/sim.env server.mjs   (console: http://127.0.0.1:18801/console)")
+        phones.start()
+
     frame_period, state_period, log_period = 1.0 / FPS, 1.0 / STATE_HZ, 1.0 / LOG_HZ
     next_frame = next_state = next_log = next_room = time.monotonic()
     sockets = [d.commands for d in drones]
@@ -383,16 +411,24 @@ def main(argv=None) -> int:
             if now >= next_room:
                 changed = venue_changed(world)
                 if changed:
-                    world, obstacles, composer = follow_room(changed, drones, a.margin, crowd, since_start)
+                    with scene_lock:
+                        world, obstacles, current["composer"] = follow_room(changed, drones, a.margin, crowd, since_start)
+                    if phones:
+                        from . import venue
+
+                        phones.place(venue.room_config().get("cameras", {}))
                 next_room = now + ROOM_CHECK_S
             if now >= next_frame:
                 t_people = since_start()
-                for d in drones:
-                    d.send_frame(renderer, lambda eye: composer.for_eye(t_people, (eye.x, eye.y)))
+                with scene_lock:
+                    for d in drones:
+                        d.send_frame(renderer, lambda eye: current["composer"].for_eye(t_people, (eye.x, eye.y)))
                 next_frame = max(next_frame + frame_period, now)  # fell behind: skip frames, don't catch up
     except KeyboardInterrupt:
         print("stopped")
     finally:
+        if phones:
+            phones.stop()
         for d in drones:
             for s in (d.commands, d.video_out, d.state_out):
                 s.close()

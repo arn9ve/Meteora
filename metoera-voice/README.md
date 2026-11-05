@@ -1,6 +1,6 @@
 # Metoera Voice
 
-Fly the Tello EDU (Drone 1 · Black) and the RoboMaster TT (Drone 2 · Red) with your voice through Grok. Every command moves a physical drone; there is no simulator. Several people can fly at once, each from their own page: **the person who takes off a drone flies it until it has landed**, and nobody else can command it, not even land it (see [Several people](#several-people-who-flies-which-drone) and [Several laptops](#several-laptops-which-laptop-holds-which-drone)).
+Fly the Tello EDU (Drone 1 · Black) and the RoboMaster TT (Drone 2 · Red) with your voice through Grok. Every command moves a physical drone. To try things first, fly simulated drones in the event venue with [`../metoera-sim`](../metoera-sim) (`node --env-file=../metoera-sim/sim.env server.ts`, and `tools/rehearse.mjs` to rehearse a line with Grok). Several people can fly at once, each from their own page: **the person who takes off a drone flies it until it has landed**, and nobody else can command it, not even land it (see [Several people](#several-people-who-flies-which-drone) and [Several laptops](#several-laptops-which-laptop-holds-which-drone)).
 
 The `tools` folder holds the scripts we used to put our Tello on the shared network, diagnose its UDP link and run a supervised test flight. Read [TELLO.md](TELLO.md) first: the Tello sends every reply to local UDP port 8889, and a client on any other port gets no answer.
 

@@ -305,3 +305,16 @@ export function planRoute(plan: RoutePlan, objects: RoomObject[], from: Point, t
   const r2 = (p: Point): Point => [Math.round(p[0] * 100) / 100, Math.round(p[1] * 100) / 100];
   return Math.hypot(goal[0] - from[0], goal[1] - from[1]) < 0.05 ? [] : path.map(r2);
 }
+
+/** Distance (m) from a point to the nearest wall, pillar or object edge (0 inside one). */
+export function clearanceAt(plan: RoutePlan | null, objects: RoomObject[], p: Point): number {
+  let best = Infinity;
+  const rects = [...objects.map((o) => ({ x: o.x, y: o.y, w: o.w, d: o.d, r: o.rotation })), ...(plan?.pillars ?? []).map((q) => ({ ...q, r: 0 }))];
+  for (const r of rects) {
+    const a = r.r * Math.PI / 180, dx = p[0] - r.x, dy = p[1] - r.y;
+    const u = Math.abs(dx * Math.cos(a) + dy * Math.sin(a)) - r.w / 2, v = Math.abs(-dx * Math.sin(a) + dy * Math.cos(a)) - r.d / 2;
+    best = Math.min(best, Math.hypot(Math.max(u, 0), Math.max(v, 0)));
+  }
+  for (const w of plan?.walls ?? []) best = Math.min(best, segDist(p, w.a, w.b));
+  return best;
+}

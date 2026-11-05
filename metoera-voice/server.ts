@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { RealTello, type Detections, type DepthView } from './src/tello.ts';
 import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, planRoute, type Point, type RoomConfig } from './src/room.ts';
+import { missionGoTo } from './src/mission.ts';
 import { landmarksOf, expectedInView, bearingOfX, solvePose, localizePrompt, parseSeen } from './src/landmarks.ts';
 import { Claims, CLAIMS_PORT, describeElsewhere, parsePeers, udpTransport } from './src/claims.ts';
 import { Pilots, TAKEOFF } from './src/pilots.ts';
@@ -107,6 +108,40 @@ setInterval(() => {
     void mkdir(flightsDir, {recursive:true}).then(() => appendFile(join(flightsDir, `${id}-${new Date().toISOString().slice(0, 10)}.jsonl`), text)).catch(() => undefined);
   }
 }, 1000).unref();
+// The decision model: a fast Grok call, text only, that picks the next step of a flight (src/decision.ts).
+const decisionModel = process.env.DECISION_MODEL ?? visionModel;
+const decisionOn = process.env.DECISION_MODE !== '0';
+async function askDecision(prompt: string): Promise<string | null> {
+  if (!process.env.XAI_API_KEY) return null;
+  try {
+    const response = await fetch('https://api.x.ai/v1/chat/completions', {
+      method:'POST', signal:AbortSignal.timeout(5000),
+      headers:{Authorization:`Bearer ${process.env.XAI_API_KEY}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({model:decisionModel, max_tokens:80, temperature:0, messages:[{role:'user', content:prompt}]}),
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as {choices?: {message?: {content?: string}}[]};
+    return data.choices?.[0]?.message?.content?.trim() || null;
+  } catch { return null; }
+}
+// The last decision of each drone, for the live map.
+const decisionsLive = new Map<string, {step: number; action: string; reason: string; by: string; overruled: string | null; ms: number; at: number}>();
+/** go_to in the air: a mission decided step by step (model + rules), along the route of the plan. */
+async function decidedGoTo(id: string, drone: RealTello, body: Record<string, unknown>) {
+  const routed = routeGoTo(drone, body);
+  if ('error' in routed) return {ok:false, mode:'real', error:routed.error};
+  const map = drone.map() as {places: Record<string, {x: number; y: number}>};
+  const name = typeof routed.place === 'string' ? routed.place.trim().toLowerCase() : null;
+  const to = name ? map.places[name] : typeof routed.x === 'number' && typeof routed.y === 'number' ? {x:routed.x, y:routed.y} : null;
+  if (!to || !plan) return drone.execute(routed);
+  const result = await missionGoTo(id, drone, {x:to.x, y:to.y, name:typeof body.place === 'string' ? body.place : `(${to.x}, ${to.y})`}, {
+    plan, objects:room.objects, people:() => redzone.people, decide:process.env.XAI_API_KEY ? askDecision : null,
+    log:(event) => flightLog(id, event),
+    onStep:(info) => { decisionsLive.set(id, {...info, at:Date.now()}); console.log(`${new Date().toLocaleTimeString()} ${label(id)} · step ${info.step}: ${info.action} (${info.by}${info.overruled ? `, overruled: ${info.overruled}` : ''}) ${info.reason} ${info.ms} ms`); },
+  });
+  return {mode:'real', ...result, drone:drone.snapshot()};
+}
+
 /**
  * Where is the drone really: one photo, the pillars and tables of the plan that should be in view
  * from the estimated pose, Grok vision saying which it sees and where in the picture, the depth
@@ -562,7 +597,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
   // The drones live, 10 times a second, for the map (server-sent events).
   if (req.method === 'GET' && path === '/api/live') {
     res.writeHead(200, {'Content-Type':'text/event-stream', 'Cache-Control':'no-store', Connection:'keep-alive'});
-    const send = () => res.write(`data: ${JSON.stringify({t:Date.now(), drones:[...drones].filter(([id]) => refusal(id) === null).map(([, d]) => d.live())})}\n\n`);
+    const send = () => res.write(`data: ${JSON.stringify({t:Date.now(), drones:[...drones].filter(([id]) => refusal(id) === null).map(([id, d]) => ({...d.live(), decision:decisionsLive.get(id) ?? null}))})}\n\n`);
     send();
     const timer = setInterval(send, 100);
     req.on('close', () => clearInterval(timer));
@@ -818,9 +853,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
             // state (a lost takeoff reply must never block a landing), and it skips the queue.
             else if (action === 'land' && plain) timed(res, 200, await drone.forceLand());
             else {
-              const command = action === 'go_to' ? routeGoTo(drone, body) : body;
-              if ('error' in command) timed(res, 200, {ok:false, mode:'real', error:command.error});
-              else timed(res, 200, await drone.execute(command));
+              if (action === 'go_to' && decisionOn && drone.snapshot().flight === 'flying') timed(res, 200, await decidedGoTo(id, drone, body));
+              else {
+                const command = action === 'go_to' ? routeGoTo(drone, body) : body;
+                if ('error' in command) timed(res, 200, {ok:false, mode:'real', error:command.error});
+                else timed(res, 200, await drone.execute(command));
+              }
             }
           } finally {
             pilots.end(id);

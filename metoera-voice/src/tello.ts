@@ -251,6 +251,9 @@ export class RealTello {
     return null;
   }
 
+  /** Changes on stop, land now and cut motors: a mission running elsewhere must end then. */
+  get generation(): number { return this.#generation; }
+
   hasPlace(name: string): boolean { return this.#world.place(name.trim().toLowerCase()) !== null; }
 
   /** What the top-down map draws for this drone. */
@@ -754,7 +757,9 @@ export class RealTello {
     // Fly back to a remembered place (home, last_landing, previous, or one saved with mark) or
     // to room coordinates, in straight lines of at most 200 cm, then face the old heading.
     if (value.action === 'go_to') {
-      if (Object.keys(value).some((k) => !['droneId', 'action', 'place', 'x', 'y', 'minHeightCm', 'via'].includes(k))) return this.#fail('Unknown argument for go_to');
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'place', 'x', 'y', 'minHeightCm', 'via', 'check'].includes(k))) return this.#fail('Unknown argument for go_to');
+      // check: false = one leg of a decision mission: the mission decides when to look, not go_to.
+      const autoCheck = value.check !== false;
       // Waypoints (cm) of a route around tables, pillars and walls, flown before the target.
       const via = value.via === undefined ? [] : value.via;
       if (!Array.isArray(via) || via.length > 30 || !via.every((p) => Array.isArray(p) && p.length === 2 && p.every((n) => typeof n === 'number' && Number.isFinite(n)))) return this.#fail('via must be up to 30 [x, y] points in cm');
@@ -776,7 +781,7 @@ export class RealTello {
       }
       const stops: { x: number; y: number; z?: number }[] = [...(via as [number, number][]).map(([x, y]) => ({ x, y, ...(target!.z !== undefined ? { z: target!.z } : {}) })), target];
       // In doubt about where it is (see #inDoubt): look before going.
-      if (this.#needFix && this.#localize) await this.#photoFix();
+      if (autoCheck && this.#needFix && this.#localize) await this.#photoFix();
       // Never chase the estimate: if the telemetry reading changes on the way, the position may
       // jump, so stop and hover. Each stop gets its legs plus at most 2 short corrections.
       const reading = this.#odo.version;
@@ -798,7 +803,7 @@ export class RealTello {
       }
       // Arrived, as far as it knows. In doubt: one photo fix, and one short correction if needed.
       let check: TelloResult | null = null;
-      if (this.#inDoubt()) {
+      if (autoCheck && this.#inDoubt()) {
         check = await this.#photoFix();
         const v = this.#world.vectorTo(target);
         if (check.ok && v.distance >= 40 && v.distance <= 150) {

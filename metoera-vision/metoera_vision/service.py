@@ -14,6 +14,7 @@ import time
 from collections import deque
 from typing import Callable, Optional
 
+from .depth import DepthEngine, build_depth_result
 from .detect import Detector, annotate, build_result
 from .frames import Frame, LatestFrame
 from .sources import Source
@@ -29,6 +30,10 @@ class DroneRequired(KeyError):
     """With several drones every request must name one; there is no default drone."""
 
 
+class DepthUnavailable(RuntimeError):
+    """/depth cannot answer: disabled (--no-depth), model failed to load, or no frame yet."""
+
+
 class Channel:
     """Per-feed state: newest frame, newest result, detection timing."""
 
@@ -41,6 +46,10 @@ class Channel:
         self.lock = threading.Lock()
         self.result: Optional[dict] = None
         self.result_seq = 0  # bumps on every new detection result
+        self.result_frame: Optional[Frame] = None  # the frame `result` was computed on
+        # /depth: one computation at a time per channel; cache = (frame seq, monotonic time, result)
+        self.depth_lock = threading.Lock()
+        self.depth_cache: Optional[tuple[int, float, dict]] = None
         self.detect_times: deque[float] = deque(maxlen=64)
         self.detections_run = 0
         self.last_error: Optional[str] = None
@@ -66,7 +75,8 @@ class VisionService:
 
     def __init__(self, source: Optional[Source], detector: Detector, frames: Optional[LatestFrame] = None,
                  detect_fps: float = 5.0, jpeg_quality: int = 75,
-                 channels: Optional[list[Channel]] = None) -> None:
+                 channels: Optional[list[Channel]] = None, depth: Optional[DepthEngine] = None,
+                 depth_cache_s: float = 0.15, depth_max_result_lag_s: float = 0.5) -> None:
         if channels is None:
             if frames is None:
                 raise ValueError("need frames or channels")
@@ -89,6 +99,12 @@ class VisionService:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.started_at = time.time()
+        # Depth is on demand (/depth), never in the detection loop. None = disabled (--no-depth).
+        self.depth = depth
+        self.depth_cache_s = depth_cache_s
+        self.depth_max_result_lag_s = depth_max_result_lag_s
+        # The loop and /depth (when it has to detect on a fresh frame) may both call the detector.
+        self._detect_lock = threading.Lock()
 
     # ---- channel lookup ---------------------------------------------------
     @property
@@ -127,15 +143,17 @@ class VisionService:
     def process(self, frame: Frame, channel: Optional[Channel] = None) -> dict:
         """Run the model on one frame and publish the result on `channel` (required with several drones)."""
         ch = channel or self.channel()
-        t0 = time.perf_counter()
-        boxes = self.detector.detect(frame.image)
-        ms = (time.perf_counter() - t0) * 1000
+        with self._detect_lock:
+            t0 = time.perf_counter()
+            boxes = self.detector.detect(frame.image)
+            ms = (time.perf_counter() - t0) * 1000
         w, h = frame.size
         res = build_result(boxes, w, h, timestamp=frame.t, frame_seq=frame.seq, inference_ms=ms)
         if ch.id is not None:
             res["drone"] = ch.id
         with ch.lock:
             ch.result = res
+            ch.result_frame = frame
             ch.result_seq += 1
             ch.detections_run += 1
         return res
@@ -186,6 +204,60 @@ class VisionService:
     @property
     def last_error(self) -> Optional[str]:
         return next((c.last_error for c in self.channels if c.last_error), None)
+
+    # ---- depth (on demand) --------------------------------------------------
+    def depth_result(self, drone: Optional[str] = None) -> dict:
+        """Run the depth model once on this feed's frame and return the /depth JSON.
+
+        Uses the frame the newest YOLO result came from, so boxes and depth match. If there is
+        no result yet, or it is older than the newest frame by more than depth_max_result_lag_s
+        (detection stalled), YOLO runs on the newest frame first. Results are cached per feed:
+        the same frame, or a repeat call within depth_cache_s, reuses the last answer.
+        Raises UnknownDrone / DroneRequired like channel(), DepthUnavailable for 503s."""
+        ch = self.channel(drone)
+        if self.depth is None:
+            raise DepthUnavailable("depth disabled (--no-depth)")
+        with ch.depth_lock:  # concurrent callers for one drone wait for one computation
+            now = time.monotonic()
+            with ch.lock:
+                res, rframe = ch.result, ch.result_frame
+            latest = ch.frames.get()
+            if latest is None and rframe is None:
+                raise DepthUnavailable("no frame yet")
+            cache = ch.depth_cache
+            if cache is not None and now - cache[1] <= self.depth_cache_s:
+                return self._cached(cache, now)
+            detect_ms = None
+            if rframe is None or res is None or (latest is not None and latest.t - rframe.t > self.depth_max_result_lag_s):
+                frame = latest
+                res = self.process(frame, ch)
+                detect_ms = res.get("inference_ms")
+            else:
+                frame = rframe
+            if cache is not None and cache[0] == frame.seq:
+                return self._cached(cache, now)
+            try:
+                dmap, ms = self.depth.predict(frame.image)
+            except Exception as e:
+                raise DepthUnavailable(f"depth model unavailable: {self.depth.error or e}") from e
+            out = build_depth_result(dmap, res, timestamp=frame.t, inference_ms=ms, model=self.depth.model_name)
+            out["frame_seq"] = frame.seq
+            out["detection_frame_seq"] = res.get("frame_seq")
+            if detect_ms is not None:
+                out["detect_ms"] = detect_ms
+            if ch.id is not None:
+                out["drone"] = ch.id
+            ch.depth_cache = (frame.seq, time.monotonic(), out)
+            return dict(out, cached=False)
+
+    @staticmethod
+    def _cached(cache: tuple[int, float, dict], now: float) -> dict:
+        return dict(cache[2], cached=True, cache_age_ms=round((now - cache[1]) * 1000))
+
+    def depth_health(self) -> dict:
+        if self.depth is None:
+            return {"enabled": False, "loaded": False, "device": None, "last_ms": None}
+        return self.depth.health()
 
     # ---- read side -------------------------------------------------------
     def latest_result(self, drone: Optional[str] = None) -> Optional[dict]:
@@ -250,6 +322,7 @@ class VisionService:
             "model": getattr(self.detector, "name", "?"),
             "device": getattr(self.detector, "device", "?"),
             "uptime_s": round(time.time() - self.started_at, 1),
+            "depth": self.depth_health(),
         }
         if drone:  # one drone, in the familiar flat shape
             ch = self.channel(drone)
@@ -290,4 +363,5 @@ class VisionService:
             "source_stats": src_stats,
             "error": self.last_error or (src_stats or {}).get("error"),
             "uptime_s": round(time.time() - self.started_at, 1),
+            "depth": self.depth_health(),
         }

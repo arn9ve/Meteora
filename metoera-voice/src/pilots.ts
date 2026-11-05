@@ -9,9 +9,9 @@
 // `timeoutMs`, `absent()` says so and the server lands the drone by itself.
 
 /** Actions anyone may send, even to a drone someone else flies: they only read. */
-export const READ_ONLY = new Set(['status', 'look', 'photo']);
+export const READ_ONLY = new Set(['status', 'look', 'photo', 'describe', 'memory', 'preflight']);
 /** Actions that start a flight: the person who sends one becomes the pilot. */
-export const TAKEOFF = new Set(['takeoff', 'test_flight']);
+export const TAKEOFF = new Set(['takeoff', 'test_flight', 'calibrate']);
 export const PILOT_TIMEOUT_MS = 15_000;
 
 /** The name as shown: letters, digits, space . _ - only, at most 24 characters. */

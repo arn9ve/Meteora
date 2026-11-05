@@ -1,10 +1,11 @@
 # metoera-vision
 
-Object detection for the Metoera project (voice control of a DJI/Ryze Tello EDU).
-It receives the Tello's live H.264 video, runs a small YOLO model on the newest
-frame a few times per second, and serves the results over a local HTTP API that
-the voice side (metoera-voice / Grok) can query: "is there a person?", "where is
-the bottle?".
+Object detection and metric depth for the Metoera project (voice control of two
+drones: a Tello EDU and a RoboMaster TT). It receives each drone's live H.264
+video, runs a small YOLO model on the newest frame a few times per second, and
+serves the results over a local HTTP API that the voice side (metoera-voice /
+Grok) can query: "is there a person?", "where is the bottle?", "how far is the
+nearest thing ahead?".
 
 **This service never talks to the drone.** It only binds UDP port 11111 and
 receives video. It sends nothing on the Tello command port (8889). The
@@ -12,7 +13,7 @@ metoera-voice Node server owns that port and is the one that sends `command` and
 `streamon`.
 
 ```
-Tello EDU ──UDP 11111 (raw H.264)──▶ metoera-vision ──HTTP :18790──▶ metoera-voice (Node, :18787)
+Tello EDU / RMTT ──UDP 11111 (raw H.264)──▶ metoera-vision ──HTTP :18790──▶ metoera-voice (Node, :18787)
     ▲                                                                       │
     └──────────────── UDP 8889: command / streamon / takeoff … ─────────────┘
 ```
@@ -32,6 +33,11 @@ The weights (`yolo11n.pt`, 5.6 MB) download automatically on first start
 into `weights/`, from the official `ultralytics/assets` GitHub release. On Apple
 Silicon the model runs on the GPU (`mps`). Elsewhere it falls back to `cpu`, or
 `cuda:0` if available.
+
+The depth model (`depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf`)
+downloads from Hugging Face and loads in the background at start
+(`metoera_vision/depth.py`). `--no-depth` turns it off, and `--depth-lazy` loads
+it on the first `/depth` call instead.
 
 Ultralytics' settings file lives in `./.ultralytics/` rather than your global
 config dir. Its anonymous usage analytics (`sync`) is switched off.
@@ -106,6 +112,10 @@ Simulate both drones locally (no drone needed). The script replays
 | `--imgsz` | `METOERA_VISION_IMGSZ` | `640` |
 | `--classes` | `METOERA_VISION_CLASSES` | all 80 COCO classes; e.g. `person,bottle,cup` to keep only those |
 | `--cors-origin` | `METOERA_VISION_CORS` | `http://localhost:18787,http://127.0.0.1:18787` (`*` for any) |
+| `--no-depth` | | turn off `GET /depth` (it then answers 503) |
+| `--depth-model` | `METOERA_VISION_DEPTH_MODEL` | `depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf` |
+| `--depth-device` | `METOERA_VISION_DEPTH_DEVICE` | `auto` (mps, else cpu) |
+| `--depth-lazy` | | load the depth model on the first `/depth` call |
 | `--no-loop` | | play a file once |
 
 ## API
@@ -113,7 +123,7 @@ Simulate both drones locally (no drone needed). The script replays
 All responses are JSON unless noted, with `Cache-Control: no-store`. CORS is
 allowed for the voice UI origin, and `OPTIONS` preflight is supported.
 
-**Drones.** `/detections`, `/find`, `/frame.jpg` and `/stream` take
+**Drones.** `/detections`, `/find`, `/frame.jpg`, `/stream` and `/depth` take
 `?drone=<id>` (for example `/find?label=person&drone=rmtt` or
 `/stream?drone=tello`). Without it they return
 `400 {"error": "say which drone: add ?drone=<id>", "drones": ["tello", "rmtt"]}`.
@@ -185,6 +195,17 @@ The latest frame as a JPEG, with the latest boxes and labels drawn on it. Return
 An MJPEG stream (`multipart/x-mixed-replace`) of annotated frames, up to
 `--stream-fps`. It works directly in `<img src="http://127.0.0.1:18790/stream?drone=tello">`.
 
+### `GET /depth`
+Metric depth (metres) from Depth Anything V2 Metric Indoor, computed on the frame
+of the newest YOLO result so boxes and depth match. The answer has the detected
+`objects`, each with a `depth_m`, and a row of `columns` across the picture, each
+with `x` (0–1), `bearing_deg` (0 straight ahead, positive to the right) and
+`depth_m`. Results are cached briefly per drone. It answers 503 when depth is off
+or no frame has arrived yet.
+
+metoera-voice uses it before each leg of a mission (the nearest depth within ±12°
+of straight ahead) and to estimate distances in `localize`, `find` and `explore`.
+
 ### `GET /`
 A small debug page with the stream and live JSON.
 
@@ -210,8 +231,8 @@ instances.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q              # all (33), about 25 s once weights are cached
-.venv/bin/python -m pytest -q -m "not smoke"   # fast unit/API tests with a stubbed model (29)
+.venv/bin/python -m pytest -q                  # all, about 25 s once the weights are cached
+.venv/bin/python -m pytest -q -m "not smoke"   # fast unit/API tests with a stubbed model
 ```
 - `tests/test_detect.py`: JSON shape, normalization and clamping, sorting, `/find` matching rules, position text, annotation.
 - `tests/test_frames_service.py`: the latest-frame buffer drops the backlog, and
@@ -251,21 +272,21 @@ instances.
 
 ## Limitations
 
-- **Two-drone mode not yet tested with the real drones.** It was verified only
-  with two simulated senders on 127.0.0.1. Routing assumes each drone sends its
-  video from its own IP. If both drones' traffic reaches the Mac through NAT
-  behind one address, use `id=ip:port` entries.
-- **Not yet tested against the real drone.** It was verified only with local
-  ffmpeg replays of H.264 over UDP to 127.0.0.1:11111, a video file and still
-  images. Real Tello streams can show more packet loss and smearing (grey or
-  green artifacts) on weak Wi-Fi. Detections on corrupted frames may be wrong.
+- **Two-drone routing is tested with simulated senders.** The automated tests
+  use two senders on 127.0.0.1. Routing assumes each drone sends its video from
+  its own IP. If both drones' traffic reaches the Mac through NAT behind one
+  address, use `id=ip:port` entries.
+- **The tests use local replays.** They use ffmpeg replays of H.264 over UDP to
+  127.0.0.1:11111, a video file and still images. Real Tello streams can show
+  more packet loss and smearing (grey or green artifacts) on weak Wi-Fi.
+  Detections and depth on corrupted frames may be wrong.
 - On macOS, the Python process needs **Local Network** permission to receive
   from the drone's LAN address. Allow it under System Settings → Privacy &
   Security → Local Network for the terminal or app that launches it. The Tello
   pushes video to whichever host sent `streamon`, so run this service on the
   same machine as metoera-voice.
 - COCO's 80 classes only (person, bottle, cup, chair, dog, cell phone, ...). No tracking and no IDs across frames.
-- Positions are 2-D image positions from the drone's camera. There is no distance or depth estimate.
+- Positions are 2-D image positions from the drone's camera. Distance comes only from `/depth`, an estimate from a single frame.
 - `yolo11n` is tuned for speed: about 30 ms per frame on Apple Silicon MPS. Use
   `--model yolo11s.pt` for better accuracy at roughly 2–3× the cost.
 - The Tello EDU forward camera only. The downward camera (`downvision`) isn't handled specially.
@@ -277,6 +298,7 @@ instances.
   the combined work (source availability). Commercial use without AGPL
   compliance requires an Ultralytics Enterprise licence. Personal or local use
   is fine.
+- Hugging Face `transformers`: Apache-2.0. Check the depth model's licence on its Hugging Face page before redistributing it.
 - PyAV: BSD-3-Clause; its wheels bundle FFmpeg libraries (FFmpeg is LGPL/GPL depending on build - check before redistributing). OpenCV: Apache-2.0. PyTorch: BSD-style.
 - The sample clip is made from `bus.jpg` and `zidane.jpg`, which ship inside the
   Ultralytics package. It is generated locally and git-ignored.

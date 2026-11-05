@@ -165,7 +165,7 @@ test('a drone another laptop owns never receives a packet from this laptop', asy
 test('release stops the video before closing the link', async (t) => {
   const replyPort = await freePort();
   const fake = await fakeDrone({ serial: 'FAKEEDU0000001', replyPort, statePort: 0, battery: '81' });
-  const drone = new RealTello({ host: '127.0.0.1', port: fake.port, localPort: replyPort, statePort: 0, expectedSerial: 'FAKEEDU0000001' });
+  const drone = new RealTello({ host: '127.0.0.1', port: fake.port, localPort: replyPort, statePort: 0, expectedSerial: 'FAKEEDU0000001' , cameraAlwaysOn: true});
   t.after(() => { drone.close(); fake.close(); });
   assert.equal((await drone.execute({ droneId: 'tello', action: 'status' })).ok, true);
   assert.equal(drone.snapshot().video, true);
@@ -178,7 +178,7 @@ test('a drone handed to another laptop gets streamoff, then nothing; taking it b
   const replyPort = await freePort();
   const fake = await fakeDrone({ serial: 'FAKEEDU0000001', replyPort, statePort: 0, battery: '81' });
   let refusal = null; // ours, then "yielding" (still allowed), then the other laptop's
-  const drone = new RealTello({ host: '127.0.0.1', port: fake.port, localPort: replyPort, statePort: 0, expectedSerial: 'FAKEEDU0000001', keepaliveMs: 40, mayTalk: () => refusal });
+  const drone = new RealTello({ host: '127.0.0.1', port: fake.port, localPort: replyPort, statePort: 0, expectedSerial: 'FAKEEDU0000001', keepaliveMs: 40, mayTalk: () => refusal , cameraAlwaysOn: true});
   t.after(() => { drone.close(); fake.close(); });
   assert.equal((await drone.execute({ droneId: 'tello', action: 'status' })).ok, true);
   await drone.release(); // what the server's onYield does before letting go

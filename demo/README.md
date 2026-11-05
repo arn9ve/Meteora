@@ -1,11 +1,11 @@
-# Meteora demo
+# Meteora · demo video
 
-[![Watch the Meteora demo](poster.jpg)](https://www.youtube.com/watch?v=RDiyOWQVRvs)
+**[▶ Watch the demo (75 s)](meteora-demo.mp4)**
 
-[Watch the video](https://www.youtube.com/watch?v=RDiyOWQVRvs) · 75 seconds · 1080p · Audio included
+[![Meteora demo](poster.jpg)](meteora-demo.mp4)
 
-The demo shows a camera alert, a drone checking the zone, and Grok reporting what it sees. It combines a labeled 3D illustration with real recordings.
+A 75-second walkthrough of Meteora: a phone sees a person walk through a door into a red zone, the alert, the nearest drone flying there, the report written with Grok, the voice pilot, the speed, the scanned site.
 
-[Download the MP4](https://github.com/arn9ve/Meteora/raw/refs/heads/main/demo/meteora-demo.mp4) · About 9 MB
+The 3D scenes are illustrations of the real venue (Capannone Gragnani, Pavia) built from its measured floor plan; shots tagged REAL are recordings from the hackathon.
 
-[Explore the project](../README.md)
+Back to the [project README](../README.md).

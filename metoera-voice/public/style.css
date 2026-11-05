@@ -430,3 +430,4 @@ input.switch.arm:checked{background:var(--red);border-color:var(--red)}
 }
 @media(max-width:900px){.room-panel .room-body{min-height:70svh}.topbar{flex-wrap:wrap;height:auto;padding:10px 16px}}
 .drone-card-head{flex-direction:column;align-items:flex-start;gap:6px}
+.wordmark{display:flex;align-items:center;letter-spacing:0}.wordmark .logo{height:34px;width:auto;display:block;margin-left:-6px}

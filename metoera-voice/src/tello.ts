@@ -439,6 +439,20 @@ export class RealTello {
     if (ready) return this.#fail(ready);
     if (['look', 'scan', 'approach', 'explore', 'face', 'describe', 'find'].includes(String(value.action))) await this.#cameraOn();
 
+    // How far is the nearest thing straight ahead (camera + depth model), before flying a leg.
+    if (value.action === 'ahead') {
+      if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for ahead');
+      if (!this.#depth) return this.#fail('No depth model on the server');
+      if (!(await this.#cameraOn())) return this.#fail('The camera did not start');
+      await new Promise((r) => setTimeout(r, 700)); // a frame taken after the last turn
+      const view = await this.#depthNow();
+      const cols = (view?.columns ?? []).filter((c) => Math.abs(c.bearing_deg) <= 12 && c.depth_m > 0.1);
+      if (!cols.length) return this.#fail('No depth reading');
+      const aheadM = Math.round(Math.min(...cols.map((c) => c.depth_m)) * 100) / 100;
+      this.#flightLog?.({ event: 'ahead', aheadM });
+      return { ok: true, mode: 'real', action: 'ahead', drone: this.snapshot(), aheadM } as TelloResult;
+    }
+
     // Arrived somewhere to check: look left, ahead and right, one photo each, and a report from Grok vision.
     if (value.action === 'pan_report') {
       if (Object.keys(value).some((k) => !['droneId', 'action', 'degrees', 'question'].includes(k))) return this.#fail('Unknown argument for pan_report');
@@ -1090,6 +1104,13 @@ export class RealTello {
   // The Tello lands by itself after 15 s without commands; a numeric query keeps it alive
   // without ever producing an "ok" that could be mistaken for a motion reply.
   #keepaliveTick(): void {
+    // Flying but no telemetry for 3 s: the link is bad. Keeping the drone awake would stop it from
+    // landing by itself (5 Nov: it stayed up), so tell it to land instead, every tick, skipping the queue.
+    if (this.#flight === 'flying' && this.#lastStateAt && Date.now() - this.#lastStateAt > 3000) {
+      this.#flightLog?.({ event: 'link-lost', sinceMs: Date.now() - this.#lastStateAt });
+      void this.#request('land', isOk, 2000, true);
+      return;
+    }
     if (this.#busy || this.#pending) return;
     const run = this.#queue.then(async () => {
       await this.#stopDone;

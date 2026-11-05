@@ -91,8 +91,9 @@ test('mission without a model: the rules look first when the position is only fr
   d.live = ((orig) => () => ({ ...orig(), source: 'commands' }))(d.live);
   const r = await missionGoTo('tello', d, { x: 300, y: 300, name: 'x' }, { plan, objects: [], people: () => [], decide: null, hoverMs: 1 });
   assert.equal(r.ok, true, r.error);
-  assert.equal(sent[0].action, 'localize');
-  assert.equal(sent[1].action, 'go_to');
+  const moves = sent.filter((c) => c.action !== 'ahead');
+  assert.equal(moves[0].action, 'localize');
+  assert.equal(moves[1].action, 'go_to');
 });
 
 test('a drone that does not move is not left pretending: three useless steps and the mission stops', async () => {
@@ -129,7 +130,7 @@ test('it turns to face each leg before flying it, and faces the table on arrival
   const plans = [];
   const r = await missionGoTo('tello', d, { x: 400, y: 300, name: 'table 3', face: { x: 500, y: 200 } }, { plan, objects: [], people: () => [], decide: null, hoverMs: 1, onPlan: (p) => plans.push(p) });
   assert.equal(r.ok, true, r.error);
-  assert.deepEqual(sent.slice(0, 2).map((c) => c.action === 'rotate' ? `rotate ${c.direction} ${c.degrees}` : c.action), ['rotate clockwise 90', 'go_to']);
+  assert.deepEqual(sent.slice(0, 3).map((c) => c.action === 'rotate' ? `rotate ${c.direction} ${c.degrees}` : c.action), ['rotate clockwise 90', 'ahead', 'go_to']);
   assert.equal(sent.at(-1).action, 'rotate'); // faces table 3 at the end
   assert.equal(plans.length, 1);
 });
@@ -167,4 +168,24 @@ test('a person inside the target zone does not stop the drone going there; one o
   const b = fakeDrone({ startX: 100, startY: 300 });
   const r2 = await missionGoTo('tello', b.d, { x: 800, y: 300, name: 'x' }, { plan, objects: [], people: () => [{ x: 2.5, y: 3 }], decide: null, hoverMs: 1 });
   assert.match(r2.error, /person has been in the way/);
+});
+
+test('the camera sees something close ahead: the leg is cut short, or not flown at all', async () => {
+  const near = fakeDrone({ startX: 100, startY: 300 });
+  near.d.execute = ((orig) => async (c) => (c.action === 'ahead' ? { ok: true, aheadM: 1.2 } : orig(c)))(near.d.execute);
+  await missionGoTo('tello', near.d, { x: 400, y: 300, name: 'x' }, { plan, objects: [], people: () => [], decide: null, hoverMs: 1, maxSteps: 1 });
+  const leg = near.sent.find((c) => c.action === 'go_to');
+  assert.ok(Math.abs(leg.x - 160) <= 1, JSON.stringify(leg)); // 1.2 m seen, stops 60 cm before
+  const wall = fakeDrone({ startX: 100, startY: 300 });
+  wall.d.execute = ((orig) => async (c) => (c.action === 'ahead' ? { ok: true, aheadM: 0.5 } : orig(c)))(wall.d.execute);
+  const r = await missionGoTo('tello', wall.d, { x: 400, y: 300, name: 'x' }, { plan, objects: [], people: () => [], decide: null, hoverMs: 1, maxSteps: 3 });
+  assert.equal(wall.sent.filter((c) => c.action === 'go_to').length, 0);
+  assert.equal(r.ok, false);
+});
+
+test('a lost link ends the mission at once', async () => {
+  const { d } = fakeDrone({ startX: 100, startY: 300 });
+  d.live = ((orig) => () => ({ ...orig(), connected: false }))(d.live);
+  const r = await missionGoTo('tello', d, { x: 400, y: 300, name: 'x' }, { plan, objects: [], people: () => [], decide: null, hoverMs: 1 });
+  assert.equal(r.linkLost, true);
 });

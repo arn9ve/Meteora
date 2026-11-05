@@ -764,6 +764,8 @@ function startLive(){
     let data; try { data=JSON.parse(e.data); } catch { return; }
     for(const d of data.drones||[]){
       const was=liveDrones[d.id]; liveDrones[d.id]=d;
+      // Link lost while flying: said at once (the server tells it to land; the Tello also lands by itself).
+      if(was?.connected&&!d.connected&&was.flying) { const n=nameOf(d.id).replace(/^Drone \d · /,''); log(n,'Link lost while flying: landing'); notifyGrok(`${n} lost its link while flying; it is told to land and lands by itself within 15 s. Say it in one short sentence.`,true,`Ho perso il collegamento con ${n}: sta atterrando da solo.`); }
       // A new flight plan for a drone this person flies: Grok says it before the drone moves.
       // Said by the page that sent the flight (or the pilot's page): what it is doing and why, before it moves.
       if(d.plan&&d.plan.at!==was?.plan?.at&&was&&(longTask[d.id]||drones.find(x=>x.id===d.id)?.pilot?.me)&&Date.now()-d.plan.at<8000) notifyGrok(`${nameOf(d.id)} is thinking out loud, before moving: ${d.plan.text} Say this reasoning to the person in two short sentences, in their language (where it is, what it saw, where the target is and what it will do), then that it is going.`,true);

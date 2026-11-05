@@ -110,3 +110,18 @@ test('pan_report: looks left, ahead and right with a photo each, back to its hea
   assert.deepEqual(f.received.filter((c) => /^(cw|ccw) /.test(c)), ['ccw 60', 'cw 60', 'cw 60', 'ccw 60']);
   assert.match(r.report, /persona seduta/);
 });
+
+test('flying with no telemetry for 3 s: no more keep-awake, it is told to land', async (t) => {
+  const s = dgram.createSocket('udp4'); await new Promise((r) => s.bind(0, '127.0.0.1', r)); const statePort = s.address().port; await new Promise((r) => s.close(r));
+  const f = await fake();
+  let telemetry = true;
+  const tx = dgram.createSocket('udp4');
+  const timer = setInterval(() => { if (telemetry) tx.send('pitch:0;roll:0;yaw:0;tof:80;h:80;bat:80;', statePort, '127.0.0.1'); }, 50);
+  const d = new RealTello({ host: '127.0.0.1', port: f.port, localPort: 0, statePort, expectedSerial: SERIAL, cameraWarmMs: 0, keepaliveMs: 200 });
+  t.after(() => { clearInterval(timer); tx.close(); d.close(); f.close(); });
+  await d.execute({ droneId: 'tello', action: 'takeoff' });
+  await new Promise((r) => setTimeout(r, 300));
+  telemetry = false;                                  // the link goes bad: no more telemetry
+  await new Promise((r) => setTimeout(r, 3800));
+  assert.ok(f.received.filter((c) => c === 'land').length >= 1, JSON.stringify(f.received.slice(-6)));
+});

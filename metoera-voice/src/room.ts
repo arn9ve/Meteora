@@ -375,7 +375,8 @@ export function zoneTarget(zone: Zone, plan: RoutePlan | null, objects: RoomObje
     const edge = Math.min(...pts.map((a, i) => segDist(p, a, pts[(i + 1) % pts.length])));
     const clear = clearanceAt(plan, objects.filter((o) => o.kind !== 'table'), p); // over tables is fine at flying height
     // Room around it matters up to 50 cm; then being near the middle wins.
-    const score = Math.min(edge, 0.5) * 2 + Math.min(clear, 0.5) * 2 - Math.hypot(x - cx, y - cy) * 0.3;
+    // Walls and pillars: up to 1 m of room counts (a drone 11 m from its start can be ~1 m off).
+    const score = Math.min(edge, 0.5) * 2 + Math.min(clear, 1.0) * 2 - Math.hypot(x - cx, y - cy) * 0.3;
     if (!best || score > best.score) best = { p, score };
   }
   return best ? [Math.round(best.p[0] * 100) / 100, Math.round(best.p[1] * 100) / 100] : null;

@@ -9,7 +9,7 @@ type Result = { ok: boolean; error?: string; [k: string]: unknown };
 export type MissionDrone = {
   execute(command: Record<string, unknown>): Promise<Result>;
   forceLand(): Promise<Result>;
-  live(): { flying: boolean; pose: { x: number; y: number; heading: number; zFloor: number }; source: 'telemetry' | 'commands'; startSurface: { heightCm: number } };
+  live(): { flying: boolean; connected?: boolean; pose: { x: number; y: number; heading: number; zFloor: number }; source: 'telemetry' | 'commands'; startSurface: { heightCm: number } };
   snapshot(): { battery: number | null; heightAboveFloorCm: number | null };
   readonly generation: number;
   /** A look-around (survey) was done since take-off. */
@@ -69,6 +69,7 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
   for (let step = 1; step <= maxSteps; step += 1) {
     if (drone.generation !== generation) return { ok: false, error: 'Mission stopped (stop, land or emergency)', steps: step - 1, choices };
     if (!drone.live().flying) return { ok: false, error: 'The drone landed: mission over', steps: step - 1, choices };
+    if (drone.live().connected === false) return { ok: false, error: 'Lost the link to the drone: it is told to land, and the Tello lands by itself after 15 s without commands', steps: step - 1, choices, linkLost: true };
     const live = drone.live(), at: Point = [live.pose.x / 100, live.pose.y / 100];
     const remainingCm = Math.round(Math.hypot(target.x - live.pose.x, target.y - live.pose.y));
     // Tables are obstacles only when the drone flies lower than 50 cm above them; pillars and walls always.
@@ -157,7 +158,16 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
         // Face the way it is going first: the camera then sees what is ahead.
         const turn = turnTo(live.pose, { x: legEnd[0] * 100, y: legEnd[1] * 100 });
         if (Math.abs(turn) >= 20) { const t = await drone.execute({ droneId, action: 'rotate', direction: turn > 0 ? 'counterclockwise' : 'clockwise', degrees: Math.min(180, Math.abs(turn)) }); if (!t.ok) { r = t; break; } }
-        r = await drone.execute({ droneId, action: 'go_to', x: Math.round(legEnd[0] * 100), y: Math.round(legEnd[1] * 100), check: false });
+        // Look before flying: the camera faces the leg now; the depth model says how far the nearest
+        // thing is. Nothing within 90 cm, and the leg ends 60 cm before what it sees.
+        let end = legEnd;
+        const look = await drone.execute({ droneId, action: 'ahead' });
+        if (look.ok && typeof look.aheadM === 'number') {
+          const legM = Math.hypot(legEnd[0] - at[0], legEnd[1] - at[1]);
+          if (look.aheadM < 0.9) { deps.log?.({ event: 'obstacle', aheadM: look.aheadM }); deps.onStep?.({ step, action: 'stopped', reason: `something ${look.aheadM} m ahead`, by: 'rules', overruled: null, ms: 0 }); r = { ok: false, error: `obstacle ${look.aheadM} m ahead` }; break; }
+          if (look.aheadM - 0.6 < legM) { const k = (look.aheadM - 0.6) / legM; end = [at[0] + (legEnd[0] - at[0]) * k, at[1] + (legEnd[1] - at[1]) * k]; }
+        }
+        r = await drone.execute({ droneId, action: 'go_to', x: Math.round(end[0] * 100), y: Math.round(end[1] * 100), check: false });
         break;
       }
     }

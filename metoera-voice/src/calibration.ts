@@ -61,7 +61,8 @@ export async function runCalibration(droneId: string, drone: CalibrationDrone, o
   try {
     for (const [direction, cm] of pattern) {
       if (stopped()) return fail('stopped from outside (stop, land or emergency)');
-      const r = await drone.execute({ droneId, action: 'move', direction, centimeters: cm });
+      // look: false: the pattern is the test, so no looking around before its sideways moves.
+      const r = await drone.execute({ droneId, action: 'move', direction, centimeters: cm, look: false });
       report.moves.push({ command: `${direction} ${cm}`, commandedCm: cm, measuredCm: null, errorCm: null });
       note(`${direction} ${cm}: ${r.ok ? 'ok' : `failed (${r.error})`}`);
       await sleep(pause);
@@ -83,7 +84,7 @@ export async function runCalibration(droneId: string, drone: CalibrationDrone, o
     }
     // Back to the start with what it believes, then land on the table.
     if (stopped()) return fail('stopped from outside (stop, land or emergency)');
-    const back = await drone.execute({ droneId, action: 'go_to', x: report.start.x, y: report.start.y, check: false });
+    const back = await drone.execute({ droneId, action: 'go_to', x: report.start.x, y: report.start.y, check: false, look: false });
     note(`back to the start: ${back.ok ? 'ok' : `failed (${back.error})`}`);
     await sleep(pause);
     const end = drone.live();

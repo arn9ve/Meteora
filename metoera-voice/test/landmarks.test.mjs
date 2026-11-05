@@ -30,7 +30,7 @@ test('position from two bearings, or one bearing with a distance; nothing from o
   assert.ok(Math.abs(one.x - truth.x) < 1e-6 && Math.abs(one.y - truth.y) < 1e-6);
   assert.equal(solvePose(heading, [obs[0]]), null);
   assert.equal(Math.round(bearingOfX(0.5)), 0);
-  assert.ok(Math.abs(bearingOfX(1) - 41.3) < 0.01 && bearingOfX(0) < -41);
+  assert.ok(Math.abs(bearingOfX(1) - 35) < 0.01 && bearingOfX(0) < -34.9); // the picture's edge: half the 70° horizontal view (distance.ts)
 });
 
 test('the model answer: only expected ids, x inside the picture', () => {

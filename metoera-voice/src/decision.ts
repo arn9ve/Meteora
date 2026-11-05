@@ -6,6 +6,7 @@ export type Choice =
   | { action: 'continue' }        // next leg of the route (computed by the server, at most 150 cm)
   | { action: 'hover' }           // stay, 1 s
   | { action: 'localize' }        // photo fix with the room plan
+  | { action: 'look_around' }     // turn 360° on the spot: position from landmarks all around, people around
   | { action: 'climb'; cm: number }
   | { action: 'descend'; cm: number }
   | { action: 'turn'; deg: number } // + = right (clockwise)
@@ -30,7 +31,7 @@ export type DecisionState = {
   maxSteps: number;
 };
 
-export const MENU = ['continue', 'hover', 'localize', 'climb', 'descend', 'turn', 'back', 'land', 'done'] as const;
+export const MENU = ['continue', 'hover', 'localize', 'look_around', 'climb', 'descend', 'turn', 'back', 'land', 'done'] as const;
 
 export function decisionPrompt(s: DecisionState): string {
   return `You fly a small indoor drone toward a target, one step at a time. Pick the next step.
@@ -43,8 +44,8 @@ State:
 - battery: ${s.battery ?? '?'}%
 - last steps: ${s.lastSteps.length ? s.lastSteps.map((l) => `${l.action} ${l.ok ? 'ok' : `failed${l.note ? ` (${l.note})` : ''}`}`).join('; ') : 'none'}
 - step ${s.step} of at most ${s.maxSteps}
-Menu: continue | hover | localize (photo of the room to fix the position) | climb N (cm) | descend N (cm) | turn N (degrees, + = right) | back (to the last safe point) | land | done.
-Rules of thumb: continue when things look normal; localize when the position is doubtful (moves failed, "cannot see the floor", position only from commands, or never checked and the target is close); hover if a person is near the next leg; done when under 30 cm left.
+Menu: continue | hover | localize (one photo of the room to fix the position) | look_around (turn 360° on the spot: fixes the position from the pillars and tables in every direction and checks for people around; about 15 s) | climb N (cm) | descend N (cm) | turn N (degrees, + = right) | back (to the last safe point) | land | done.
+Rules of thumb: continue when things look normal; look_around when the position comes only from commands and has never been checked with a photo, or when a localize just failed or saw too little; localize when a move failed or the drone cannot see the floor, never localize twice in a row; hover if a person is near the next leg; done when under 30 cm left.
 Reply with ONLY JSON: {"action":"...","n":<number or null>,"reason":"<at most 10 words>"}`;
 }
 
@@ -57,7 +58,7 @@ export function parseChoice(answer: string | null): { choice: Choice; reason: st
     const reason = typeof v.reason === 'string' ? v.reason.slice(0, 80) : '';
     const n = typeof v.n === 'number' && Number.isFinite(v.n) ? Math.round(v.n) : null;
     switch (v.action) {
-      case 'continue': case 'hover': case 'localize': case 'back': case 'land': case 'done': return { choice: { action: v.action }, reason };
+      case 'continue': case 'hover': case 'localize': case 'look_around': case 'back': case 'land': case 'done': return { choice: { action: v.action }, reason };
       case 'climb': case 'descend': return n === null ? null : { choice: { action: v.action, cm: Math.abs(n) }, reason };
       case 'turn': return n === null ? null : { choice: { action: 'turn', deg: n }, reason };
       default: return null;
@@ -71,7 +72,11 @@ export function ruleChoice(s: DecisionState): Choice {
   if (s.remainingCm < 30) return { action: 'done' };
   if (s.personOnPathM !== null && s.personOnPathM < 1) return { action: 'hover' };
   const failed = s.lastSteps.slice(-1)[0];
-  if (!s.checkedWithPhoto && (s.positionFrom === 'commands' || (failed && !failed.ok)) && !(failed?.action === 'localize')) return { action: 'localize' };
+  // One photo saw too little: look all around instead of asking again.
+  if (failed && !failed.ok && failed.action === 'localize') return { action: 'look_around' };
+  // A position that was never checked, and that comes only from commands: one photo often sees a single pillar.
+  if (!s.checkedWithPhoto && s.positionFrom === 'commands' && failed?.action !== 'look_around') return { action: 'look_around' };
+  if (!s.checkedWithPhoto && failed && !failed.ok && !['localize', 'look_around'].includes(failed.action)) return { action: 'localize' };
   return { action: 'continue' };
 }
 
@@ -109,6 +114,13 @@ export function checkChoice(c: Choice, s: DecisionState): { choice: Choice; over
       return s.haveSafePoint ? keep(c) : hover('no safe point yet');
     case 'land':
       return s.surfaceBelowCm === null ? hover('not sure what is below: not landing on an edge') : keep(c);
+    case 'localize': {
+      // A photo check that just failed is not asked again: look all around instead.
+      const last = s.lastSteps.slice(-1)[0];
+      return last && !last.ok && (last.action === 'localize' || last.action === 'look_around')
+        ? { choice: { action: 'look_around' }, overruled: 'the last position check failed: looking all around instead' }
+        : keep(c);
+    }
     default:
       return keep(c);
   }

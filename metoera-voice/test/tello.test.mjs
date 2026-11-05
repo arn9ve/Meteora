@@ -219,6 +219,57 @@ test('look summarises what the camera sees now', async (t) => {
   assert.deepEqual(result.seen.objects.filter((o) => o.label === 'person').map((o) => o.side), ['left', 'right']);
 });
 
+// A person box. `confidence` may change per call.
+const personAt = (confidence) => ({ label: 'person', confidence, center: { x: 0.5, y: 0.5 }, box: { x: 0.4, y: 0.2, w: 0.2, h: 0.6 } });
+
+test('a weak person makes look turn all the way round and answer from the clearer view', async (t) => {
+  const fake = await fakeDrone();
+  let calls = 0;
+  const drone = tello(fake, { settleMs: 0, vision: async () => {
+    calls += 1;
+    return { timestamp: Date.now() / 1000, objects: [personAt(calls === 1 ? 0.4 : 0.6)] };
+  } });
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const result = await drone.execute({ droneId: 'tello', action: 'look', label: 'person' });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(fake.received.filter((c) => c === 'cw 60').length, 6);
+  assert.equal(result.seen.objects.find((o) => o.label === 'person').confidence, 0.6);
+});
+
+test('look does not turn when it sees no person, or a person it already trusts', async (t) => {
+  const fake = await fakeDrone();
+  const none = tello(fake, { vision: async () => ({ timestamp: Date.now() / 1000, objects: [{ label: 'cup', confidence: 0.8, center: { x: 0.2, y: 0.2 } }] }) });
+  t.after(() => { none.close(); fake.close(); });
+  await none.execute({ droneId: 'tello', action: 'takeoff' });
+  const empty = await none.execute({ droneId: 'tello', action: 'look', label: 'person' });
+  assert.equal(empty.ok, true);
+  assert.equal(empty.seen.counts.person, undefined);
+  assert.equal(fake.received.filter((c) => c === 'cw 60').length, 0);
+  none.close();
+  const sure = tello(fake, { vision: async () => ({ timestamp: Date.now() / 1000, objects: [personAt(0.7)] }) });
+  t.after(() => sure.close());
+  await sure.execute({ droneId: 'tello', action: 'takeoff' });
+  const seen = await sure.execute({ droneId: 'tello', action: 'look', label: 'person' });
+  assert.equal(seen.ok, true);
+  assert.equal(seen.seen.objects[0].confidence, 0.7);
+  assert.equal(fake.received.filter((c) => c === 'cw 60').length, 0);
+});
+
+test('approach looks around once when the person is only weakly seen', async (t) => {
+  const fake = await fakeDrone();
+  let calls = 0;
+  const drone = tello(fake, { settleMs: 0, vision: async () => {
+    calls += 1;
+    return { timestamp: Date.now() / 1000, objects: [personAt(calls === 1 ? 0.4 : 0.9)] };
+  } });
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const result = await drone.execute({ droneId: 'tello', action: 'approach' });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(fake.received.filter((c) => c === 'cw 60').length, 6);
+});
+
 test('force land cancels queued commands and interrupts the running one', async (t) => {
   const fake = await fakeDrone();
   const drone = tello(fake);

@@ -12,6 +12,10 @@ export type MissionDrone = {
   live(): { flying: boolean; pose: { x: number; y: number; heading: number; zFloor: number }; source: 'telemetry' | 'commands'; startSurface: { heightCm: number } };
   snapshot(): { battery: number | null; heightAboveFloorCm: number | null };
   readonly generation: number;
+  /** Sends a keep-alive when nothing was sent for a while: the Tello lands after 15 s of silence. */
+  keepAwake?(): Promise<void>;
+  /** People the drone's own last look-around saw (room metres). */
+  seenPeople?(): { x: number; y: number }[];
 };
 export type MissionDeps = {
   plan: Plan;
@@ -43,15 +47,23 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
   const generation = drone.generation;
   const lastSteps: DecisionState['lastSteps'] = [];
   let safe: Point | null = null, checked = false;
+  // Looking all around twice without finding the position, with no progress: lost, stop guessing.
+  let lostLooks = 0, remainingAtLoss = Infinity;
+  // A person who stays near the way: wait a little, then give the decision back to the person.
+  let waitedForPerson = 0;
   const choices: string[] = [];
   for (let step = 1; step <= maxSteps; step += 1) {
     if (drone.generation !== generation) return { ok: false, error: 'Mission stopped (stop, land or emergency)', steps: step - 1, choices };
+    if (!drone.live().flying) return { ok: false, error: 'The drone is not flying any more (it may have landed by itself): mission ended', steps: step - 1, choices };
+    await drone.keepAwake?.();
     const live = drone.live(), at: Point = [live.pose.x / 100, live.pose.y / 100];
     const remainingCm = Math.round(Math.hypot(target.x - live.pose.x, target.y - live.pose.y));
+    if (remainingCm < remainingAtLoss - 20) { lostLooks = 0; remainingAtLoss = Infinity; }
     const route = planRoute(deps.plan, deps.objects, at, [target.x / 100, target.y / 100]);
     const next: Point | null = route && route.length ? route[0] : null;
     const legEnd: Point | null = next ? (() => { const d = Math.hypot(next[0] - at[0], next[1] - at[1]); const k = d > LEG_CM / 100 ? (LEG_CM / 100) / d : 1; return [at[0] + (next[0] - at[0]) * k, at[1] + (next[1] - at[1]) * k] as Point; })() : null;
-    const nearPerson = legEnd ? deps.people().reduce<number | null>((best, p) => { const d = segPointDist([p.x, p.y], at, legEnd); return best === null || d < best ? d : best; }, null) : null;
+    const people = [...deps.people(), ...(drone.seenPeople?.() ?? [])];
+    const nearPerson = legEnd ? people.reduce<number | null>((best, p) => { const d = segPointDist([p.x, p.y], at, legEnd); return best === null || d < best ? d : best; }, null) : null;
     const snap = drone.snapshot();
     const state: DecisionState = {
       goal: target.name, remainingCm, nextLegCm: legEnd ? Math.round(Math.hypot(legEnd[0] - at[0], legEnd[1] - at[1]) * 100) : 0,
@@ -71,10 +83,12 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
       else { const parsed = parseChoice(answer); if (parsed) { by = 'model'; choice = parsed.choice; reason = parsed.reason; } }
     }
     const checkedChoice = checkChoice(choice, state);
+    waitedForPerson = checkedChoice.choice.action === 'hover' && state.personOnPathM !== null && state.personOnPathM < 1 ? waitedForPerson + 1 : 0;
     const ms = Date.now() - t0;
     const c = checkedChoice.choice;
     const label = c.action + ('cm' in c ? ` ${c.cm}` : 'deg' in c ? ` ${c.deg}` : '');
     choices.push(label);
+    if (waitedForPerson >= 6) return { ok: false, error: `A person stays near the way (about ${state.personOnPathM?.toFixed(1)} m from the route): stopped, hovering here`, steps: step, choices };
     deps.onStep?.({ step, action: label, reason, by, overruled: checkedChoice.overruled, ms });
     deps.log?.({ event: 'decision', step, by, asked: choice, did: c, overruled: checkedChoice.overruled, reason, ms, remainingCm, positionFrom: live.source });
     if (drone.generation !== generation) return { ok: false, error: 'Mission stopped (stop, land or emergency)', steps: step, choices };
@@ -84,6 +98,17 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
       case 'land': r = await drone.forceLand(); return { ...r, action: 'go_to', reached: false, landed: true, steps: step, choices };
       case 'hover': await sleep(deps.hoverMs ?? 1000); r = { ok: true }; break;
       case 'localize': r = await drone.execute({ droneId, action: 'localize' }); if (r.ok) checked = true; break;
+      case 'look_around': {
+        r = await drone.execute({ droneId, action: 'look_around' });
+        const located = r.located as { ok: boolean; error?: string } | null | undefined;
+        if (r.ok && located?.ok) checked = true;
+        if (r.ok && located && !located.ok) r = { ok: false, error: located.error ?? 'position not found' };
+        if (!r.ok) {
+          lostLooks += 1; remainingAtLoss = Math.min(remainingAtLoss, remainingCm);
+          if (lostLooks >= 2) return { ok: false, error: `Position unknown: looked all around twice without finding it (${String(r.error ?? '').slice(0, 80)}). Hovering here`, steps: step, choices };
+        }
+        break;
+      }
       case 'climb': r = await drone.execute({ droneId, action: 'move', direction: 'up', centimeters: c.cm }); break;
       case 'descend': r = await drone.execute({ droneId, action: 'move', direction: 'down', centimeters: c.cm }); break;
       case 'turn': r = await drone.execute({ droneId, action: 'rotate', direction: c.deg > 0 ? 'clockwise' : 'counterclockwise', degrees: Math.abs(c.deg) }); break;

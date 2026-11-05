@@ -8,11 +8,11 @@ import { readFile, writeFile, mkdir, chmod, appendFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
-import { RealTello, type Detections, type DepthView } from './src/tello.ts';
-import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, planRoute, type Point, type RoomConfig } from './src/room.ts';
+import { RealTello, type Detections, type DepthView, type LookView } from './src/tello.ts';
+import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, surfaceHeightAt, planRoute, clearAlong, type Point, type RoomConfig } from './src/room.ts';
 import { missionGoTo } from './src/mission.ts';
 import { runCalibration, summary as calibrationSummary, type CalibrationReport } from './src/calibration.ts';
-import { landmarksOf, expectedInView, bearingOfX, solvePose, localizePrompt, parseSeen } from './src/landmarks.ts';
+import { landmarksOf, expectedInView, bearingOfX, solvePose, localizePrompt, parseSeen, aroundPrompt, parseSightings, boxSightings, locateAround, type Sighting } from './src/landmarks.ts';
 import { Claims, CLAIMS_PORT, describeElsewhere, parsePeers, udpTransport } from './src/claims.ts';
 import { Pilots, TAKEOFF } from './src/pilots.ts';
 
@@ -79,13 +79,13 @@ async function readFrame(id: string): Promise<Buffer | null> {
 }
 // Grok vision looks at real camera images (describe, find). VISION_LLM_MODEL picks the model.
 const visionModel = process.env.VISION_LLM_MODEL ?? 'grok-4.20-non-reasoning';
-async function askVision(images: Buffer[], prompt: string): Promise<string | null> {
+async function askVision(images: Buffer[], prompt: string, maxTokens = 300): Promise<string | null> {
   if (!process.env.XAI_API_KEY) return null;
   try {
     const response = await fetch('https://api.x.ai/v1/chat/completions', {
       method:'POST', signal:AbortSignal.timeout(30000),
       headers:{Authorization:`Bearer ${process.env.XAI_API_KEY}`, 'Content-Type':'application/json'},
-      body:JSON.stringify({model:visionModel, max_tokens:300, messages:[{role:'user', content:[
+      body:JSON.stringify({model:visionModel, max_tokens:maxTokens, messages:[{role:'user', content:[
         ...images.map((image) => ({type:'image_url', image_url:{url:`data:image/jpeg;base64,${image.toString('base64')}`, detail:'low'}})),
         {type:'text', text:prompt},
       ]}]}),
@@ -194,6 +194,41 @@ async function localizeFrom(id: string, pose: {x: number; y: number; heading: nu
   return {ok:true as const, x:Math.round(sol.x * 100), y:Math.round(sol.y * 100), seen:obs.map((o) => o.id), residualCm:Math.round(sol.residualM * 100), note};
 }
 
+/**
+ * Where is the drone really, from the six views of a look-around (it turned on the spot). Only
+ * the KIND and place across each photo of what is seen (pillar, table) come from the camera: the
+ * object detector when it knows pillars (a venue model), otherwise one Grok vision call over all
+ * the photos, with no hint of what to expect. Which pillar or table each one is, and so where the
+ * drone is, is worked out against the plan (locateAround), and refused when not sure.
+ */
+async function localizeAroundFrom(id: string, pose: {x: number; y: number; heading: number}, views: LookView[]) {
+  const landmarks = landmarksOf(plan, room.objects);
+  if (!landmarks.length) return {ok:false as const, error:'The room plan has no pillars or tables to find the position from'};
+  const headings = views.map((v) => v.heading);
+  const guess = {x:pose.x / 100, y:pose.y / 100};
+  const attempt = (sightings: Sighting[], by: string, note: string) => {
+    const r = locateAround(landmarks, headings, sightings, guess);
+    flightLog(id, {event:'around', by, from:pose, headings, sightings, result:r.ok ? {x:Math.round(r.fix.x * 100), y:Math.round(r.fix.y * 100), sigmaCm:Math.round(r.fix.sigmaM * 100), rmsDeg:Math.round(r.fix.rmsDeg * 10) / 10, matched:r.fix.matched, dropped:r.fix.dropped} : r.error});
+    if (!r.ok) return {ok:false as const, error:`${by === 'yolo' ? 'From the detector' : 'From Grok vision'}: ${r.error}`};
+    const ids = [...new Set(r.fix.matched.map((m) => m.id))];
+    return {ok:true as const, x:Math.round(r.fix.x * 100), y:Math.round(r.fix.y * 100), seen:ids, residualCm:Math.round(r.fix.sigmaM * 100), note:`${note ? `${note}; ` : ''}±${Math.round(r.fix.sigmaM * 100)} cm${r.fix.dropped ? `, ${r.fix.dropped} sighting${r.fix.dropped > 1 ? 's' : ''} left out` : ''}`, by};
+  };
+  // The detector first: no vision call when it knows pillars and saw enough.
+  const boxes = boxSightings(views.map((v) => (v.detections?.objects ?? []).map((o) => ({label:o.label, x:o.center.x, confidence:o.confidence}))));
+  let fromBoxes: Awaited<ReturnType<typeof attempt>> | null = null;
+  if (boxes.some((b) => b.kind === 'pillar')) {
+    fromBoxes = attempt(boxes, 'yolo', '');
+    if (fromBoxes.ok) return fromBoxes;
+  }
+  const photos = views.flatMap((v, i) => (v.image ? [{i, image:v.image}] : []));
+  if (!photos.length) return fromBoxes ?? {ok:false as const, error:'No photos from the camera (is metoera-vision running?)'};
+  const answer = await askVision(photos.map((p) => p.image), aroundPrompt(photos.length), 900);
+  const seen = parseSightings(answer, photos.length);
+  if (!seen) return {ok:false as const, error:'Grok vision did not answer'};
+  const note = /"note"\s*:\s*"([^"]{0,160})"/.exec(answer ?? '')?.[1] ?? '';
+  return attempt(seen.filter((s) => s.confidence >= 0.5).map((s) => ({...s, photo:photos[s.photo - 1].i + 1})), 'vision', note);
+}
+
 // Each drone is enabled only when its IP is set (in .env or .env.tello):
 // TELLO_IP + TELLO_SETUP_SERIAL is droneId 'tello', RMTT_IP + RMTT_SETUP_SERIAL is droneId 'rmtt'.
 // Both share local ports 8889 and 8890 (UdpPort routes replies by sender IP), so they need different IPs.
@@ -205,7 +240,7 @@ function droneFromEnv(id: string, prefix: string): RealTello | null {
   const host = process.env[`${prefix}_IP`]?.trim();
   if (!host) return null;
   if (!isIpv4(host)) { console.log(`${prefix}_IP must be an IPv4 address (got "${host}"); that drone is off`); return null; }
-  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, start:startOf(prefix), depth:() => readDepth(id), mayTalk:() => mayTalk(id), surfaceAt:(x, y) => surfaceHeightAt(room.objects, x / 100, y / 100), odometryFit:odometryFits[id], onOdometryFit:(fit) => saveOdometryFit(id, fit), flightLog:(event) => flightLog(id, event), cameraAlwaysOn:process.env.CAMERA_ALWAYS_ON === '1', localize:(pose) => localizeFrom(id, pose)});
+  return new RealTello({id, host, expectedSerial:process.env[`${prefix}_SETUP_SERIAL`], port:Number(process.env[`${prefix}_PORT`] ?? 8889), localPort:Number(process.env.TELLO_LOCAL_PORT ?? 8889), statePort:Number(process.env[`${prefix}_STATE_PORT`] ?? process.env.TELLO_STATE_PORT ?? 8890), maxMoveCm:process.env.TELLO_MAX_MOVE_CM ? Number(process.env.TELLO_MAX_MOVE_CM) : undefined, vision:() => readVision(id), frame:() => readFrame(id), askVision, start:startOf(prefix), depth:() => readDepth(id), mayTalk:() => mayTalk(id), surfaceAt:(x, y) => surfaceHeightAt(room.objects, x / 100, y / 100), odometryFit:odometryFits[id], onOdometryFit:(fit) => saveOdometryFit(id, fit), flightLog:(event) => flightLog(id, event), cameraAlwaysOn:process.env.CAMERA_ALWAYS_ON === '1', localize:(pose) => localizeFrom(id, pose), localizeAround:(pose, views) => localizeAroundFrom(id, pose, views), planClear:(x, y, heading, heightCm) => plan ? (({m, what}) => ({cm:m * 100, what}))(clearAlong(plan, room.objects, [x / 100, y / 100], heading, heightCm === null ? null : heightCm / 100)) : null});
 }
 const drones = new Map<string, RealTello>();
 for (const [id, prefix] of FLEET) {

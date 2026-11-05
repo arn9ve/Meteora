@@ -87,7 +87,21 @@ export type TelloOptions = {
   /** Time for the video to reach the vision service after streamon. */
   cameraWarmMs?: number;
   /** Where am I really: a photo, the plan and Grok vision (the server does it). Pose and result in room cm. */
-  localize?: (pose: { x: number; y: number; heading: number }) => Promise<{ ok: true; x: number; y: number; seen: string[]; residualCm: number; note: string } | { ok: false; error: string }>;
+  localize?: (pose: { x: number; y: number; heading: number }) => Promise<FixResult>;
+  /** The same from the views of a look-around (six headings): landmarks in every direction. */
+  localizeAround?: (pose: { x: number; y: number; heading: number }, views: LookView[]) => Promise<FixResult>;
+  /** How far the room plan is clear from (x, y) cm toward `heading` (degrees, counterclockwise), at this height above the floor. */
+  planClear?: (x: number, y: number, heading: number, heightAboveFloorCm: number | null) => { cm: number; what: string | null } | null;
+};
+
+export type FixResult = { ok: true; x: number; y: number; seen: string[]; residualCm: number; note: string; by?: string } | { ok: false; error: string };
+/** One view of a look-around: its room heading (degrees, counterclockwise), photo, detections and depth. */
+export type LookView = { heading: number; image: Buffer | null; detections: Detections | null; depth: DepthView | null };
+/** What a look-around found: people around (room cm, heading from the drone), how far the plan is clear. */
+type Look = {
+  at: number; x: number; y: number; heading: number;
+  people: { heading: number; distanceCm: number | null; x: number | null; y: number | null }[];
+  summary: string;
 };
 
 export type Detection = { label: string; confidence: number; center: { x: number; y: number }; box?: Box };
@@ -100,7 +114,18 @@ export type DepthView = {
 };
 
 const MIN_CONFIDENCE = 0.5;
+const DOUBT_CONFIDENCE = 0.35; // a box this sure, but under MIN_CONFIDENCE, is a reason to look around once
 const SCAN_VIEWS = 4; // 4 x 90 degrees; the Tello camera sees about 82 degrees across
+// Looking around: six views 60° apart (the camera sees about 70° across, so they overlap).
+const LOOK_VIEWS = 6;
+const LOOK_REUSE_MS = 20000; // a look this recent is reused before a sideways move...
+const LOOK_REUSE_MOVED_CM = 50; // ...if the drone has not moved more than this since
+const LOOK_REUSE_TURNED_DEG = 30; // ...or turned more than this
+const PERSON_CONFIDENCE = 0.35; // a person counts from here: a false alarm only costs a refused move
+const ASIDE_PERSON_CM = 150; // a sideways move may not end closer than this to a person
+const ASIDE_CONE_DEG = 35; // "in that direction": within this angle
+const ASIDE_PLAN_MARGIN_CM = 25; // room kept to the plan's walls, pillars and tables
+const KEEP_AWAKE_MS = 4000; // the Tello lands after 15 s without a command
 const side = (x: number) => (x < 1 / 3 ? 'left' : x > 2 / 3 ? 'right' : 'center');
 
 
@@ -195,6 +220,12 @@ export class RealTello {
   // position comes from commands only, the next route starts (and every route ends) with a photo fix.
   #needFix = false;
   #flownAtFix = 0;
+  readonly #localizeAround: TelloOptions['localizeAround'] | null;
+  readonly #planClear: TelloOptions['planClear'] | null;
+  #lastLook: Look | null = null;
+  /** Strongest box of the label a camera-doubt look-around was watching. */
+  #doubtSight: Detection | null = null;
+  #lastSentAt = 0; // when the last packet left (keepAwake)
   readonly #flightLog: ((event: Record<string, unknown>) => void) | null;
   // Start surface: the plan gives a first guess at takeoff; the ToF confirms or corrects it once
   // the drone is over a spot whose height the plan knows (ToF + that height - telemetry h).
@@ -233,6 +264,8 @@ export class RealTello {
     this.#cameraIdleMs = options.cameraIdleMs ?? 30000;
     this.#cameraWarmMs = options.cameraWarmMs ?? 2500;
     this.#localize = options.localize ?? null;
+    this.#localizeAround = options.localizeAround ?? null;
+    this.#planClear = options.planClear ?? null;
     this.#depth = options.depth ?? null;
     this.#settleMs = options.settleMs ?? 400;
     this.#mayTalk = options.mayTalk ?? (() => null);
@@ -426,12 +459,20 @@ export class RealTello {
     if (!isRecord(value) || value.droneId !== this.#id) return this.#fail('Invalid droneId');
     const ready = await this.#ensureReady();
     if (ready) return this.#fail(ready);
-    if (['look', 'scan', 'approach', 'explore', 'face', 'describe', 'find'].includes(String(value.action))) await this.#cameraOn();
+    if (['look', 'scan', 'approach', 'explore', 'face', 'describe', 'find', 'look_around'].includes(String(value.action))) await this.#cameraOn();
 
-    // Where am I really: one photo, the plan, Grok vision.
+    // Where am I really: one photo, the plan, Grok vision (and all around when one photo is not enough).
     if (value.action === 'localize') {
       if (Object.keys(value).length !== 2) return this.#fail('Unknown argument for localize');
-      return this.#photoFix();
+      return this.#photoFix(generation);
+    }
+
+    // Turn all the way round: who is around, how far the room is clear, and (unless locate is
+    // false) where the drone really is from the pillars and tables in every direction.
+    if (value.action === 'look_around') {
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'locate'].includes(k))) return this.#fail('Unknown argument for look_around');
+      if (value.locate !== undefined && typeof value.locate !== 'boolean') return this.#fail('locate must be true or false');
+      return this.#lookAround(generation, value.locate !== false && Boolean(this.#localizeAround));
     }
 
     if (value.action === 'takeoff') {
@@ -480,13 +521,24 @@ export class RealTello {
 
     if (value.action === 'move') {
       const { direction, centimeters } = value;
-      if (Object.keys(value).some((k) => !['droneId', 'action', 'direction', 'centimeters'].includes(k))) return this.#fail('Unknown argument for move');
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'direction', 'centimeters', 'look'].includes(k))) return this.#fail('Unknown argument for move');
       if (!MOVE_DIRECTIONS.includes(direction as never)) return this.#fail('Invalid move direction');
       if (typeof centimeters !== 'number' || !Number.isInteger(centimeters) || centimeters < 20 || centimeters > this.#maxMoveCm) {
         return this.#fail(`centimeters must be an integer from 20 to ${this.#maxMoveCm}`);
       }
+      if (value.look !== undefined && typeof value.look !== 'boolean') return this.#fail('look must be true or false');
       if (this.#flight !== 'flying') return this.#fail('move requires a flying drone');
-      return this.#motion('move', `${direction} ${centimeters}`, 15000);
+      // The camera only looks ahead: before going sideways or back, look around (look: false skips
+      // it, for the calibration pattern).
+      const aside = ({ left: [90, 'to the left'], right: [-90, 'to the right'], back: [180, 'behind'] } as Record<string, [number, string]>)[String(direction)];
+      let note: string | null = null;
+      if (aside && value.look !== false) {
+        const check = await this.#checkAside(aside[0], centimeters, aside[1], generation);
+        if ('refusal' in check) return this.#fail(check.refusal);
+        note = check.note;
+      }
+      const moved = await this.#motion('move', `${direction} ${centimeters}`, 15000);
+      return moved.ok && note ? ({ ...moved, note } as TelloResult) : moved;
     }
 
     if (value.action === 'rotate') {
@@ -507,6 +559,12 @@ export class RealTello {
       if (level === null || !/^\d{1,3}$/.test(level)) return this.#fail('Battery level unavailable');
       this.#battery = Number(level);
       if (this.#battery < FLIP_MIN_BATTERY) return this.#fail(`Flips need at least ${FLIP_MIN_BATTERY}% battery (now ${this.#battery}%)`);
+      // A flip swings about 30 cm to its side: sideways and backward flips look around first.
+      const aside = ({ left: [90, 'to the left'], right: [-90, 'to the right'], back: [180, 'behind'] } as Record<string, [number, string]>)[direction];
+      if (aside) {
+        const check = await this.#checkAside(aside[0], 30, aside[1], generation);
+        if ('refusal' in check) return this.#fail(check.refusal);
+      }
       return this.#motion('flip', `flip ${FLIP_DIRECTIONS[direction as keyof typeof FLIP_DIRECTIONS]}`, 15000);
     }
 
@@ -522,11 +580,18 @@ export class RealTello {
       const label = typeof value.label === 'string' && value.label.trim() ? value.label.trim().toLowerCase() : null;
       const view = await this.#freshView(Date.now() - 1500, 3000);
       if (!view) return this.#fail(this.#visionError());
+      // A weak box is a doubt, not a miss: look all around once and answer from the clearest view.
+      this.#doubtSight = null;
+      const best = this.#bestMatch(view.objects, label);
+      if (this.#flight === 'flying' && this.#cameraDoubt(best)) {
+        const around = await this.#lookAround(generation, false, label ?? best!.label.toLowerCase());
+        if (!around.ok) return around;
+      }
       const lookDepth = await this.#depthNow();
-      const objects = view.objects.filter((o) => o.confidence >= MIN_CONFIDENCE && (!label || o.label.toLowerCase() === label));
+      const objects = this.#seenAfterDoubt(view.objects, label);
       const counts: Record<string, number> = {};
       for (const o of objects) counts[o.label] = (counts[o.label] ?? 0) + 1;
-      for (const o of objects) this.#world.see(o.label, bearingDeg(o.center.x), this.#distanceOf(o, lookDepth));
+      for (const o of objects) if (o.confidence >= MIN_CONFIDENCE) this.#world.see(o.label, bearingDeg(o.center.x), this.#distanceOf(o, lookDepth));
       this.#world.record('look', label ?? 'all');
       return {
         ok: true, mode: 'real', action: 'look', drone: this.snapshot(),
@@ -580,6 +645,7 @@ export class RealTello {
       let lastAngle = 0;
       let trackX: number | null = null;
       let searched = false;
+      let doubtSpun = false;
       const MAX_TRAVEL_CM = 400;
       const STEP_CM = Math.min(100, this.#maxMoveCm);
       const report = (ok: boolean, reason: string): TelloResult => {
@@ -598,7 +664,18 @@ export class RealTello {
         if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
         const frame = await this.#freshView(Date.now() + this.#settleMs, 4000);
         if (!frame) return i === 0 ? this.#fail(this.#visionError()) : report(false, 'Lost the camera image');
-        const matches = frame.objects.filter((o) => o.confidence >= MIN_CONFIDENCE && o.label.toLowerCase() === label && o.box);
+        const ofLabel = frame.objects.filter((o) => o.label.toLowerCase() === label && o.box);
+        let matches = ofLabel.filter((o) => o.confidence >= MIN_CONFIDENCE);
+        // First look only: a weak box means look all around once, then follow the clearest view.
+        if (!matches.length && i === 0 && !doubtSpun) {
+          const weak = ofLabel.filter((o) => o.confidence >= DOUBT_CONFIDENCE && o.confidence < MIN_CONFIDENCE).sort((a, b) => b.confidence - a.confidence)[0];
+          if (weak) {
+            doubtSpun = true;
+            const around = await this.#lookAround(generation, false, label);
+            if (!around.ok) return report(false, 'error' in around ? around.error : 'look around failed');
+            if (this.#doubtSight?.box) matches = [this.#doubtSight];
+          }
+        }
         // The closest one is the biggest box.
         // First look: the one most in front of the drone (among the near ones); afterwards: the
         // one closest to where the target was, so it keeps following the same person.
@@ -760,9 +837,12 @@ export class RealTello {
     // Fly back to a remembered place (home, last_landing, previous, or one saved with mark) or
     // to room coordinates, in straight lines of at most 200 cm, then face the old heading.
     if (value.action === 'go_to') {
-      if (Object.keys(value).some((k) => !['droneId', 'action', 'place', 'x', 'y', 'minHeightCm', 'via', 'check'].includes(k))) return this.#fail('Unknown argument for go_to');
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'place', 'x', 'y', 'minHeightCm', 'via', 'check', 'look'].includes(k))) return this.#fail('Unknown argument for go_to');
       // check: false = one leg of a decision mission: the mission decides when to look, not go_to.
       const autoCheck = value.check !== false;
+      // Legs more than 45° off the heading turn to face the way first, so the camera sees where
+      // the drone goes (no sideways flying). look: false keeps the old straight `go` (calibration).
+      const turnFirst = value.look !== false;
       // Waypoints (cm) of a route around tables, pillars and walls, flown before the target.
       const via = value.via === undefined ? [] : value.via;
       if (!Array.isArray(via) || via.length > 30 || !via.every((p) => Array.isArray(p) && p.length === 2 && p.every((n) => typeof n === 'number' && Number.isFinite(n)))) return this.#fail('via must be up to 30 [x, y] points in cm');
@@ -783,8 +863,18 @@ export class RealTello {
         if (target.z !== undefined && target.z !== 0) target.z = Math.max(target.z, value.minHeightCm);
       }
       const stops: { x: number; y: number; z?: number }[] = [...(via as [number, number][]).map(([x, y]) => ({ x, y, ...(target!.z !== undefined ? { z: target!.z } : {}) })), target];
-      // In doubt about where it is (see #inDoubt): look before going.
-      if (autoCheck && this.#needFix && this.#localize) await this.#photoFix();
+      // In doubt about where it is (see #inDoubt): look all around before going (one photo when
+      // looking around is not available, and then only after "No valid imu" or an aborted route).
+      if (autoCheck && this.#canLookAround() && this.#inDoubt()) await this.#lookAround(generation, true);
+      else if (autoCheck && this.#needFix && this.#localize) await this.#photoFix(generation);
+      if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
+      // Turn toward a point more than 45° off the heading (cm, drone frame): true when it turned.
+      const faceIfAside = async (v: { forward: number; left: number }): Promise<TelloResult | null> => {
+        if (!turnFirst || Math.hypot(v.forward, v.left) < 20) return null;
+        const off = Math.round((Math.atan2(v.left, v.forward) * 180) / Math.PI); // + = left
+        if (Math.abs(off) <= 45) return null;
+        return this.#motion('go_to', `${off > 0 ? 'ccw' : 'cw'} ${Math.min(Math.abs(off), 180)}`, 15000);
+      };
       // Never chase the estimate: if the telemetry reading changes on the way, the position may
       // jump, so stop and hover. Each stop gets its legs plus at most 2 short corrections.
       const reading = this.#odo.version;
@@ -793,11 +883,14 @@ export class RealTello {
         for (let leg = 0; leg < 8; leg += 1) {
           if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
           if (this.#odo.version !== reading) { this.#needFix = true; return this.#fail('Stopped and hovering: the position from the telemetry was re-estimated on the way, so the rest of the route is not safe. Ask again.'); }
-          const v = this.#world.vectorTo(stop);
+          let v = this.#world.vectorTo(stop);
           if (v.distance < 25 && Math.abs(v.up) < 20) break;
           if (leg > 0 && v.distance > last + 30) this.#needFix = true;
           if (leg > 0 && v.distance > last + 30) return this.#fail(`Stopped and hovering: after the last move the drone is farther from the target (${v.distance} cm) than before (${last} cm). It may not see the floor well.`);
           last = v.distance;
+          const turned = await faceIfAside(v);
+          if (turned && !turned.ok) return turned;
+          if (turned) v = this.#world.vectorTo(stop);
           const sdk = moveSdk(v.forward, v.left, v.up, 200);
           if (!sdk) break;
           const move = await this.#motion('go_to', sdk, 20000);
@@ -807,9 +900,12 @@ export class RealTello {
       // Arrived, as far as it knows. In doubt: one photo fix, and one short correction if needed.
       let check: TelloResult | null = null;
       if (autoCheck && this.#inDoubt()) {
-        check = await this.#photoFix();
-        const v = this.#world.vectorTo(target);
+        check = this.#canLookAround() ? this.#asFix(await this.#lookAround(generation, true)) : await this.#photoFix(generation);
+        let v = this.#world.vectorTo(target);
         if (check.ok && v.distance >= 40 && v.distance <= 150) {
+          const turned = await faceIfAside(v);
+          if (turned && !turned.ok) return turned;
+          if (turned) v = this.#world.vectorTo(target);
           const sdk = moveSdk(v.forward, v.left, 0, 200);
           if (sdk) { const fix = await this.#motion('go_to', sdk, 20000); if (!fix.ok) return fix; }
         }
@@ -1109,17 +1205,26 @@ export class RealTello {
    * picture and where, and works out where the drone must be. A fix that would move the drone more
    * than 3 m is not believed. The Tello lands after 15 s without commands, so it is kept awake.
    */
-  async #photoFix(): Promise<TelloResult> {
+  async #photoFix(generation = this.#generation): Promise<TelloResult> {
     if (!this.#localize) return this.#fail('Position from photos is not configured on the server');
     if (this.#flight !== 'flying') return this.#fail('Take off first: the camera must see the room from the air');
     if (!(await this.#cameraOn())) return this.#fail('The camera did not start');
     const p = this.#world.pose;
-    const awake = setInterval(() => { void this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 2000); }, 5000);
-    let r: Awaited<ReturnType<NonNullable<TelloOptions['localize']>>>;
-    try { r = await this.#localize({ x: p.x, y: p.y, heading: p.heading }); } finally { clearInterval(awake); }
-    if (!r.ok) { this.#flightLog?.({ event: 'fix', ok: false, error: r.error }); return this.#fail(r.error); }
+    const r = await this.#awakeWhile(this.#localize({ x: p.x, y: p.y, heading: p.heading }));
+    if (!r.ok) {
+      this.#flightLog?.({ event: 'fix', ok: false, error: r.error });
+      // One photo saw too little (one pillar, nothing of the plan): look all around instead.
+      if (this.#canLookAround() && /saw only|saw none|should be in view/i.test(r.error)) return this.#asFix(await this.#lookAround(generation, true));
+      return this.#fail(r.error);
+    }
+    return this.#applyFix(r);
+  }
+
+  /** A position fix (from one photo or from looking around) accepted or not: the same rules for both. */
+  #applyFix(r: Extract<FixResult, { ok: true }>, via = 'localize'): TelloResult {
+    const p = this.#world.pose;
     const dx = r.x - p.x, dy = r.y - p.y, shift = Math.round(Math.hypot(dx, dy));
-    this.#flightLog?.({ event: 'fix', ok: true, from: p, to: { x: r.x, y: r.y }, shift, seen: r.seen, residualCm: r.residualCm, note: r.note });
+    this.#flightLog?.({ event: 'fix', ok: true, via, by: r.by, from: p, to: { x: r.x, y: r.y }, shift, seen: r.seen, residualCm: r.residualCm, note: r.note });
     if (shift > 300) return this.#fail(`The photo puts the drone ${(shift / 100).toFixed(1)} m from where it thinks it is: not believed, position unchanged (${r.note})`);
     // The infrared knows what is under the drone now (floor or a table top): the new spot must agree.
     const h = this.#heightCm, tof = this.#tof;
@@ -1135,8 +1240,163 @@ export class RealTello {
     this.#odo.shift(dx, dy);
     this.#needFix = false;
     this.#flownAtFix = this.#odo.stats.flownCm;
-    this.#world.record('localize', `moved the estimate ${shift} cm (${r.seen.join(', ')})`);
-    return { ok: true, mode: 'real', action: 'localize', drone: this.snapshot(), pose: this.#world.pose, shiftCm: shift, seen: r.seen, residualCm: r.residualCm, note: r.note } as TelloResult;
+    this.#world.record(via, `moved the estimate ${shift} cm (${r.seen.join(', ')})`);
+    return { ok: true, mode: 'real', action: 'localize', drone: this.snapshot(), pose: this.#world.pose, shiftCm: shift, seen: r.seen, residualCm: r.residualCm, note: r.note, ...(r.by ? { by: r.by } : {}) } as TelloResult;
+  }
+
+  /** A look-around asked for its position, as a localize result (ok only when it found it). */
+  #asFix(look: TelloResult): TelloResult {
+    if (!look.ok) return look;
+    const l = look as TelloResult & { located?: { ok: boolean; error?: string; shiftCm?: number; seen?: string[]; residualCm?: number; by?: string } | null; summary?: string };
+    if (!l.located?.ok) return this.#fail(`Looked all around: ${l.located?.error ?? 'position not found'}`);
+    return { ok: true, mode: 'real', action: 'localize', drone: this.snapshot(), pose: this.#world.pose, shiftCm: l.located.shiftCm, seen: l.located.seen, residualCm: l.located.residualCm, by: l.located.by, lookedAround: true, surroundings: l.summary } as TelloResult;
+  }
+
+  /** Looking around needs the camera's detections; finding the position needs the server's help too. */
+  #canLookAround(): boolean { return Boolean(this.#vision && this.#localizeAround); }
+
+  /**
+   * The Tello lands after 15 s without a command. Sends `battery?` when nothing has been sent for
+   * 4 s and no reply is awaited (so it never takes another request's reply slot). For long waits
+   * that send nothing: vision calls, the decision layer's thinking and hovering.
+   */
+  async keepAwake(): Promise<void> {
+    if (!this.#command || !this.#verified || this.#pending || this.#interrupted || Date.now() - this.#lastSentAt < KEEP_AWAKE_MS) return;
+    const level = await this.#request('battery?', (t) => /^\d{1,3}$/.test(t), 2000);
+    if (level !== null && /^\d{1,3}$/.test(level)) this.#battery = Number(level);
+  }
+
+  async #awakeWhile<T>(work: Promise<T>): Promise<T> {
+    void this.keepAwake();
+    const timer = setInterval(() => { void this.keepAwake(); }, 1000);
+    try { return await work; } finally { clearInterval(timer); }
+  }
+
+  /**
+   * Look around: turn all the way round on the spot in six steps of 60°, with the camera.
+   * - People: every person YOLO sees (from 35% confidence), with direction and distance.
+   * - With `locate`, where the drone really is: the server matches the pillars and tables of the
+   *   plan seen in all six views (YOLO boxes when the model knows pillars, else Grok vision), and
+   *   the fix is accepted by the same rules as a photo fix.
+   * - Surroundings: how far the plan is clear ahead, right, behind and left, and who is there.
+   * Ends facing where it started.
+   */
+  /** Best box of `label` (or of anything, when label is null). */
+  #bestMatch(objects: Detection[], label: string | null): Detection | undefined {
+    const q = label?.toLowerCase();
+    return objects.filter((o) => !q || o.label.toLowerCase() === q).sort((a, b) => b.confidence - a.confidence)[0];
+  }
+
+  /** A box sure enough to notice, and not sure enough to trust. */
+  #cameraDoubt(best: Detection | undefined): boolean {
+    return Boolean(best && best.confidence >= DOUBT_CONFIDENCE && best.confidence < MIN_CONFIDENCE);
+  }
+
+  /**
+   * What `look` reports. After a doubt spin, the watched label comes from its clearest view
+   * (even if that box is still under the normal threshold) and the other labels stay as they were.
+   */
+  #seenAfterDoubt(objects: Detection[], label: string | null): Detection[] {
+    const sight = this.#doubtSight;
+    const drop = sight ? sight.label.toLowerCase() : null;
+    const rest = objects.filter((o) => o.confidence >= MIN_CONFIDENCE && (!label || o.label.toLowerCase() === label) && o.label.toLowerCase() !== drop);
+    if (!sight) return rest;
+    if (label && sight.label.toLowerCase() !== label) return rest;
+    return sight.confidence >= DOUBT_CONFIDENCE ? [sight, ...rest] : rest;
+  }
+
+  async #lookAround(generation: number, locate: boolean, watch?: string): Promise<TelloResult> {
+    if (this.#flight !== 'flying') return this.#fail('look_around requires a flying drone: take off first');
+    if (!this.#vision) return this.#fail('Vision is not configured on the server');
+    await this.#cameraOn();
+    this.#doubtSight = null;
+    const views: LookView[] = [];
+    const seen: { heading: number; distanceCm: number | null }[] = [];
+    for (let i = 0; i < LOOK_VIEWS; i += 1) {
+      if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
+      const detections = await this.#freshView(Date.now() + this.#settleMs, 4000);
+      if (!detections && i === 0) return this.#fail(this.#visionError());
+      const image = locate && this.#frame ? await this.#frame().catch(() => null) : null;
+      const depth = await this.#depthNow();
+      const heading = this.#world.pose.heading;
+      views.push({ heading, image, detections, depth });
+      for (const o of detections?.objects ?? []) {
+        const name = o.label.toLowerCase();
+        if (watch && name === watch && o.confidence >= DOUBT_CONFIDENCE && (!this.#doubtSight || o.confidence > this.#doubtSight.confidence)) this.#doubtSight = o;
+        if (name !== 'person' || o.confidence < PERSON_CONFIDENCE) {
+          if (watch && name === watch && o.confidence >= MIN_CONFIDENCE) this.#world.see(o.label, bearingDeg(o.center.x), this.#distanceOf(o, depth));
+          continue;
+        }
+        const distanceCm = this.#distanceOf(o, depth);
+        seen.push({ heading: normalize(heading - bearingDeg(o.center.x)), distanceCm });
+        if (o.confidence >= MIN_CONFIDENCE) this.#world.see(o.label, bearingDeg(o.center.x), distanceCm);
+      }
+      const turn = await this.#motion('look_around', `cw ${360 / LOOK_VIEWS}`, 15000);
+      if (!turn.ok) return this.#fail(`look_around stopped after view ${i + 1}: ${'error' in turn ? turn.error : ''}`);
+    }
+    // Where it is (the fix moves the estimate, not the drone: it only turned).
+    let located: { ok: true; shiftCm: number; seen: string[]; residualCm: number; by?: string } | { ok: false; error: string } | null = null;
+    if (locate && this.#localizeAround) {
+      const p = this.#world.pose;
+      const r = await this.#awakeWhile(this.#localizeAround({ x: p.x, y: p.y, heading: p.heading }, views));
+      if (!r.ok) { this.#flightLog?.({ event: 'fix', ok: false, via: 'look_around', error: r.error }); located = { ok: false, error: r.error }; }
+      else {
+        const fix = this.#applyFix(r, 'look_around') as TelloResult & { shiftCm?: number };
+        located = fix.ok ? { ok: true, shiftCm: fix.shiftCm ?? 0, seen: r.seen, residualCm: r.residualCm, by: r.by } : { ok: false, error: fix.error };
+      }
+    }
+    // What is around, from where it is now.
+    const pose = this.#world.pose;
+    const height = this.snapshot().heightAboveFloorCm;
+    const people = seen.map((q) => ({ ...q, x: q.distanceCm === null ? null : Math.round(pose.x + q.distanceCm * Math.cos((q.heading * Math.PI) / 180)), y: q.distanceCm === null ? null : Math.round(pose.y + q.distanceCm * Math.sin((q.heading * Math.PI) / 180)) }));
+    const surroundings: Record<string, { clearCm: number | null; what: string | null; person: { distanceCm: number | null } | null }> = {};
+    const parts: string[] = [];
+    for (const [name, off] of [['ahead', 0], ['right', -90], ['behind', 180], ['left', 90]] as const) {
+      const heading = normalize(pose.heading + off);
+      const plan = this.#planClear?.(pose.x, pose.y, heading, height) ?? null;
+      const near = people.filter((q) => Math.abs(normalize(q.heading - heading)) <= 45).sort((a, b) => (a.distanceCm ?? 0) - (b.distanceCm ?? 0))[0];
+      surroundings[name] = { clearCm: plan ? Math.round(plan.cm) : null, what: plan?.what ?? null, person: near ? { distanceCm: near.distanceCm } : null };
+      const room = plan ? (plan.what ? `${(plan.cm / 100).toFixed(1)} m to ${plan.what}` : `clear for ${(plan.cm / 100).toFixed(0)} m`) : 'not on the plan';
+      parts.push(`${name} ${room}${near ? `, a person ${near.distanceCm === null ? 'close' : `${(near.distanceCm / 100).toFixed(1)} m away`}` : ''}`);
+    }
+    const summary = `${parts.join('; ')}${people.length ? '' : '; no people seen'}`;
+    this.#lastLook = { at: Date.now(), x: pose.x, y: pose.y, heading: pose.heading, people, summary };
+    this.#world.record('look_around', located ? (located.ok ? `position checked, moved ${located.shiftCm} cm` : 'position not found') : 'checked around');
+    return { ok: true, mode: 'real', action: 'look_around', drone: this.snapshot(), pose, located, surroundings, people: people.map((q) => ({ distanceCm: q.distanceCm, side: (() => { const rel = Math.round(normalize(pose.heading - q.heading)); return Math.abs(rel) < 10 ? 'ahead' : Math.abs(rel) > 170 ? 'behind' : `${Math.abs(rel)}° to the ${rel > 0 ? 'right' : 'left'}`; })() })), summary } as TelloResult;
+  }
+
+  /**
+   * Before a move the camera cannot see (sideways or back): look around first (or use a look of the
+   * last 20 s from about here), then refuse when a person is that way within the move + 1.5 m, or
+   * the plan has a wall, pillar or table closer than the move + 25 cm. `offDeg` is the direction of
+   * the move from the heading (+ = left); `where` says it in words ("to the right").
+   */
+  async #checkAside(offDeg: number, lengthCm: number, where: string, generation: number): Promise<{ refusal: string } | { note: string | null }> {
+    let note: string | null = null;
+    const at = this.#world.pose;
+    const recent = this.#lastLook;
+    const fresh = recent && Date.now() - recent.at < LOOK_REUSE_MS && Math.hypot(at.x - recent.x, at.y - recent.y) < LOOK_REUSE_MOVED_CM && Math.abs(normalize(at.heading - recent.heading)) < LOOK_REUSE_TURNED_DEG;
+    if (!fresh && this.#vision) {
+      const look = await this.#lookAround(generation, this.#inDoubt() && Boolean(this.#localizeAround));
+      if (generation !== this.#generation) return { refusal: 'Cancelled by switch off' };
+      if (!look.ok) note = `could not look around first (${look.error}); moved without that check`;
+    }
+    const look = this.#lastLook && Date.now() - this.#lastLook.at < LOOK_REUSE_MS ? this.#lastLook : null;
+    const pose = this.#world.pose;
+    const heading = normalize(pose.heading + offDeg);
+    const person = look?.people.filter((q) => Math.abs(normalize(q.heading - heading)) <= ASIDE_CONE_DEG && (q.distanceCm ?? 0) < lengthCm + ASIDE_PERSON_CM)
+      .sort((a, b) => (a.distanceCm ?? 0) - (b.distanceCm ?? 0))[0];
+    if (person) return { refusal: `Looked around first: a person ${person.distanceCm === null ? 'close' : `about ${(person.distanceCm / 100).toFixed(1)} m away`} ${where}. Not moving that way` };
+    const plan = this.#planClear?.(pose.x, pose.y, heading, this.snapshot().heightAboveFloorCm);
+    if (plan?.what && plan.cm < lengthCm + ASIDE_PLAN_MARGIN_CM) return { refusal: `${plan.what[0].toUpperCase()}${plan.what.slice(1)} is ${(plan.cm / 100).toFixed(1)} m ${where} on the room plan: a ${lengthCm} cm move would reach it` };
+    return { note };
+  }
+
+  /** People the last look-around saw (room metres), if it was within `maxAgeMs`. */
+  seenPeople(maxAgeMs = LOOK_REUSE_MS): { x: number; y: number }[] {
+    const look = this.#lastLook;
+    if (!look || Date.now() - look.at > maxAgeMs) return [];
+    return look.people.flatMap((q) => (q.x === null || q.y === null ? [] : [{ x: q.x / 100, y: q.y / 100 }]));
   }
 
   /** Is a photo fix worth it now? Doubt = could not see the floor, route aborted, no telemetry, or 3 m since the last fix. */
@@ -1157,7 +1417,7 @@ export class RealTello {
     return {
       id: this.#id, flying: this.#flight === 'flying', connected: Date.now() - this.#lastStateAt < 3000,
       pose: { x: p.x, y: p.y, heading: p.heading, zFloor: (this.#flight === 'flying' ? p.z : 0) + base.heightCm },
-      source: this.#odoActive && this.#odo.calibrated ? 'telemetry' : 'commands',
+      source: (this.#odoActive && this.#odo.calibrated ? 'telemetry' : 'commands') as 'telemetry' | 'commands',
       odometry: this.#odo.stats, attitude: { ...this.#attitude }, tofCm: this.#tof, startSurface: base,
     };
   }
@@ -1259,6 +1519,7 @@ export class RealTello {
       };
       const pending: Pending = { accept, resolve: done };
       this.#pending = pending;
+      this.#lastSentAt = Date.now();
       void socket.send(text, this.#port, this.#host).then((error) => { if (error) done(null); });
     });
   }

@@ -94,7 +94,9 @@ export class World {
       if (!this.#fromTelemetry) this.#step(Number(m[1]), Number(m[2]));
       p.z = Math.max(0, p.z + Number(m[3]));
     } else if ((m = /^(cw|ccw) (\d+)$/.exec(sdk))) {
-      p.heading = normalize(p.heading + (m[1] === 'ccw' ? Number(m[2]) : -Number(m[2])));
+      // With the IMU yaw tied in (after takeoff), telemetry already turned the heading during the
+      // turn; adding the turn again here put it off by the whole turn until the next sample.
+      if (this.#yawAtStart === null) p.heading = normalize(p.heading + (m[1] === 'ccw' ? Number(m[2]) : -Number(m[2])));
     }
   }
 

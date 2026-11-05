@@ -6,7 +6,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 
 export type Point = [number, number];
-export type Plan = { units: 'm'; walls: { a: Point; b: Point }[]; above?: { solid: string; min: Point; max: Point; z_m: number }[]; bounds: { min: Point; max: Point } };
+export type Plan = { units: 'm'; walls: { a: Point; b: Point }[]; above?: { solid: string; min: Point; max: Point; z_m: number }[]; bounds: { min: Point; max: Point }; pillars?: { id: string; x: number; y: number; w: number; d: number }[]; height_m?: number };
 export type Pose = { x: number; y: number; heading: number; facingConfirmed?: boolean };
 export type CameraConfig = { x?: number; y?: number; heading?: number; z?: number; tilt?: number; img?: Point[]; plan?: Point[]; h?: number[] | null };
 export type Zone = { id: string; name: string; points: Point[] };
@@ -304,6 +304,36 @@ export function planRoute(plan: RoutePlan, objects: RoomObject[], from: Point, t
   }
   const r2 = (p: Point): Point => [Math.round(p[0] * 100) / 100, Math.round(p[1] * 100) / 100];
   return Math.hypot(goal[0] - from[0], goal[1] - from[1]) < 0.05 ? [] : path.map(r2);
+}
+
+/**
+ * How far one can go from `p` (m) toward `headingDeg` (counterclockwise from +x) before a wall, a
+ * pillar or an object of the plan, and which. Objects count only when they reach the drone:
+ * their top (75 cm for a table without a height, 1 m for anything else) at least `heightM` − 0.3.
+ * `heightM` null = every object counts. Nothing within `maxM`: {m: maxM, what: null}.
+ */
+export function clearAlong(plan: (RoutePlan & { pillars?: { id?: string; x: number; y: number; w: number; d: number }[] }) | null, objects: RoomObject[], p: Point, headingDeg: number, heightM: number | null, maxM = 10): { m: number; what: string | null } {
+  const dx = Math.cos(headingDeg * Math.PI / 180), dy = Math.sin(headingDeg * Math.PI / 180);
+  let best = maxM, what: string | null = null;
+  const hit = (a: Point, b: Point, name: string) => {
+    const ex = b[0] - a[0], ey = b[1] - a[1];
+    const den = dx * ey - dy * ex;
+    if (Math.abs(den) < 1e-12) return;
+    const wx = a[0] - p[0], wy = a[1] - p[1];
+    const t = (wx * ey - wy * ex) / den, s = (wx * dy - wy * dx) / den;
+    if (t >= 0 && s >= 0 && s <= 1 && t < best) { best = t; what = name; }
+  };
+  const box = (x: number, y: number, w: number, d: number, rotation: number, name: string) => {
+    const c = objectCorners({ id: '', name, kind: 'other', x, y, w, d, rotation });
+    for (let i = 0; i < 4; i += 1) hit(c[i], c[(i + 1) % 4], name);
+  };
+  for (const w of plan?.walls ?? []) hit(w.a, w.b, 'a wall');
+  for (const q of plan?.pillars ?? []) box(q.x, q.y, q.w, q.d, 0, q.id ? q.id.replace('-', ' ') : 'a pillar');
+  for (const o of objects) {
+    const top = o.heightM ?? (o.kind === 'table' ? 0.75 : 1);
+    if (heightM === null || top >= heightM - 0.3) box(o.x, o.y, o.w, o.d, o.rotation, o.name);
+  }
+  return { m: best, what };
 }
 
 /** Distance (m) from a point to the nearest wall, pillar or object edge (0 inside one). */

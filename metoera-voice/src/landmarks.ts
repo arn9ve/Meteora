@@ -107,11 +107,14 @@ export function solveSurvey(sightings: SurveySighting[]): { x: number; y: number
   return best;
 }
 
-/** The survey question for Grok vision: every landmark, and where each should appear in each photo. */
+/**
+ * The survey question for Grok vision. No hints about where things should be: with hints it
+ * "saw" pillars in photos that had none (test of 5 Nov). It must first say what each photo shows,
+ * then only name a thing of the plan when it really looks like it.
+ */
 export function surveyPrompt(landmarks: Landmark[], perPhoto: Expected[][]): string {
   const all = landmarks.map((l) => `- ${l.id}: ${l.name}, ${l.describe}`).join('\n');
-  const hints = perPhoto.map((exp, i) => `Photo ${i + 1}: ${exp.length ? exp.map((e) => `${e.id} ~${Math.round(Math.abs(e.bearingDeg))}° ${e.bearingDeg >= 0 ? 'right' : 'left'}, ${e.distanceM.toFixed(1)} m`).join('; ') : 'nothing expected'}`).join('\n');
-  return `These ${perPhoto.length} photos come from the front camera of a small indoor drone hovering on one spot, turning 90° clockwise between photos. Things of the room that can be seen:\n${all}\n\nWhere they should appear if the drone's estimate is right (it may be off by a metre or two and by some degrees):\n${hints}\n\nFor each photo, list what you actually see, with the horizontal position of its centre in that photo (x from 0 = left edge to 1 = right edge) and how sure you are (0 to 1). Pillars look alike: use their order and how near they look, and the hints. Leave out what you cannot see. Reply with ONLY JSON: {"photos":[{"photo":1,"seen":[{"id":"...","x":0.0,"confidence":0.0}]}],"note":"<at most 20 words: what you see and where the drone seems to be>"}`;
+  return `These ${perPhoto.length} photos come from the front camera of a small indoor drone hovering on one spot, turning 90° clockwise between photos. The room has these fixed things:\n${all}\n\nFor each photo: first describe in a few words what it really shows. Then list only the things of the list above that you can clearly see in it: a pillar is a rectangular column going from the floor to the ceiling; a table is a large square table top. Do not guess and do not name something because it could be there: if a photo shows people, furniture, a wall or something close-up, list nothing for it. Give the horizontal position of each thing's centre in the photo (x from 0 = left edge to 1 = right edge) and how sure you are (0 to 1). Reply with ONLY JSON: {"photos":[{"photo":1,"shows":"<few words>","seen":[{"id":"...","x":0.0,"confidence":0.0}]}],"note":"<at most 20 words>"}`;
 }
 
 export function parseSurvey(answer: string | null, landmarks: Landmark[], photos: number): { photo: number; id: string; x: number; confidence: number }[] | null {

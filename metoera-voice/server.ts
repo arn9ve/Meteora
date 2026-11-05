@@ -145,6 +145,60 @@ async function saveCalibration(r: CalibrationReport) {
   await writeFile(join(flightsDir, `calibration-${r.drone}-${r.at.replace(/[:.]/g, '-')}.json`), JSON.stringify(r, null, 2)).catch(() => undefined);
 }
 
+/**
+ * Before flying somewhere: will it work, what could go wrong, how long. Nothing moves. Checks the
+ * link, battery, the facing, the telemetry reading, camera and vision service, Grok (with its real
+ * answer time), the route and the plan; estimates each phase from measured times.
+ */
+async function preflight(id: string, drone: RealTello, place: string) {
+  const snap = drone.snapshot(), live = drone.live();
+  const problems: string[] = [], warnings: string[] = [], ok: string[] = [];
+  if (!live.connected) problems.push('the drone is not connected');
+  else ok.push('connected');
+  if (snap.battery !== null && snap.battery < 30) problems.push(`battery ${snap.battery}%: at least 30%`);
+  else if (snap.battery !== null) ok.push(`battery ${snap.battery}%`);
+  const placed = room.drones[id];
+  if (!placed) problems.push('not placed on the room plan');
+  else if (!placed.facingConfirmed) problems.push('the direction of its camera is not confirmed on the plan');
+  else ok.push('placed on the plan, facing confirmed');
+  if (snap.odometry.calibrated || odometryFits[id]) ok.push('telemetry reading known from earlier flights'); else warnings.push('the telemetry is not calibrated yet: the first moves of the flight teach it');
+  const frameStart = Date.now(); const frame = await readFrame(id);
+  if (!frame) warnings.push('no camera picture right now (metoera-vision on? the camera turns on by itself in flight)'); else ok.push('camera and vision service answer');
+  const t0 = Date.now(); const ping = await askDecision('Reply with the word ok.'); const grokMs = Date.now() - t0;
+  if (!ping) problems.push('Grok does not answer (network or key): no look-around and no help in trouble');
+  else if (grokMs > 2500) warnings.push(`Grok is slow right now (${grokMs} ms)`); else ok.push(`Grok answers in ${grokMs} ms`);
+  void frameStart;
+  const routed = routeGoTo(drone, {droneId:id, action:'go_to', place});
+  let planText = '', distance = 0, turn = 0, legs = 0;
+  if ('error' in routed) problems.push(routed.error);
+  else {
+    const map = drone.map() as {pose: {x: number; y: number; heading: number}; places: Record<string, {x: number; y: number}>};
+    const to = typeof routed.x === 'number' && typeof routed.y === 'number' ? {x:routed.x, y:routed.y} : typeof routed.place === 'string' ? map.places[routed.place.trim().toLowerCase()] : null;
+    if (!to) problems.push(`no place called "${place}" on the plan or in memory`);
+    else {
+      distance = Math.hypot(to.x - map.pose.x, to.y - map.pose.y) / 100;
+      turn = Math.abs(Math.round(((Math.atan2(to.y - map.pose.y, to.x - map.pose.x) * 180 / Math.PI - map.pose.heading + 540) % 360) - 180));
+      legs = Array.isArray(routed.via) ? routed.via.length + 1 : 1;
+      planText = `${typeof routed.label === 'string' ? routed.label : place} is ${distance.toFixed(1)} m away from ${describePlace(room.objects, plan?.pillars ?? [], map.pose.x, map.pose.y)}; ${legs === 1 ? 'one straight line' : `${legs} legs around pillars`}${turn >= 20 ? `, after turning ${turn}°` : ''}`;
+      ok.push('a safe route exists');
+    }
+  }
+  warnings.push('the look-around with photos has not been tried in this room yet: if Grok does not clearly see two pillars or tables, the drone says so and goes by its telemetry (about 10-15 cm off per metre)');
+  // Measured on 5 Nov: take-off ~7 s, Grok on 4 photos ~2.8 s, turns ~2.5 s per 90°, ~60 cm/s.
+  const flying = live.flying;
+  const phases = [
+    ...(flying ? [] : [['take-off', 7]]),
+    ...(drone.surveyedThisFlight ? [] : [['look-around (climb, 4 photos, Grok, back down)', 6 + 4 * 3.4 + 3]]),
+    ['saying the plan', 4],
+    ...(turn >= 20 ? [['turning', 1 + turn / 45]] : []),
+    ['flying', distance / 0.6 + legs * 1.5],
+    ['facing the table', 2],
+  ] as [string, number][];
+  const total = Math.round(phases.reduce((t, [, s2]) => t + s2, 0));
+  const verdict = problems.length ? `It will NOT work now: ${problems.join('; ')}.` : warnings.length > 1 ? 'It should work, with these risks:' : 'It should work.';
+  return {ok:problems.length === 0, mode:'real', action:'preflight', verdict, problems, warnings, checks:ok, plan:planText, seconds:total, phases:phases.map(([n, t]) => `${n} ~${Math.round(t)} s`)};
+}
+
 /** go_to in the air: a mission decided step by step (model + rules), along the route of the plan. */
 async function decidedGoTo(id: string, drone: RealTello, body: Record<string, unknown>) {
   const routed = routeGoTo(drone, body);
@@ -205,7 +259,7 @@ async function surveyFrom(input: {photos: Buffer[]; headings: number[]; pose: {x
   const seen = parseSurvey(answer, landmarks, input.photos.length);
   const note = /"note"\s*:\s*"([^"]{0,200})"/.exec(answer ?? '')?.[1] ?? '';
   if (!seen) return {ok:false as const, error:'Grok vision did not answer', note};
-  const sightings = seen.filter((q) => q.confidence >= 0.5).map((q) => { const l = landmarks.find((m) => m.id === q.id)!; return {id:l.id, x:l.x, y:l.y, bearingDeg:bearingOfX(q.x), headingDeg:input.headings[q.photo - 1]}; });
+  const sightings = seen.filter((q) => q.confidence >= 0.7).map((q) => { const l = landmarks.find((m) => m.id === q.id)!; return {id:l.id, x:l.x, y:l.y, bearingDeg:bearingOfX(q.x), headingDeg:input.headings[q.photo - 1]}; });
   const sol = solveSurvey(sightings);
   if (!sol) return {ok:false as const, error:`not enough seen to tell where it is (${sightings.length} sightings)`, note};
   const b = plan!.bounds;
@@ -929,6 +983,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
             else if (action === 'emergency' && plain) timed(res, 200, await drone.killMotors());
             else if (action === 'photo' && plain) timed(res, 200, await takePhoto(id));
             else if (action === 'calibrate') timed(res, 200, await calibrate(id, drone, body as Record<string, unknown>));
+            else if (action === 'preflight') timed(res, 200, await preflight(id, drone, String((body as Record<string, unknown>).place ?? '')));
             // A spoken "land" is always sent to the drone, whatever the server believes about its
             // state (a lost takeoff reply must never block a landing), and it skips the queue.
             else if (action === 'land' && plain) timed(res, 200, await drone.forceLand());

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#1a1510" />
+  <title>Metoera Red Zone</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="joinGate" class="join-gate">
+    <p class="brand">Metoera</p>
+    <p class="sub">Join as Phone 1, 2, or 3 (one phone per slot)</p>
+    <div class="row slot-pick">
+      <button type="button" class="btn primary" data-join="1">Phone 1</button>
+      <button type="button" class="btn primary" data-join="2">Phone 2</button>
+      <button type="button" class="btn primary" data-join="3">Phone 3</button>
+    </div>
+    <p id="joinMsg" class="message"></p>
+  </div>
+
+  <div id="appShell" hidden>
+    <header class="top">
+      <div class="brand-block">
+        <p class="brand">Metoera</p>
+        <p class="sub" id="slotLabel">Phone · person only · back lenses</p>
+      </div>
+      <div class="cam-switch" role="group" aria-label="Back camera lens">
+        <button type="button" class="cam-btn" data-lens="wide" id="camWide" disabled>Wide</button>
+        <button type="button" class="cam-btn" data-lens="normal" id="camNormal" disabled>Normal</button>
+        <button type="button" class="cam-btn" data-lens="tele" id="camTele" disabled>Tele</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="stage" aria-label="Camera">
+        <!-- Live local preview (always on). Mac console still gets JPEG snapshots separately. -->
+        <video id="video" class="live-video" playsinline webkit-playsinline muted autoplay></video>
+        <canvas id="overlay" class="live-overlay" aria-hidden="true"></canvas>
+        <canvas id="previewCanvas" hidden></canvas>
+        <div id="flash" class="flash" hidden></div>
+        <p id="camStatus" class="cam-status">Starting…</p>
+      </section>
+
+      <section class="panel" aria-label="Controls">
+        <div class="row status-row">
+          <span id="armedBadge" class="badge off">ARM OFF</span>
+          <span id="detectBadge" class="badge idle">Idle</span>
+          <span id="modelBadge" class="badge idle">Model…</span>
+          <span id="linkBadge" class="badge idle">Link…</span>
+        </div>
+
+        <p class="hint">Live camera preview below — drag a red zone on it. Alerts when a <strong>person</strong> enters. Mac console can Start/Stop/ARM/lens remotely.</p>
+
+        <div class="row actions">
+          <button type="button" id="btnStart" class="btn primary">Start watching</button>
+          <button type="button" id="btnClear" class="btn">Clear zone</button>
+          <button type="button" id="btnTest" class="btn">Test alert</button>
+        </div>
+
+        <label class="sens">
+          <span class="sens-label">Sensitivity <strong id="sensValue">35</strong> <small>(lower = fewer false alerts)</small></span>
+          <input type="range" id="sensSlider" min="0" max="100" value="35" />
+        </label>
+        <p id="dwellStatus" class="dwell-status">Dwell 0% · need ~1s in zone</p>
+
+        <label class="arm">
+          <input type="checkbox" id="armToggle" />
+          <span>
+            <strong>ARM drone takeoff</strong>
+            <small>Default off. Prefer controlling ARM from the Mac console.</small>
+          </span>
+        </label>
+
+        <p id="message" class="message" role="status"></p>
+        <p id="lensInfo" class="lens-info"></p>
+        <ul id="log" class="log" aria-label="Recent events"></ul>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

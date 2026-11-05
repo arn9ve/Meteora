@@ -1,0 +1,99 @@
+{
+  "version": 2,
+  "pads": [
+    {
+      "id": "pad-01",
+      "position": "P1",
+      "label": "Home (Black start)"
+    },
+    {
+      "id": "pad-02",
+      "position": "P2",
+      "label": "Target (cam1 hop)"
+    },
+    {
+      "id": "pad-03",
+      "position": "P3",
+      "label": "Reserved"
+    },
+    {
+      "id": "pad-04",
+      "position": "P4",
+      "label": "Reserved"
+    },
+    {
+      "id": "pad-05",
+      "position": "P5",
+      "label": "Reserved"
+    },
+    {
+      "id": "pad-06",
+      "position": "P6",
+      "label": "Reserved"
+    }
+  ],
+  "missions": {
+    "cam1": {
+      "slotId": "1",
+      "drone": "Black",
+      "droneId": "tello",
+      "homePad": "pad-01",
+      "targetPad": "pad-02",
+      "distanceCm": 200,
+      "headingNote": "Pads about 2 m apart in a straight line; Black faces the next pad. It stops on the first pad different from the one it started on.",
+      "summary": "Black: pad-01 -> straight ahead until the next mission pad (pad-02, max 4 m) -> centre over it -> Grok describe -> wait for voice command",
+      "executePath": true,
+      "describeQuestion": "Briefly describe the scene from this indoor drone: people (clothes, colours), notable objects, and left/centre/right. Two short sentences.",
+      "path": [
+        {
+          "action": "takeoff",
+          "note": "skipped when Black is already flying (next person = next pad)"
+        },
+        {
+          "action": "pad_hop",
+          "maxCentimeters": 400,
+          "note": "straight ahead until the downward sensor sees the next mission pad, then centre over it"
+        },
+        {
+          "action": "describe"
+        },
+        {
+          "action": "wait",
+          "note": "Hover over the pad; wait for the next person or a voice command"
+        }
+      ],
+      "commands": {
+        "return-home-land": {
+          "summary": "pad-02 → pad-01 → land",
+          "steps": [
+            {
+              "action": "go_to",
+              "place": "home"
+            },
+            {
+              "action": "land"
+            }
+          ]
+        },
+        "go-home-wait": {
+          "summary": "pad-02 → pad-01 → hover and wait",
+          "steps": [
+            {
+              "action": "go_to",
+              "place": "home"
+            },
+            {
+              "action": "wait",
+              "note": "Hover at pad-01; wait for next voice command"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "safety": {
+    "armRequired": true,
+    "executePathDefault": true,
+    "note": "No takeoff unless the triggering slot is ARM ON. pad_hop stops at the first new pad or after maxCentimeters (then hovers). Restart disarms all slots. Voice UI (named pilot) claims and flies so return commands work."
+  }
+}

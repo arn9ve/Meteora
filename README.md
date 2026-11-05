@@ -1,3 +1,9 @@
+[![Watch the Meteora demo](demo/poster.jpg)](https://github.com/arn9ve/Meteora/blob/main/demo/meteora-demo.mp4)
+
+<p align="center"><a href="https://github.com/arn9ve/Meteora/blob/main/demo/meteora-demo.mp4"><b>Watch the demo · 75 seconds · Full HD with audio</b></a></p>
+
+---
+
 <p align="center"><img src="docs/assets/icon.svg" alt="" width="110"></p>
 <h1 align="center">Meteora</h1>
 

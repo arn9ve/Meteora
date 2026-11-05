@@ -10,13 +10,26 @@ Every command moves a real drone. The demo GIFs below say when the drones in the
 
 ### 1. A phone spots a person
 
-Any phone becomes a person detector by opening a link. When it sees someone inside a red zone, the zone turns red on the plan and the alarm starts. *(Real recording.)*
+Any phone becomes a person detector by opening a link. On the phone (left) a person walks into the red box and the phone raises the alarm; on the laptop (right) the phone's view shows the person and the zone turns red on the plan. *(Real recordings.)*
 
-<p align="center"><img src="docs/media/person-detect.gif" alt="A phone detects a person in Zone 1" width="560"></p>
+<table><tr>
+<td width="34%" align="center"><img src="docs/media/phone-detector.gif" alt="The phone detector: a person walks into the red zone" width="260"></td>
+<td align="center"><img src="docs/media/person-detect.gif" alt="On the laptop: the phone sees a person in Zone 1" width="500"></td>
+</tr></table>
 
 ### 2. The nearest drone goes by itself
 
-The alarm sends the nearest free drone. It takes off, plans a route around tables and pillars, flies into the zone, looks left, ahead and right, and Grok says what it saw, then asks what to do next. *(Simulated drones, real app, 2× speed; [MP4](docs/media/zone-mission.mp4).)*
+The alarm sends the nearest free drone. It takes off, plans a route around tables and pillars, flies into the zone, looks left, ahead and right, and Grok says what it saw, then asks what to do next.
+
+In the venue: Black flies across the hall to the person standing in the red zone by the door. *(Real recording; [MP4](docs/media/real-flight.mp4).)*
+
+<p align="center"><img src="docs/media/real-flight.gif" alt="Black flies to the person in the red zone" width="520"></p>
+
+What the drone sees when it gets there: YOLO finds the person on the drone camera and Grok describes him, down to the sign on the wall. *(Real recording, 3× speed.)*
+
+![The drone camera finds the person and Grok describes him](docs/media/drone-sees-person.gif)
+
+The whole sequence on the plan, from the alarm to Grok's question. *(Simulated drones, real app, 2× speed; [MP4](docs/media/zone-mission.mp4).)*
 
 ![The nearest drone flies into Zone 1 and reports](docs/media/zone-mission.gif)
 
@@ -44,12 +57,12 @@ Each phone's camera, lens, sensitivity and whether it may send a drone, in one p
 
 ![Phones as person detectors](docs/media/phones.gif)
 
-Flight videos with the real drones: [docs/media/videos/](docs/media/videos/).
+Longer real recordings, trimmed: [docs/media/videos/](docs/media/videos/).
 
 ## Why it is ready for a real venue
 
 - **Cheap, standard hardware.** Programmable drones that cost a few hundred euros, any phone with a browser, one laptop. No custom electronics.
-- **Nothing to install on phones.** A phone joins by opening a link on the venue Wi-Fi.
+- **Any camera can watch.** Today a phone joins by opening a link on the venue Wi-Fi, with nothing to install. The detector only needs a picture, so fixed cameras already in the venue (IP / CCTV) are the next source to plug in.
 - **Set up in minutes.** One script puts each drone on the Wi-Fi, one command starts everything, zones are drawn on the plan with the mouse.
 - **Safe by design.** One Emergency land button, a single pilot per drone, the drone comes home or lands if the Wi-Fi drops, and limits enforced on the server, not left to the AI.
 - **Grows with the venue.** More phones, more zones, more drones on the same plan; several laptops can share the drones.
@@ -70,11 +83,13 @@ Flight videos with the real drones: [docs/media/videos/](docs/media/videos/).
 
 Requirements: macOS, Node.js 24.12 or later, Python 3.13 (for the camera service), an xAI API key, a 2.4 GHz Wi-Fi. Ports, every option, the first-time install of the camera service and the venue checklist are in **[docs/SETUP.md](docs/SETUP.md)**. How the parts talk to each other: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
-## The floor plan
+## The floor plan, and what comes next
 
 Today the plan of the venue (the Capannone Gragnani, 22.8 m with four pillars and a 4.3 m ceiling) is made for this venue: walls and pillars come from its architectural drawing, tables are placed and measured on the page ([room/capannone-gragnani.json](metoera-voice/room/capannone-gragnani.json)).
 
 **Next:** scan the room with a LiDAR phone (any recent iPhone Pro or iPad Pro). A small companion app walks the room once and generates the plan on the spot: walls, pillars and tables at real size, ready to import. A new venue would then be ready in the time it takes to walk through it.
+
+**Also next:** fixed cameras (IP / CCTV streams) as detectors next to the phones; a docking pad per drone so it charges between patrols; a log of every alarm with the drone's photos for the security team.
 
 ## What it does
 
@@ -134,15 +149,29 @@ The drone hovers until you answer. If the voice session is not running, the page
 - **Flight log:** every telemetry sample and every command, one JSON line each, in `flights/<drone>-<day>.jsonl`. Photos asked for by voice go to `photos/`.
 - **Decision mode:** on by default. During a mission, a fast Grok call picks the next step only when something is off: a failed step, a person on the path, or low battery. Otherwise fixed rules decide.
 
-## Repository map
+## What is in this repository
 
-| Folder | What it does | Language |
+Five folders, each one a small program that runs on its own and talks to the others over the local network. They are kept apart because they do different jobs, in different languages, and a venue may not need all of them.
+
+| Folder | What it does | Do you need it? |
 | --- | --- | --- |
-| [metoera-voice](metoera-voice) | Main app: Grok realtime voice, both drones, room plan with 2D and 3D map, route planning, missions, red zones, the pilot page for a phone | Node.js (TypeScript run directly) |
-| [metoera-redzone](metoera-redzone) | Up to three phones as person detectors (COCO-SSD in the browser) and a Mac console to watch them | Node.js |
-| [metoera-vision](metoera-vision) | Receives the drones' H.264 video (UDP 11111), runs YOLO, serves detections, frames and metric depth over HTTP | Python |
-| [metoera-link](metoera-link) | Small scripts to check the link with one drone and whether this computer has internet | Node.js |
-| [metoera-share-wifi](metoera-share-wifi) | Scripts that put a drone on the shared Wi-Fi (station mode) and find its IP | Python |
+| [metoera-voice](metoera-voice) | The main app: Grok voice, both drones, the plan in 2D and 3D, route planning, missions, red zones | **Always** |
+| [metoera-redzone](metoera-redzone) | Turns phones into person detectors (in the browser) and sends the alarms | **Always** (it is the detector) |
+| [metoera-vision](metoera-vision) | Reads the drones' video: person detection (YOLO), photos for Grok, distance to obstacles | **Recommended** (without it the drones fly blind: no photos, no obstacle check) |
+| [metoera-share-wifi](metoera-share-wifi) | Puts a drone on the venue Wi-Fi and finds its address | **Once per drone** |
+| [metoera-link](metoera-link) | Checks that the laptop reaches a drone and the internet | Only to troubleshoot |
+
+### Scripts
+
+| Script | What it is for | When |
+| --- | --- | --- |
+| [`scripts/start.sh`](scripts/start.sh) | Starts metoera-vision, metoera-redzone and metoera-voice from one terminal; Ctrl+C stops all three (flying drones land first) | Every time |
+| [`metoera-share-wifi/drone/set_sta_mode.py`](metoera-share-wifi/drone/set_sta_mode.py), [`find_tello.py`](metoera-share-wifi/drone/find_tello.py) | Put a drone on the venue Wi-Fi; find its IP | Once per drone |
+| [`metoera-voice/tools/`](metoera-voice/tools) | Floor-plan helpers, a supervised test hover, and link diagnostics | Rarely: see [its README](metoera-voice/tools/README.md) |
+| [`metoera-vision/scripts/`](metoera-vision/scripts) | Replay recorded drone video to develop without flying | Development only |
+| [`metoera-redzone/pad-nav.mjs`](metoera-redzone/pad-nav.mjs), [`tools/pad_recognize.py`](metoera-redzone/tools/pad_recognize.py), `pads/` | The first prototype (fly from pad to pad); off by default (`PAD_NAV=1`) | Not needed |
+
+Settings live in `.env` files next to each app (the examples are committed, the real ones are not). Everything else, ports included, is in [docs/SETUP.md](docs/SETUP.md).
 
 ## Tests
 

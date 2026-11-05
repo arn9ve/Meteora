@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { networkInterfaces } from 'node:os';
 import net from 'node:net';
 import { readFile, writeFile, mkdir, chmod, appendFile } from 'node:fs/promises';
-import { dirname, extname, join } from 'node:path';
+import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { RealTello, type Detections, type DepthView } from './src/tello.ts';
@@ -29,6 +29,10 @@ try { loadEnvFile(join(root, '.env')); } catch (error) {
 try { loadEnvFile(join(root, '.env.tello')); } catch (error) {
   if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
 }
+// Where this server keeps what it learns and records (.room.json, .odometry.json, flights/, photos/,
+// .phone/). METOERA_DATA_DIR moves them, so the simulator (metoera-sim/sim.env) never touches the
+// real drones' files: a simulated Tello would otherwise overwrite the telemetry reading Black learned.
+const dataDir = process.env.METOERA_DATA_DIR ? resolve(process.env.METOERA_DATA_DIR) : root;
 // Object detections from the camera, served by metoera-vision (YOLO on the Tello video).
 const visionUrl = process.env.VISION_URL ?? 'http://127.0.0.1:18790';
 // Each drone reads its own stream: metoera-vision separates them by drone id.
@@ -47,7 +51,7 @@ async function readVision(id: string): Promise<Detections | null> {
 // where drones, phones and red zones are, in .room.json (git-ignored, set on the Room panel).
 // When a drone is placed on the plan, that spot is its start; otherwise TELLO_START / RMTT_START.
 const planPath = process.env.ROOM_PLAN ?? join(dirname(fileURLToPath(import.meta.url)), 'room', 'capannone-gragnani.json');
-const roomPath = join(dirname(fileURLToPath(import.meta.url)), '.room.json');
+const roomPath = join(dataDir, '.room.json');
 const plan = await loadPlan(planPath);
 const room: RoomConfig = await loadConfig(roomPath);
 function startOf(prefix: string): {x: number; y: number; heading: number} {
@@ -93,11 +97,11 @@ async function askVision(images: Buffer[], prompt: string): Promise<string | nul
 }
 // How each drone's telemetry reads (units and axes, learned in flight; see src/odometry.ts), kept
 // across restarts so the next flight is tracked from its first second.
-const odometryPath = join(root, '.odometry.json');
+const odometryPath = join(dataDir, '.odometry.json');
 const odometryFits: Record<string, unknown> = await readFile(odometryPath, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => ({}));
 function saveOdometryFit(id: string, fit: unknown) { odometryFits[id] = fit; void writeFile(odometryPath, JSON.stringify(odometryFits, null, 2)).catch(() => undefined); }
 // Flight log: every telemetry sample and command, one JSON line each, in flights/<drone>-<day>.jsonl.
-const flightsDir = join(root, 'flights');
+const flightsDir = join(dataDir, 'flights');
 const flightBuffers = new Map<string, string[]>();
 function flightLog(id: string, event: Record<string, unknown>) {
   const lines = flightBuffers.get(id) ?? []; lines.push(JSON.stringify({at:new Date().toISOString(), ...event})); flightBuffers.set(id, lines);
@@ -301,7 +305,7 @@ const allowedOrigins = new Set([`http://localhost:${port}`, `http://127.0.0.1:${
 // The key and a self-signed certificate are created once and kept in .phone/ (git-ignored).
 const phonePort = Number(process.env.PHONE_PORT ?? port + 1);
 const lanAddress = Object.values(networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal && /^(192\.168|10\.|172\.(1[6-9]|2\d|3[01]))\./.test(a.address))?.address;
-const phoneDir = join(root, '.phone');
+const phoneDir = join(dataDir, '.phone');
 // Phones only trust the page (and allow the microphone) when the certificate chains to a
 // trusted root. So the Mac makes a small local root ("Metoera local CA") once, valid 90 days and
 // name-constrained to private LAN addresses, so it can never vouch for an internet site. Its
@@ -351,7 +355,7 @@ function sameKey(a: string, b: string): boolean {
 }
 
 // Voice "take a photo": saves the latest annotated camera frame of that drone in photos/.
-const photosDir = join(root, 'photos');
+const photosDir = join(dataDir, 'photos');
 async function takePhoto(id: string) {
   try {
     await drones.get(id)?.ensureCamera(); // the camera is off by default

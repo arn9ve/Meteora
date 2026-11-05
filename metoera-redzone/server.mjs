@@ -9,7 +9,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { networkInterfaces } from 'node:os';
 import { readFile, writeFile, mkdir, appendFile, chmod, access } from 'node:fs/promises';
-import { dirname, extname, join } from 'node:path';
+import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import {
@@ -27,7 +27,8 @@ import {
 const root = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.REDZONE_PORT ?? 18791);
 const phonePort = Number(process.env.REDZONE_PHONE_PORT ?? port + 1);
-const dataDir = join(root, 'data');
+// REDZONE_DATA_DIR keeps the simulator's events (metoera-sim/sim.env) apart from the real ones.
+const dataDir = process.env.REDZONE_DATA_DIR ? resolve(process.env.REDZONE_DATA_DIR) : join(root, 'data');
 const eventsPath = join(dataDir, 'events.jsonl');
 const phoneDir = join(root, '.phone');
 const STALE_MS = 8_000;

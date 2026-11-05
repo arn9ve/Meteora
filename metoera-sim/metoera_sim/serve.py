@@ -20,17 +20,28 @@ Then, in two more terminals:
     metoera-vision:  python -m metoera_vision --drones tello=127.0.0.1:50001,rmtt=127.0.0.1:50002
 
 tello starts on the takeoff pad facing +x; rmtt on pad B (from scene.json), or 1 m to the left.
+
+Moves drift by 3 % (--drift), as a real Tello's do, and the drones see the mission pads marked
+in the viewer (after `mon`), so the voice server's position tracking can be tried here.
+
+Every run writes a flight log, runs/<date-time>.jsonl: commands, replies, the moves the
+simulator itself refused ("would_hit": the voice server's guard let them through), and five
+times a second each drone's pose and clearance (the distance from its body to the scan).
+tools/rehearse.mjs in metoera-voice reads it.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import math
 import select
 import socket
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from pathlib import Path
+from typing import Optional, TextIO
 
 from .camera import Pose
 from .drone import LANDED_Z, MARGIN_M, Obstacles, camera_pose
@@ -45,10 +56,32 @@ REPLY_PORT = 8879  # TELLO_LOCAL_PORT in sim.env; the real drones answer to 8889
 VIDEO_PORT = 11111
 STATE_HZ = 10
 SYNTHETIC_PADS = {"b": (2.0, -1.0)}  # the magenta pad of check.synthetic_room()
+LOG_HZ = 5
+RUNS = Path(__file__).resolve().parent.parent / "runs"
 
 
 def log(name: str, text: str) -> None:
     print(f"{time.strftime('%H:%M:%S')} {name:5} {text}", flush=True)
+
+
+class FlightLog:
+    """One JSON object per line: {"t": seconds since the epoch, "drone": name, "kind": ..., ...}."""
+
+    def __init__(self, path: Optional[Path]) -> None:
+        self.path = path
+        self._file: Optional[TextIO] = None
+        if path:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._file = path.open("a", encoding="utf-8")
+
+    def write(self, drone: str, kind: str, **data) -> None:
+        if self._file:
+            self._file.write(json.dumps({"t": round(time.time(), 3), "drone": drone, "kind": kind, **data}) + "\n")
+            self._file.flush()
+
+    def close(self) -> None:
+        if self._file:
+            self._file.close()
 
 
 def _udp(bind: str, port: int) -> socket.socket:
@@ -68,6 +101,7 @@ class Drone:
     video_out: socket.socket
     state_out: socket.socket
     verbose: bool = False
+    flight_log: FlightLog = field(default_factory=lambda: FlightLog(None))
     commander: Optional[str] = None  # who sent `command`: telemetry and video go there
     last_sender: Optional[str] = None  # replies of moves that end later go there
     encoder: Optional[H264Encoder] = None
@@ -88,6 +122,7 @@ class Drone:
             quiet = text.endswith("?") and not self.verbose  # the server's keep-alive `battery?`
             if not quiet:
                 log(self.name, f"<- {text}")
+                self.flight_log.write(self.name, "command", text=text)
             for reply in self.sim.receive(text):
                 self.reply(reply, host, quiet)
             self.drain_events()
@@ -99,6 +134,7 @@ class Drone:
             log(self.name, f"cannot reply to {host}:{self.reply_port}: {e}")
         if not quiet:
             log(self.name, f"-> {text}")
+            self.flight_log.write(self.name, "reply", text=text)
 
     def step(self) -> None:
         for reply in self.sim.step():
@@ -108,7 +144,19 @@ class Drone:
 
     def drain_events(self) -> None:
         while self.sim.events:
-            log(self.name, f"!! {self.sim.events.pop(0)}")
+            event = self.sim.events.pop(0)
+            log(self.name, f"!! {event}")
+            kind = "would_hit" if event.startswith("blocked:") else "event"
+            self.flight_log.write(self.name, kind, text=event)
+
+    def log_state(self, obstacles: Obstacles) -> None:
+        if not self.sim.sdk:
+            return
+        p = self.sim.pose
+        airborne = self.sim.flying and self.sim.height_cm(self.sim.clock()) >= 10  # not spinning up on the pad
+        clear = obstacles.clearance(p) if airborne else math.inf
+        self.flight_log.write(self.name, "state", x=round(p.x, 3), y=round(p.y, 3), z=round(p.z, 3), yaw=round(p.yaw, 1),
+                              flying=self.sim.flying, clearance_cm=None if math.isinf(clear) else round(clear * 100, 1))
 
     def send_state(self) -> None:
         if self.commander and self.sim.sdk:
@@ -133,18 +181,19 @@ class Drone:
 
 
 def load(scene_arg: str, max_gaussians: Optional[int]):
-    """(splats in the world frame, pads {name: (x, y)})."""
+    """(splats in the world frame, alignment pads {name: (x, y)}, mission pads {number: (x, y, z)})."""
     if scene_arg == "synthetic":
         from .check import synthetic_room
+        from .room import SYNTHETIC_PADS as MISSION_PADS
 
-        return synthetic_room(), dict(SYNTHETIC_PADS)
+        return synthetic_room(posters=True), dict(SYNTHETIC_PADS), dict(MISSION_PADS)
     from .scene import load_scene
 
     scene = load_scene(scene_arg, max_gaussians=max_gaussians)
     if "origin" not in scene.meta.get("aligned", []):
         print(f"warning: {scene_arg} is not aligned yet (no takeoff pad): run the viewer and save with p first")
     pads = {k: (float(v[0]), float(v[1])) for k, v in scene.meta.get("pads", {}).items()}
-    return scene.splats, pads
+    return scene.splats, pads, scene.meta.get("mission_pads", {})
 
 
 def main(argv=None) -> int:
@@ -158,6 +207,9 @@ def main(argv=None) -> int:
                    help=f"port the replies go to (default {REPLY_PORT}, as in sim.env; 8889 for tools/test-flight.mjs)")
     p.add_argument("--max-gaussians", type=int, default=None)
     p.add_argument("--verbose", action="store_true", help="also log the `battery?` keep-alives")
+    p.add_argument("--drift", type=float, default=0.03, help="how far moves come out off, as a fraction (default 0.03)")
+    p.add_argument("--seed", type=int, default=None, help="repeatable drift")
+    p.add_argument("--no-log", action="store_true", help="no flight log in runs/")
     a = p.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)  # the log shows up at once, even in a file
 
@@ -169,7 +221,8 @@ def main(argv=None) -> int:
     from .render import Renderer
 
     t0 = time.perf_counter()
-    splats, pads = load(a.scene, a.max_gaussians)
+    splats, pads, mission_pads = load(a.scene, a.max_gaussians)
+    flight_log = FlightLog(None if a.no_log else RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}.jsonl")
     obstacles = Obstacles(splats, margin=a.margin)
     renderer = Renderer()
     print(f"{len(splats):,} Gaussians ({len(obstacles.points):,} solid) loaded in {time.perf_counter() - t0:.1f} s; "
@@ -180,22 +233,25 @@ def main(argv=None) -> int:
         spec = DRONES[name]
         x, y = (0.0, 0.0) if name == "tello" else pads.get("b", (0.0, 1.0))
         ground = obstacles.ground_below(Pose(x, y, 0.5))
-        sim = SimTello(name, spec["serial"], Pose(x, y, ground + LANDED_Z, 0.0), obstacles, battery=a.battery)
+        sim = SimTello(name, spec["serial"], Pose(x, y, ground + LANDED_Z, 0.0), obstacles, battery=a.battery,
+                       drift=a.drift, seed=None if a.seed is None else a.seed + i, mission_pads=mission_pads)
         try:
             drone = Drone(name, sim, spec["state_port"], a.reply_port, _udp(a.bind, spec["command_port"]),
-                          _udp(a.bind, spec["video_port"]), _udp(a.bind, 0), verbose=a.verbose)
+                          _udp(a.bind, spec["video_port"]), _udp(a.bind, 0), verbose=a.verbose, flight_log=flight_log)
         except OSError as e:
             print(f"{name}: cannot open its UDP ports ({e}); is another simulator running?")
             return 1
         drones.append(drone)
         print(f"  {name:5} at ({x:+.2f}, {y:+.2f}) m: commands on {a.bind}:{spec['command_port']} (replies to :{a.reply_port}), "
               f"telemetry to :{spec['state_port']}, video from :{spec['video_port']} to :{VIDEO_PORT}, serial {spec['serial']}")
+    print(f"  moves drift {a.drift:.0%}; mission pads {', '.join(sorted(map(str, mission_pads))) or 'none (mark them in the viewer: m)'}"
+          + (f"; flight log {flight_log.path}" if flight_log.path else ""))
     vision = ",".join(f"{d.name}=127.0.0.1:{DRONES[d.name]['video_port']}" for d in drones)
     print("Then:\n  metoera-voice:   node --env-file=../metoera-sim/sim.env server.ts   (page: http://localhost:18797)\n"
           f"  metoera-vision:  python -m metoera_vision --drones {vision}\nCtrl+C stops.")
 
-    frame_period, state_period = 1.0 / FPS, 1.0 / STATE_HZ
-    next_frame = next_state = time.monotonic()
+    frame_period, state_period, log_period = 1.0 / FPS, 1.0 / STATE_HZ, 1.0 / LOG_HZ
+    next_frame = next_state = next_log = time.monotonic()
     sockets = [d.commands for d in drones]
     try:
         while True:
@@ -211,6 +267,10 @@ def main(argv=None) -> int:
                 for d in drones:
                     d.send_state()
                 next_state = max(next_state + state_period, now)
+            if now >= next_log:
+                for d in drones:
+                    d.log_state(obstacles)
+                next_log = max(next_log + log_period, now)
             if now >= next_frame:
                 for d in drones:
                     d.send_frame(renderer, splats)
@@ -221,6 +281,7 @@ def main(argv=None) -> int:
         for d in drones:
             for s in (d.commands, d.video_out, d.state_out):
                 s.close()
+        flight_log.close()
     return 0
 
 

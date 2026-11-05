@@ -18,7 +18,34 @@ import numpy as np
 OUT = Path(__file__).resolve().parent.parent / "renders"
 
 
-def synthetic_room(device: str = "cuda"):
+def poster_points(image_name: str, centre, width: float, step: float = 0.01) -> tuple[np.ndarray, np.ndarray]:
+    """A photo standing upright, facing -x (towards the takeoff spot): (points, RGB colours 0..1).
+    The photos are the samples that ship with Ultralytics, so YOLO has something real to find."""
+    import importlib.util
+
+    import cv2
+
+    spec = importlib.util.find_spec("ultralytics")  # found, not imported: importing writes its settings
+    if spec is None or not spec.submodule_search_locations:
+        raise RuntimeError("the posters need ultralytics in this venv (see README)")
+    img = cv2.imread(str(Path(spec.submodule_search_locations[0]) / "assets" / image_name))[:, :, ::-1]
+    height = width * img.shape[0] / img.shape[1]
+    nu, nv = int(round(width / step)), int(round(height / step))
+    small = cv2.resize(img, (nu, nv), interpolation=cv2.INTER_AREA).astype(np.float32) / 255
+    u, v = np.meshgrid(np.arange(nu), np.arange(nv))
+    cx, cy, cz = centre
+    # Seen from the takeoff spot (looking at +x), the picture's left is +y and its top is +z.
+    pts = np.stack([np.full(u.size, cx), cy + width / 2 - (u.ravel() + 0.5) * step,
+                    cz + height / 2 - (v.ravel() + 0.5) * step], axis=1)
+    return pts, small.reshape(-1, 3)
+
+
+# The YOLO test posters (places.py, the people guard). People: life-size-ish on the far wall,
+# left of centre. Bus: a free-standing board ahead-right.
+POSTERS = (("zidane.jpg", (3.98, 0.8, 1.0), 2.4), ("bus.jpg", (3.0, -1.4, 1.0), 0.75))
+
+
+def synthetic_room(device: str = "cuda", posters: bool = False):
     import torch
 
     from .scene import SH_C0, Splats
@@ -57,13 +84,21 @@ def synthetic_room(device: str = "cuda"):
                 pts.append((px + a, py + b, 0.003))
                 cols.append(colour)
 
-    n = len(pts)
-    t = lambda a: torch.tensor(np.asarray(a, dtype=np.float32), device=device)  # noqa: E731
+    pts_a = np.asarray(pts, dtype=np.float32)
     rgb = np.asarray(cols, dtype=np.float32)
+    scale = np.full(len(pts_a), step * 0.6, dtype=np.float32)
+    if posters:
+        for name, centre, width in POSTERS:
+            p, c = poster_points(name, centre, width)
+            pts_a = np.concatenate([pts_a, p.astype(np.float32)])
+            rgb = np.concatenate([rgb, c.astype(np.float32)])
+            scale = np.concatenate([scale, np.full(len(p), 0.006, dtype=np.float32)])
+    n = len(pts_a)
+    t = lambda a: torch.tensor(np.asarray(a, dtype=np.float32), device=device)  # noqa: E731
     return Splats(
-        means=t(pts),
+        means=t(pts_a),
         quats=t(np.tile([1.0, 0, 0, 0], (n, 1))),
-        scales=t(np.full((n, 3), step * 0.6)),
+        scales=t(np.repeat(scale[:, None], 3, axis=1)),
         opacities=t(np.full(n, 0.95)),
         sh0=t((rgb - 0.5) / SH_C0)[:, None, :],
     )

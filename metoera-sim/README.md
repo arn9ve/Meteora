@@ -14,6 +14,7 @@ From this folder, with [uv](https://docs.astral.sh/uv/):
 ```bash
 uv venv --python 3.10 .venv
 uv pip install --python .venv/Scripts/python.exe torch==2.4.1 --index-url https://download.pytorch.org/whl/cu124
+uv pip install --python .venv/Scripts/python.exe torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu124
 uv pip install --python .venv/Scripts/python.exe -r requirements.txt
 .venv/Scripts/python -m metoera_sim.check
 ```
@@ -54,7 +55,10 @@ Scans stay out of git (`scenes/` is ignored).
 | `o`, then click the takeoff pad | makes it (0, 0, 0). The heading you face becomes +x, the takeoff direction |
 | `1` / `2`, then click pad A / pad B | sets the scale from `--pad-distance` |
 | `x` `y` `z` | turn the whole scan 90° about that axis, if it starts sideways (`--up` sets the first guess, `y` by default) |
-| `p` | save `scene.json` next to the scan |
+| `m`, then 1–8, then click a mission pad | where that numbered pad lies (lay every pad with its rocket towards +x). The drones use them to find their position |
+| `[` `]` | select the previous / next place (top view; see "Places" below) |
+| `c` / Backspace / `n` | confirm / delete / rename the selected place (type, then Enter; Esc cancels) |
+| `p` | save `scene.json` next to the scan, and the room map `room.json` |
 | `h` | help on screen |
 | `Esc` | quit |
 
@@ -67,6 +71,33 @@ Scans stay out of git (`scenes/` is ignored).
 After that, every tool works in the same world frame: metres, z up, the takeoff pad at (0, 0, 0), x the takeoff heading, y to its left. Yaw is counterclockwise, so the Tello's `cw` turns are negative.
 
 A move that would run the drone into the scan shows `blocked: ...` at the top. The viewer moves anyway, since it is a free camera for aligning.
+
+## Places and the room map
+
+```bash
+.venv/Scripts/python -m metoera_sim.places scenes/practice
+```
+
+YOLO (the same model the drones use) looks at the scan from viewpoints all over the room. The views are taken every 75 cm, at 0.6, 1.0 and 1.4 m high, facing 8 ways. Each object it finds is placed in 3D from the depth.
+
+**What counts as a place:**
+- An object must be seen from at least 3 spots, and in at least 30 % of the views that could see it. A shelf taken for a fridge once, at 22 %, doesn't survive.
+- People and animals are never places: they move.
+
+**Checking them in the viewer:** in the top view, `[` `]` go through the places, `c` confirms one, Backspace deletes it and `n` renames it ("tv" to "big tv"). Running `places` again keeps what you confirmed, renamed or deleted.
+
+**The room map:** `p` in the viewer, or `python -m metoera_sim.room scenes/practice`, writes `room.json` next to the scan. It holds:
+- the solid part of the scan, in 5 cm voxels with where their points sit;
+- the mission pads;
+- the places.
+
+It's a few hundred kB. metoera-voice loads it (`METOERA_ROOM`) to guard real and simulated flights, track positions and fly `go_to`; see its README.
+
+**The synthetic room** has two posters (Ultralytics' sample photos): people on the far wall, and a bus on a board. That gives YOLO something real to find:
+
+```bash
+.venv/Scripts/python -m metoera_sim.places synthetic -o scenes/synthetic/room.json   # finds the bus
+```
 
 ## Fly simulated drones (step 2)
 
@@ -122,6 +153,16 @@ The voice server shows that as "Drone rejected move: ...". A real Tello would fl
 - The battery drains while flying, about 13 minutes from 100 %. Below 5 % it lands by itself.
 - Telemetry is in the Tello EDU's format at 10 Hz. `h` is the height above the takeoff spot, and `yaw` is clockwise.
 - Video is 960×720 at 30 fps, raw H.264 in 1460-byte datagrams, with a keyframe every second.
+- **Drift:** moves come out a little off, as a real Tello's do. A move is off by up to ±3 % of its length and a turn by up to ±2 % of its angle (`--drift`, `--seed`). Telemetry tells the truth.
+- **Mission pads** come from the viewer (`m`); the synthetic room has pad 1 at the takeoff spot and pad 2 under Red.
+  - After `mon`, while the drone is 0.3 to 1.2 m above a pad and within 30 cm of it, telemetry carries `mid`, `x y z` from the pad, and `mpry`.
+  - The axes and signs follow "rocket towards +x". They still need checking on a real drone.
+- **Flight log:** every run writes `runs/<date-time>.jsonl` with:
+  - commands and replies;
+  - "would_hit", the moves the simulator itself refused, meaning the voice server's guard let them through;
+  - five times a second, each drone's pose and clearance (the distance from its body to the room around and above it).
+
+  metoera-voice's `tools/rehearse.mjs` reads it.
 
 ## Render one view
 
@@ -143,18 +184,21 @@ The voice server shows that as "Drone rejected move: ...". A real Tello would fl
 | `metoera_sim/tello.py` | The simulated Tello's SDK: answers, timings, telemetry (no GPU, no network) |
 | `metoera_sim/video.py` | H.264 encoding and 1460-byte datagrams |
 | `metoera_sim/serve.py` | The simulated drones on UDP |
-| `metoera_sim/check.py` | Install check, synthetic room, practice scene |
+| `metoera_sim/places.py` | Named places found by YOLO in renders of the scan |
+| `metoera_sim/room.py` | The room map (`room.json`) for metoera-voice |
+| `metoera_sim/check.py` | Install check, synthetic room (with the YOLO posters), practice scene |
 | `sim.env` | metoera-voice's settings for the simulator |
-| `tests/` | The obstacle check, the SDK and the video, on the synthetic room (CPU) |
+| `tests/` | The obstacle check, the SDK (with drift and mission pads), the clearance and the video, on the synthetic room (CPU) |
 
 ## Known limits
 
 - **Camera width:** DJI's quoted 82.6° is used as the diagonal field of view (70° horizontally). It is not yet checked against a real Tello frame; calibrate it before trusting distances seen in the simulator.
 - **Colour:** only the base colour of each Gaussian is kept, with no view-dependent shine. It saves memory and survives the alignment rotation.
 - **A scan is frozen in time:** whatever moved during it is blurry, and nothing moves in the simulator. People walking into a blind spot are not simulated.
-- **The drones neither see nor block each other.** Each one sees only the scan.
+- **The drones neither see nor block each other,** here or in metoera-voice's guards. Each one sees only the scan. A `go_to` can end right above the other drone's pad.
 - **The margin is a guess** until a drone with guards on is measured. The RoboMaster TT uses the same box; its expansion board makes it taller, which the margin covers.
 - **Timings are estimates:** the default speed, the turn rate (90°/s) and the takeoff and landing times. Check them against a real Tello (`speed?`, and time a takeoff, a `forward 100` and a `cw 90`).
 - **What counts as solid:** the centres of Gaussians with opacity of at least 0.3, with at least 5 in the way. A big, sparse Gaussian may let the box through; a cluster of floaters may block it.
-- **No physics:** no drift, wind, or bumping. Flips take 1.5 s and need 30 cm of room on that side; `rc` is ignored.
-- **The real drones get none of this protection.** They don't know where they are in the scan.
+- **No physics:** no wind or bumping (drift is only the moves coming out off). Flips take 1.5 s and need 30 cm of room on that side; `rc` is ignored.
+- **The real drones are protected only through metoera-voice's room map.** That needs their position, from mission pads with `METOERA_MISSION_PADS=1`, which is not yet checked on a real drone.
+- **Places only cover what YOLO knows** (the 80 COCO classes: tv, couch, chair, bed, potted plant...). A real scan's renders are less sharp than a camera, so check the list in the viewer.

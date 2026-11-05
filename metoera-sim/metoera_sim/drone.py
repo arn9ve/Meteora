@@ -120,6 +120,18 @@ class Obstacles:
                 return Blocked("turn", free_deg=int(abs(degrees) * (i - 1) / steps))
         return None
 
+    def clearance(self, body: Pose) -> float:
+        """Metres from the drone's body (no margin) to the scan around and above it: the
+        `min_count`-th nearest solid point, so one stray Gaussian does not count. What lies below
+        the body (the floor it takes off from) is left out. For the flight log."""
+        p = self._local(body)
+        p = p[p[:, 2] > -HEIGHT_M / 2]
+        half = p.new_tensor([LENGTH_M / 2, WIDTH_M / 2, HEIGHT_M / 2])
+        d = (p.abs() - half).clamp(min=0).norm(dim=1)
+        if len(d) < self.min_count:
+            return math.inf
+        return float(torch.kthvalue(d, self.min_count).values)
+
     def ground_below(self, body: Pose) -> float:
         """Height of what is under the drone's body (a table, or the floor at 0)."""
         p = self._local(body)

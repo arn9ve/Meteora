@@ -10,6 +10,9 @@ ninja==1.13.2
 jaxtyping==0.3.7
 rich==15.0.0
 pytest==9.2.0
+# Places (places.py) and the synthetic room's posters. Install torchvision first, from the
+# CUDA 12.4 index (see README), so it matches torch.
+ultralytics==8.4.202
 # gsplat imports torch.utils.cpp_extension to look for CUDA, which needs these two:
 packaging==26.3
 setuptools==69.5.1

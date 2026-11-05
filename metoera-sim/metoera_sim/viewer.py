@@ -16,8 +16,13 @@ Aligning (press the key, then click in the picture):
   1  click mission pad A      2  click mission pad B
                               -> with --pad-distance (metres, tape-measured) the scale is fixed
   x / y / z  turn the whole scan 90 degrees about that axis (when it starts sideways)
+  m, then 1-8, then click a mission pad's centre -> where that numbered pad lies (rocket to +x)
 
-  p  save scene.json          h  help on/off          Esc  quit
+Places (python -m metoera_sim.places finds them; the top view shows them):
+  [ / ]  select the previous / next place     c  confirm it (or not)
+  Backspace  delete it                        n  rename it: type, then Enter (Esc cancels)
+
+  p  save scene.json and room.json            h  help on/off          Esc  quit
 """
 
 from __future__ import annotations
@@ -44,6 +49,8 @@ PROMPTS = {
     "origin": "click the centre of the TAKEOFF pad",
     "pad_a": "click the centre of mission pad A",
     "pad_b": "click the centre of mission pad B",
+    "mission_pad": "click the centre of mission pad {}",
+    "pad_number": "which mission pad? press its number, 1 to 8",
 }
 
 
@@ -81,6 +88,11 @@ class Viewer:
         self.renderer = renderer
         self.k = renderer.k
         self.pads: dict[str, np.ndarray] = {k: np.array(v) for k, v in scene.meta.get("pads", {}).items()}
+        self.mission_pads: dict[str, np.ndarray] = {k: np.array(v) for k, v in scene.meta.get("mission_pads", {}).items()}
+        self.places: list[dict] = [dict(p) for p in scene.meta.get("places", [])]
+        self.selected: int | None = None  # index into self.places
+        self.typing: str | None = None  # a new name being typed
+        self.pad_id: str | None = None
         self.done: set[str] = set(scene.meta.get("aligned", []))
         means = scene.splats.means.median(dim=0).values.cpu().numpy()
         self.pose = Pose(0.0, 0.0, 0.8, 0.0) if "origin" in self.done else Pose(*means.tolist(), 0.0)  # the body
@@ -97,6 +109,9 @@ class Viewer:
         p = (t @ np.append(self.pose.position, 1.0))[:3]
         self.pose = replace(self.pose, x=float(p[0]), y=float(p[1]), z=float(p[2]), yaw=self.pose.yaw + yaw_change)
         self.pads = {k: (t @ np.append(v, 1.0))[:3] for k, v in self.pads.items()}
+        self.mission_pads = {k: (t @ np.append(v, 1.0))[:3] for k, v in self.mission_pads.items()}
+        for place in self.places:
+            place["position"] = [round(float(c), 3) for c in (t @ np.append(place["position"], 1.0))[:3]]
         self.unsaved = True
 
     def turn_scan(self, axis: str) -> None:
@@ -155,6 +170,10 @@ class Viewer:
             self.apply(rot_z(-yaw) @ translate(-point), yaw_change=-yaw)
             self.done.add("origin")
             self.message = "takeoff pad is now (0, 0, 0); the drone's heading is +x"
+        elif mode == "mission_pad":
+            self.mission_pads[self.pad_id] = point
+            self.unsaved = True
+            self.message = f"mission pad {self.pad_id} at {np.round(point, 2).tolist()}"
         elif mode in ("pad_a", "pad_b"):
             self.pads[mode[-1]] = point
             self.unsaved = True
@@ -173,11 +192,68 @@ class Viewer:
         meta = self.scene.meta
         meta["pads"] = {k: v.tolist() for k, v in self.pads.items()}
         meta["aligned"] = sorted(self.done)
+        meta["mission_pads"] = {k: v.tolist() for k, v in sorted(self.mission_pads.items())}
+        meta["places"] = self.places
         if self.pad_distance:
             meta["pad_distance_m"] = self.pad_distance
         path = self.scene.save()
+        from .room import export_scene
+
+        room = export_scene(self.scene, margin=self.margin)
         self.unsaved = False
-        self.message = f"saved {path}"
+        self.message = f"saved {path.name} and {room.name}"
+
+    # ---- places
+    def live_places(self) -> list[int]:
+        return [i for i, p in enumerate(self.places) if not p.get("deleted")]
+
+    def select(self, step: int) -> None:
+        live = self.live_places()
+        if not live:
+            self.message = "no places yet: run python -m metoera_sim.places on this scene"
+            return
+        at = live.index(self.selected) if self.selected in live else -1 if step > 0 else 0
+        self.selected = live[(at + step) % len(live)]
+        p = self.places[self.selected]
+        self.pose = replace(self.pose, x=p["position"][0], y=p["position"][1])  # fly over it to see it
+        self.top = True
+        self.message = self.describe(p)
+
+    @staticmethod
+    def describe(p: dict) -> str:
+        x, y, z = p["position"]
+        state = "confirmed" if p.get("confirmed") else "not confirmed (c)"
+        return f"{p['name']} ({p['label']}, {p.get('confidence', 0):.0%}) at ({x:+.2f}, {y:+.2f}, {z:+.2f}): {state}"
+
+    def edit_place(self, ch: str) -> None:
+        """Keys while a place is selected: c confirms, Backspace deletes, n renames."""
+        p = self.places[self.selected]
+        if ch == "c":
+            p["confirmed"] = not p.get("confirmed")
+            self.message = self.describe(p)
+        elif ch == "\x08":
+            p["deleted"] = True
+            self.message = f"{p['name']} deleted"
+            self.selected = None
+        elif ch == "n":
+            self.typing = ""
+        self.unsaved = True
+
+    def type_name(self, ch: str) -> None:
+        if ch in ("\r", "\n"):
+            name = self.typing.strip()
+            if name:
+                p = self.places[self.selected]
+                p["name"], p["renamed"], p["confirmed"] = name, True, True
+                self.message = self.describe(p)
+                self.unsaved = True
+            self.typing = None
+        elif ch == "\x1b":
+            self.typing = None
+        elif ch == "\x08":
+            self.typing = self.typing[:-1]
+        elif ch.isprintable():
+            self.typing += ch
 
     # ---- drawing
     def hud(self, img: np.ndarray) -> np.ndarray:
@@ -188,7 +264,9 @@ class Viewer:
             f"x {p.x:+.2f}  y {p.y:+.2f}  z {p.z:+.2f} m   yaw {p.yaw:+.0f}  "
             + ("top view" if self.top else f"tilt {p.pitch:+.0f}") + f"   {self.ms:.0f} ms",
             f"aligned: {', '.join(sorted(self.done)) or 'nothing yet'}{'   (unsaved: p)' if self.unsaved else ''}",
-            (">>> " + PROMPTS[self.mode]) if self.mode else self.message,
+            (">>> " + PROMPTS[self.mode].format(self.pad_id)) if self.mode
+            else f">>> new name: {self.typing}_   (Enter keeps it, Esc cancels)" if self.typing is not None
+            else self.message,
         ]
         if self.show_help:
             lines += [l for l in (__doc__ or "").splitlines()[4:] if l.strip()]
@@ -203,8 +281,34 @@ class Viewer:
         if self.mode:
             cv2.drawMarker(img, (self.k.width // 2, self.k.height // 2), (0, 255, 255), cv2.MARKER_CROSS, 16, 1)
         if self.top:
+            self.draw_marks(img)
             self.draw_drone(img)
         return img
+
+    def draw_marks(self, img: np.ndarray) -> None:
+        """Places (yellow; green when confirmed; circled when selected) and mission pads in the top view."""
+        import cv2
+
+        cam, _ = self.view_pose()
+
+        def label(text: str, at: tuple[int, int], colour) -> None:
+            cv2.putText(img, text, at, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(img, text, at, cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 1, cv2.LINE_AA)
+
+        for i in self.live_places():
+            p = self.places[i]
+            u, v, d = project(cam, self.k, p["position"])
+            if not (d > 0 and 0 <= u < self.k.width and 0 <= v < self.k.height):
+                continue
+            colour = (80, 220, 80) if p.get("confirmed") else (0, 220, 255)
+            at = (round(u), round(v))
+            cv2.circle(img, at, 14 if i == self.selected else 6, colour, 2 if i == self.selected else -1, cv2.LINE_AA)
+            label(p["name"], (at[0] + 10, at[1] - 8), colour)
+        for name, pt in self.mission_pads.items():
+            u, v, d = project(cam, self.k, pt)
+            if d > 0 and 0 <= u < self.k.width and 0 <= v < self.k.height:
+                cv2.drawMarker(img, (round(u), round(v)), (255, 120, 255), cv2.MARKER_SQUARE, 18, 2)
+                label(f"pad {name}", (round(u) + 12, round(v) + 18), (255, 120, 255))
 
     def draw_drone(self, img: np.ndarray) -> None:
         """The drone to scale in the top view: its body, the margin kept clear, its heading."""
@@ -243,6 +347,24 @@ class Viewer:
 
     def key(self, ch: str) -> bool:
         """Handle one key; returns False to quit."""
+        if self.typing is not None:
+            self.type_name(ch)
+            return True
+        if self.mode == "pad_number":
+            if ch in "12345678" and ch:
+                self.pad_id, self.mode = ch, "mission_pad"
+            else:
+                self.mode = None
+            return True
+        if ch == "[" or ch == "]":
+            self.select(-1 if ch == "[" else 1)
+            return True
+        if self.selected is not None and ch in ("c", "\x08", "n"):
+            self.edit_place(ch)
+            return True
+        if self.selected is not None and ch == "\x1b":
+            self.selected, self.message = None, ""
+            return True
         small = ch.isupper()
         step, turn = (0.05, 5.0) if small else (0.2, 15.0)
         c = ch.lower()
@@ -266,6 +388,8 @@ class Viewer:
             self.mode = "pad_a"
         elif c == "2":
             self.mode = "pad_b"
+        elif c == "m":
+            self.mode = "pad_number"
         elif c == "p":
             self.save()
         elif c == "h":

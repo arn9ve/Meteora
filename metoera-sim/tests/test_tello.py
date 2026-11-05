@@ -163,3 +163,34 @@ def test_telemetry_has_what_the_voice_server_reads(tello, clock):
     assert telemetry(tello, "h") == 0
     assert telemetry(tello, "yaw") == 0
     assert tello.state().endswith(";\r\n")
+
+
+def test_moves_drift_like_a_real_tello(room, clock):
+    tello = SimTello("tello", "SIMTELLO0001", Pose(0.0, 0.0, LANDED_Z, 0.0), room, clock=clock, drift=0.1, seed=7)
+    airborne(tello, clock)
+    assert fly(tello, clock, "forward 100", 100 / 100 + SETTLE_S + 0.1) == ["ok"]
+    x = tello.pose.x
+    assert x != pytest.approx(1.0, abs=1e-6) and 0.9 <= x <= 1.1  # off, but by at most 10 %
+
+
+def test_mission_pads_in_telemetry(room, clock):
+    pads = {"1": [0.0, 0.0, 0.0], "2": [2.0, -1.0, 0.0]}
+    tello = SimTello("tello", "SIMTELLO0001", Pose(0.05, -0.02, LANDED_Z, 0.0), room, clock=clock, mission_pads=pads)
+    airborne(tello, clock)
+    assert telemetry(tello, "mid") == -1  # pads are off until `mon`
+    assert tello.receive("mon") == ["ok"] and tello.receive("mdirection 0") == ["ok"]
+    assert telemetry(tello, "mid") == 1
+    assert (telemetry(tello, "x"), telemetry(tello, "y"), telemetry(tello, "z")) == (5, -2, 80)
+    assert re.search(r"mpry:0,0,0;", tello.state())
+    assert fly(tello, clock, "cw 90", 90 / TURN_DEG_S + SETTLE_S + 0.1) == ["ok"]
+    assert re.search(r"mpry:0,0,90;", tello.state())  # clockwise, like the Tello's yaw
+    assert fly(tello, clock, "left 100", 100 / 100 + SETTLE_S + 0.1) == ["ok"]  # facing -y, left is +x
+    assert telemetry(tello, "mid") == -1  # 1 m away: out of sight
+    assert tello.receive("moff") == ["ok"]
+
+
+def test_no_pad_on_the_ground(room, clock):
+    tello = SimTello("tello", "SIMTELLO0001", Pose(0.0, 0.0, LANDED_Z, 0.0), room, clock=clock, mission_pads={"1": [0, 0, 0]})
+    tello.receive("command")
+    tello.receive("mon")
+    assert telemetry(tello, "mid") == -1  # too close to see it

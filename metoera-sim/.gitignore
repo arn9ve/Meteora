@@ -4,3 +4,8 @@ __pycache__/
 # Scans are 50-300 MB each and stay on the laptop; renders are throwaway.
 scenes/
 renders/
+.ultralytics/
+weights/
+runs/
+voice-data/
+redzone-data/

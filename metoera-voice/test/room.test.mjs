@@ -112,7 +112,7 @@ test('route goes around a table, never through it, and leaves a table it starts 
 
 test('route on the real room with the 6 tables is found quickly', async () => {
   const { planRoute, loadPlan } = await import('../src/room.ts');
-  const plan = await loadPlan(new URL('../room/capannone-gragnani.json', import.meta.url).pathname);
+  const plan = await loadPlan((await import('node:url')).fileURLToPath(new URL('../room/capannone-gragnani.json', import.meta.url))); // .pathname breaks on Windows (/C:/...)
   const T = (n, x, y) => ({ id: `t${n}`, name: `table ${n}`, kind: 'table', x, y, w: 1.8, d: 1.8, rotation: 0, heightM: 0.75 });
   const tables = [T(1, 0.41, -0.66), T(2, 1.94, 2.54), T(3, 4.21, -1.37), T(4, 4.71, 1.95), T(5, 8.17, -1.37), T(6, 8.70, 1.95)];
   const t0 = Date.now();

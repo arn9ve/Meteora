@@ -81,3 +81,10 @@ def test_ground_below(room):
     assert room.ground_below(Pose(0.0, 0.0, 0.8, 0.0)) == pytest.approx(0.0, abs=0.01)  # floor (the pad)
     assert room.ground_below(Pose(1.5, 1.2, 0.8, 0.0)) == pytest.approx(0.6, abs=0.01)  # top of the blue box
     assert not math.isnan(room.ground_below(Pose(9.0, 9.0, 0.8, 0.0)))  # off the scan: the floor at 0
+
+
+def test_clearance(room):
+    # The red box's front face is at x = 1.8; the body's front is 4.9 cm ahead of its centre.
+    assert room.clearance(Pose(1.5, 0.0, 0.8, 0.0)) == pytest.approx(1.8 - 1.5 - LENGTH_M / 2, abs=0.005)
+    # Below the body (the floor) does not count: from the takeoff spot, the red box is nearest.
+    assert room.clearance(Pose(0.0, 0.0, 0.8, 0.0)) == pytest.approx(1.8 - LENGTH_M / 2, abs=0.01)

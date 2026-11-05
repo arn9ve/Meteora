@@ -11,6 +11,15 @@ Like the real drone:
 - with no command for 15 s it lands by itself (the server's `battery?` keeps it up);
 - the battery drains while flying, about 13 minutes from 100 %.
 
+With `drift`, moves and turns come out a little off, as on the real drone: a move travels its
+distance x (1 +- drift), a turn its angle x (1 +- 2/3 drift). Telemetry tells the truth (yaw, h).
+
+Mission pads: after `mon`, while the drone is 0.3-1.2 m above a pad and within 30 cm of its
+centre, telemetry carries `mid` (the pad's number), `x y z` (the drone's position from the pad's
+centre, in cm, in the pad's frame) and `mpry` (its yaw from the pad's, clockwise). The pads are
+assumed to lie with their rocket towards +x, so the pad's frame is the room's. That frame and
+those signs must be checked on a real drone.
+
 Unlike the real drone, a move or turn that would run the drone (plus its margin) into the
 scan is refused: it answers `error blocked: obstacle 15 cm to the right: at most 10 cm` and
 stays put. The real one would hit the wall; the simulator is for finding those blind spots.
@@ -22,6 +31,7 @@ The timings are estimates. Check them against a real Tello before trusting them:
 from __future__ import annotations
 
 import math
+import random
 import time
 from dataclasses import dataclass, replace
 from typing import Callable, Optional, Protocol
@@ -45,6 +55,8 @@ FLIP_MIN_BATTERY = 50
 IDLE_LAND_S = 15.0
 FLIGHT_S = 13 * 60  # from 100 % to empty
 LOW_BATTERY = 5  # it lands by itself below this
+PAD_HEIGHTS = (0.3, 1.2)  # the downward camera finds a pad between these heights above it
+PAD_REACH = 0.3  # ... and this far from its centre
 FLIPS = {"l": "left", "r": "right", "f": "forward", "b": "back"}
 MOVES = ("forward", "back", "left", "right", "up", "down")
 
@@ -86,8 +98,13 @@ def _int_arg(args: list[str], low: int, high: int) -> Optional[int]:
 
 class SimTello:
     def __init__(self, name: str, serial: str, start: Pose, obstacles: ObstacleCheck,
-                 clock: Callable[[], float] = time.monotonic, battery: float = 90.0) -> None:
+                 clock: Callable[[], float] = time.monotonic, battery: float = 90.0, drift: float = 0.0,
+                 seed: Optional[int] = None, mission_pads: Optional[dict] = None) -> None:
         self.name = name
+        self.drift = drift
+        self._rng = random.Random(seed)
+        self.mission_pads = {int(k): tuple(v) for k, v in (mission_pads or {}).items()}
+        self.pads_on = False  # `mon` / `moff`
         self.serial = serial
         self.obstacles = obstacles
         self.clock = clock
@@ -162,6 +179,11 @@ class SimTello:
         if cmd in ("streamon", "streamoff"):
             self.video = cmd == "streamon"
             return "ok"
+        if cmd in ("mon", "moff"):
+            self.pads_on = cmd == "mon"
+            return "ok"
+        if cmd == "mdirection":
+            return "ok" if _int_arg(args, 0, 2) is not None else "error"
         if cmd == "speed":
             value = _int_arg(args, *SPEED_RANGE)
             if value is None:
@@ -229,12 +251,13 @@ class SimTello:
         if cm is None:
             return "error"
         pose = self._pose
-        blocked = self.obstacles.check_move(pose, direction, cm / 100)
+        actual = cm / 100 * (1 + self.drift * self._rng.uniform(-1, 1))
+        blocked = self.obstacles.check_move(pose, direction, actual)
         if blocked:
             return self._blocked(blocked)
         sign = -1 if direction in ("back", "right", "down") else 1
         axis = {"forward": "forward", "back": "forward", "left": "left", "right": "left", "up": "up", "down": "up"}[direction]
-        end = pose.moved(**{axis: sign * cm / 100})
+        end = pose.moved(**{axis: sign * actual})
         self._motion = _Motion("move", pose, end, now, cm / self.speed + SETTLE_S)
         return None
 
@@ -242,7 +265,7 @@ class SimTello:
         deg = _int_arg(args, *TURN_RANGE_DEG)
         if deg is None:
             return "error"
-        turn = -deg if cmd == "cw" else deg  # the world's yaw is counterclockwise
+        turn = (-deg if cmd == "cw" else deg) * (1 + self.drift * 2 / 3 * self._rng.uniform(-1, 1))  # world yaw: counterclockwise
         pose = self._pose
         blocked = self.obstacles.check_turn(pose, turn)
         if blocked:
@@ -300,11 +323,26 @@ class SimTello:
         gap = pose.z - HEIGHT_M / 2 - self.obstacles.ground_below(pose)
         return max(10, round(gap * 100))
 
+    def pad_below(self, pose: Pose) -> Optional[tuple[int, tuple]]:
+        """The mission pad the downward camera sees, if pads are on: (number, its position)."""
+        if not self.pads_on:
+            return None
+        for pid, (px, py, pz) in sorted(self.mission_pads.items()):
+            if PAD_HEIGHTS[0] <= pose.z - pz <= PAD_HEIGHTS[1] and abs(pose.x - px) <= PAD_REACH and abs(pose.y - py) <= PAD_REACH:
+                return pid, (px, py, pz)
+        return None
+
     def state(self, now: Optional[float] = None) -> str:
         """The telemetry datagram, in the Tello EDU's format (yaw is clockwise there)."""
         now = self.clock() if now is None else now
         pose = self.pose_at(now)
         yaw = round((-pose.yaw + 180) % 360 - 180)
-        return (f"mid:-1;x:-100;y:-100;z:-100;mpry:0,0,0;pitch:0;roll:0;yaw:{yaw};vgx:0;vgy:0;vgz:0;"
+        pad = self.pad_below(pose)
+        if pad is None:
+            mission = "mid:-1;x:-100;y:-100;z:-100;mpry:0,0,0;"
+        else:
+            pid, (px, py, pz) = pad
+            mission = f"mid:{pid};x:{round((pose.x - px) * 100)};y:{round((pose.y - py) * 100)};z:{round((pose.z - pz) * 100)};mpry:0,0,{yaw};"
+        return (f"{mission}pitch:0;roll:0;yaw:{yaw};vgx:0;vgy:0;vgz:0;"
                 f"templ:63;temph:65;tof:{self.tof_cm(now)};h:{self.height_cm(now)};bat:{max(0, round(self.battery))};"
                 f"baro:{50 + pose.z:.2f};time:{int(self.flight_time)};agx:0.00;agy:0.00;agz:-1000.00;\r\n")

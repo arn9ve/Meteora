@@ -189,6 +189,8 @@ export class RealTello {
     return null;
   }
 
+  hasPlace(name: string): boolean { return this.#world.place(name.trim().toLowerCase()) !== null; }
+
   /** What the top-down map draws for this drone. */
   map() {
     return this.#world.map();
@@ -667,7 +669,7 @@ export class RealTello {
     // Fly back to a remembered place (home, last_landing, previous, or one saved with mark) or
     // to room coordinates, in straight lines of at most 200 cm, then face the old heading.
     if (value.action === 'go_to') {
-      if (Object.keys(value).some((k) => !['droneId', 'action', 'place', 'x', 'y'].includes(k))) return this.#fail('Unknown argument for go_to');
+      if (Object.keys(value).some((k) => !['droneId', 'action', 'place', 'x', 'y', 'minHeightCm'].includes(k))) return this.#fail('Unknown argument for go_to');
       if (this.#flight !== 'flying') return this.#fail('go_to requires a flying drone: take off first');
       let target: { x: number; y: number; z?: number; heading?: number } | null = null;
       if (typeof value.place === 'string' && value.place.trim()) {
@@ -675,6 +677,14 @@ export class RealTello {
         if (!target) return this.#fail(`No place called ${value.place}. Known places: ${Object.keys(this.#world.memory().places).join(', ') || 'none yet'}`);
       } else if (typeof value.x === 'number' && typeof value.y === 'number') target = { x: value.x, y: value.y };
       else return this.#fail('go_to needs a place or x and y');
+      if (value.minHeightCm !== undefined) {
+        if (typeof value.minHeightCm !== 'number' || !Number.isInteger(value.minHeightCm) || value.minHeightCm < 20 || value.minHeightCm > 250) return this.#fail('minHeightCm must be an integer from 20 to 250');
+        if (this.#world.pose.z < value.minHeightCm) {
+          const climb = await this.#motion('go_to', `up ${Math.max(20, value.minHeightCm - this.#world.pose.z)}`, 20000);
+          if (!climb.ok) return climb;
+        }
+        if (target.z !== undefined && target.z !== 0) target.z = Math.max(target.z, value.minHeightCm);
+      }
       for (let leg = 0; leg < 8; leg += 1) {
         if (generation !== this.#generation) return this.#fail('Cancelled by switch off');
         const v = this.#world.vectorTo(target);

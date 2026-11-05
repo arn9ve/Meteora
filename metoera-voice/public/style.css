@@ -153,3 +153,93 @@
   .room-body .map-svg{height:60svh}
   .calibration{width:100%}
 }
+
+/* ---- Room panel v2: same grey, quiet look as the voice page ---- */
+.caption{font-size:9px;letter-spacing:.1em;color:#999;margin:0;font-weight:400}
+.chip{border:1px solid #e3e3e3;background:#f4f4f3;color:#333;border-radius:16px;padding:6px 12px;font-size:11px;min-height:30px}
+.chip:hover{background:#ebebea}
+.chip.dark{background:#222;border-color:#222;color:#fff}
+.chip.danger{background:#fff;border-color:#e6c4c4;color:#b3261e}
+.chip:disabled{opacity:.4;cursor:default}
+.room-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.room-bar .caption{margin-right:2px}
+.room-hint{font-size:11px;color:#666;flex:1;min-width:120px}
+.room-cursor{font-size:10px;color:#aaa;font-variant-numeric:tabular-nums}
+.room-panel .room-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:12px}
+.map-wrap{position:relative;min-height:0;border:1px solid #ececec;border-radius:18px;background:#fff;overflow:hidden}
+.map-wrap .map-svg{position:absolute;inset:0;width:100%;height:100%;border:0;border-radius:0;margin:0;background:#fff;cursor:grab;touch-action:none;stroke:none;fill:none}
+.map-wrap .map-svg.placing{cursor:crosshair}
+.map-svg text{font-family:Arial,Helvetica,sans-serif;stroke:none}
+.map-svg .grid0{stroke:#f6f6f6}.map-svg .grid1{stroke:#efefef}.map-svg .grid5{stroke:#e2e2e2}
+.map-svg .mezzanine{fill:none;stroke:#d4d4d4}
+.map-svg .wall{stroke:#2a2a2a;stroke-linecap:round}
+.map-svg .obj polygon{fill:#ededec;stroke:#a8a8a8;cursor:move}
+.map-svg .obj text{fill:#666}
+.map-svg .obj.selected polygon{fill:#e2e2e1;stroke:#222}
+.map-svg .zone polygon{fill:#c62828;fill-opacity:.07;stroke:#c62828;stroke-opacity:.7;cursor:move}
+.map-svg .zone.occupied polygon{fill-opacity:.22;stroke-opacity:1}
+.map-svg .zone.selected polygon{stroke-opacity:1;fill-opacity:.12}
+.map-svg .zone text{fill:#b3261e}
+.map-svg .zone-draft{fill:none;stroke:#c62828}
+.map-svg .zone-corner{fill:#fff;stroke:#c62828}
+.map-svg .phone{cursor:move}
+.map-svg .phone .cone{fill:#000;fill-opacity:.035;stroke:#bdbdbd}
+.map-svg .phone.watching .cone{fill-opacity:.06;stroke:#8a8a8a}
+.map-svg .phone .body{fill:#333}
+.map-svg .phone .marker{fill:#fff;stroke:#333}
+.map-svg .phone.off .marker{stroke:#bbb}.map-svg .phone.off .body{fill:#bbb}
+.map-svg .phone .label{fill:#555}.map-svg .phone.off .label{fill:#aaa}
+.map-svg .phone.selected .marker{stroke-width:3}
+.map-svg .person .dot{fill:#111;stroke:#fff}
+.map-svg .person.approx .dot{fill:#fff;stroke:#111}
+.map-svg .person .spread{fill:#000;fill-opacity:.03;stroke:#999}
+.map-svg .drone{cursor:move}
+.map-svg .handle{fill:#fff;stroke:#111;cursor:grab}
+.map-svg .sel-line{stroke:#111;stroke-opacity:.35}
+.map-svg .cal-point{fill:#fff;stroke:#111}
+.map-zoom{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:4px}
+.map-zoom button{width:30px;height:30px;border-radius:50%;border:1px solid #e3e3e3;background:#fff;color:#555;font-size:15px;line-height:1;padding:0}
+.map-zoom button:hover{background:#f2f2f2}
+.map-scale{position:absolute;left:12px;bottom:10px;display:flex;align-items:center;gap:6px;pointer-events:none}
+.map-scale span{display:block;height:5px;border:1.5px solid #666;border-top:0}
+.map-scale small{font-size:10px;color:#666}
+.phone-hover{position:absolute;z-index:3;width:240px;background:#fff;border:1px solid #e6e6e6;border-radius:14px;box-shadow:0 10px 30px #0002;overflow:hidden;pointer-events:none}
+.phone-hover img{display:block;width:100%;background:#111}
+.phone-hover p{margin:0;padding:8px 10px;font-size:11px;color:#555}
+.room-side{min-height:0;overflow:auto;display:flex;flex-direction:column;gap:14px;padding-right:2px}
+.room-list{display:flex;flex-direction:column;gap:12px}
+.room-group{display:flex;flex-direction:column;gap:2px}
+.room-group .caption{margin-bottom:4px}
+.room-row{display:grid;grid-template-columns:10px 1fr;column-gap:8px;align-items:center;text-align:left;border:0;background:transparent;border-radius:10px;padding:7px 8px;color:#222}
+.room-row:hover{background:#f3f3f2}
+.room-row.selected{background:#ececeb}
+.room-row.unplaced .row-name{color:#999}
+.row-dot{grid-row:span 2;width:8px;height:8px;border-radius:50%;background:#ccc}
+.row-dot[data-state=on]{background:#1e8e3e}.row-dot[data-state=off]{background:#ccc}.row-dot[data-state=zone]{background:#c62828;border-radius:2px}
+.row-name{font-size:12px;font-weight:500}
+.row-detail{font-size:10px;color:#999;grid-column:2}
+.row-empty{font-size:11px;color:#bbb;margin:2px 8px}
+.inspector{border-top:1px solid #eee;padding-top:12px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.inspector .note{font-size:11px;line-height:1.45;color:#777;margin:0}
+.inspector .note.muted{color:#aaa}
+.inspector .note.strong{color:#222}
+.inspector .chip{margin-right:4px}
+.field{display:grid;grid-template-columns:76px 1fr 18px;align-items:center;gap:6px;margin:0;width:100%;font-size:11px;color:#777}
+.field input,.field select{width:100%;min-width:0;border:1px solid #e3e3e3;border-radius:8px;padding:6px 8px;font:inherit;font-size:12px;color:#222;background:#fafafa}
+.field small{color:#aaa}
+.phone-live{position:relative;width:100%;aspect-ratio:16/9;background:#111;border-radius:12px;overflow:hidden}
+.phone-live img{display:block;width:100%;height:100%;object-fit:cover}
+.phone-live span{display:none;position:absolute;inset:0;place-items:center;text-align:center;padding:10px;font-size:11px;color:#999}
+.phone-live.off img{display:none}.phone-live.off span{display:grid}
+.ai-line{font-size:12px;color:#222;margin:0;min-height:16px}
+.phone-controls{display:flex;flex-wrap:wrap;gap:4px}
+.calibrate{width:100%;font-size:11px;color:#555}
+.calibrate summary{cursor:pointer;color:#555;margin:4px 0 8px}
+.calibrate > *:not(summary){margin-bottom:6px}
+.calibrate .cal-image{position:relative;width:100%;border-radius:10px;overflow:hidden;background:#111;cursor:crosshair}
+.calibrate .cal-image img{display:block;width:100%}
+.calibrate .cal-image svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;stroke:none}
+.room-foot{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.room-foot .autosend{margin:0;font-size:12px}
+.map-note{font-size:10px;color:#aaa;margin-left:auto}
+@media(max-width:1100px){.room-panel .room-body{grid-template-columns:1fr;grid-template-rows:minmax(320px,60svh) auto}}

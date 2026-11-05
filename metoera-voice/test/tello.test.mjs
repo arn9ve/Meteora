@@ -529,3 +529,16 @@ test('with metric depth, explore uses measured distances and draws walls', async
   // The wall straight ahead at the start is about 300 cm away on the x axis.
   assert.ok(map.obstacles.some((o) => Math.abs(o.x - 300) <= 20 && Math.abs(o.y) <= 20));
 });
+
+test('go_to with minHeightCm climbs first, then flies', async (t) => {
+  const fake = await fakeDrone();
+  const drone = tello(fake);
+  t.after(() => { drone.close(); fake.close(); });
+  await drone.execute({ droneId: 'tello', action: 'takeoff' });
+  const r = await drone.execute({ droneId: 'tello', action: 'go_to', x: 150, y: 0, minHeightCm: 170 });
+  assert.equal(r.ok, true, r.error);
+  const moves = fake.received.filter((c) => c.startsWith('up') || c.startsWith('go ') || c.startsWith('forward'));
+  assert.equal(moves[0], 'up 90');
+  assert.match(moves[1], /^(forward 150|go 150 0 0 \d+)$/); // stays up: no descent back down
+  assert.equal((await drone.execute({ droneId: 'tello', action: 'go_to', x: 0, y: 0, minHeightCm: 999 })).ok, false);
+});

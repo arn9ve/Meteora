@@ -45,3 +45,24 @@ test('a phone placed on the plan but not calibrated still places a person roughl
   const up = estimateFromPose({ x: 1, y: 1, heading: 90 }, { x: 0.45, y: 0.3, w: 0.1, h: 0.4 });
   assert.ok(Math.abs(up[0] - 1) < 0.01 && up[1] > 4, JSON.stringify(up));
 });
+
+test('tables: corners, a stop point next to them, and "go to tavolo 1" with a climb over a taller object', async () => {
+  const { objectCorners, approachPoint, resolveObjectPlace, sanitizeObjects, parseVisionJson } = await import('../src/room.ts');
+  const t = { id: 't1', name: 'table 1', kind: 'table', x: 5, y: 2, w: 2, d: 1, rotation: 0, heightM: 0.75 };
+  const c = objectCorners(t);
+  assert.deepEqual(c.map((p) => p.map((v) => Math.round(v * 100) / 100)), [[4, 1.5], [6, 1.5], [6, 2.5], [4, 2.5]]);
+  const r90 = objectCorners({ ...t, rotation: 90 }).map((p) => p.map((v) => Math.round(v * 100) / 100));
+  assert.deepEqual(r90, [[5.5, 1], [5.5, 3], [4.5, 3], [4.5, 1]]);
+  // From the left: stops 0.6 m before the left edge (x = 4), on the line to the centre.
+  const a = approachPoint(t, [0, 2]);
+  assert.ok(Math.abs(a[0] - 3.4) < 1e-9 && Math.abs(a[1] - 2) < 1e-9, JSON.stringify(a));
+  const shelf = { id: 's', name: 'shelf', kind: 'shelf', x: 2, y: 2, w: 0.5, d: 3, rotation: 0, heightM: 1.2 };
+  const go = resolveObjectPlace([t, shelf], 'Tavolo 1', { x: 0, y: 200 });
+  assert.deepEqual(go, { x: 340, y: 200, minHeightCm: 170 });
+  assert.equal(resolveObjectPlace([t], 'table 9', { x: 0, y: 0 }), null);
+  assert.equal(resolveObjectPlace([t], 'table 1', { x: 0, y: 0 }).minHeightCm, undefined);
+  assert.equal(sanitizeObjects([{ x: 1, y: 1, w: 99, d: 0, rotation: 0, kind: 'sofa' }])[0].w, 30);
+  assert.equal(sanitizeObjects([{ x: 'a' }]).length, 0);
+  assert.deepEqual(parseVisionJson('```json\n{"people": 2, "summary": "two people sitting"}\n```'), { people: 2, summary: 'two people sitting' });
+  assert.equal(parseVisionJson('no idea'), null);
+});

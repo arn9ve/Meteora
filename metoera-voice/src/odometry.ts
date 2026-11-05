@@ -37,10 +37,12 @@ export class Odometry {
   #speed = 0;
   #open: number | null = null;
   #version = 0; // bumps every time the reading changes (the position may jump then)
+  // Photo fixes of this flight, at the sample they happened: kept when the flight is integrated again.
+  #shifts: { at: number; dx: number; dy: number }[] = [];
 
   /** Take-off: the flight starts here (room cm). Forgets the previous flight's samples, not the reading. */
   reset(start: { x: number; y: number }): void {
-    this.#samples = []; this.#moves = []; this.#open = null;
+    this.#samples = []; this.#moves = []; this.#open = null; this.#shifts = [];
     this.#start = { ...start }; this.#pos = { ...start }; this.#flown = 0; this.#speed = 0;
   }
 
@@ -56,7 +58,7 @@ export class Odometry {
   }
 
   /** A photo fix moved the position: the telemetry carries on from there. */
-  shift(dx: number, dy: number): void { this.#pos.x += dx; this.#pos.y += dy; }
+  shift(dx: number, dy: number): void { this.#pos.x += dx; this.#pos.y += dy; this.#shifts.push({ at: this.#samples.length, dx, dy }); }
 
   /** A move command is about to start: returns its handle. */
   beginMove(): number { this.#open = this.#samples.length; return this.#open; }
@@ -152,9 +154,15 @@ export class Odometry {
     // Another reading that explains the moves almost as well: not sure yet, wait for more moves.
     const rival = fits.find((f) => !same(f, best) && f.residual < best.residual + 0.1);
     if (rival && !(this.#fit && same(this.#fit, best))) return;
-    if (!this.#fit || !same(this.#fit, best) || Math.abs(this.#fit.scale - best.scale) / best.scale > 0.02) this.#version += 1;
+    // Only a different reading (or a scale off by more than 10%) moves the position enough for a
+    // route in progress to stop; small scale updates happen after every move.
+    if (!this.#fit || !same(this.#fit, best) || Math.abs(this.#fit.scale - best.scale) / best.scale > 0.1) this.#version += 1;
     this.#fit = best;
     this.#pos = { ...this.#start }; this.#flown = 0;
-    for (let i = 1; i < this.#samples.length; i++) { const [dx, dy] = this.#step(this.#samples[i - 1], this.#samples[i], best, best.scale); this.#pos.x += dx; this.#pos.y += dy; this.#flown += Math.hypot(dx, dy); }
+    for (let i = 1; i < this.#samples.length; i++) {
+      for (const s of this.#shifts) if (s.at === i) { this.#pos.x += s.dx; this.#pos.y += s.dy; }
+      const [dx, dy] = this.#step(this.#samples[i - 1], this.#samples[i], best, best.scale); this.#pos.x += dx; this.#pos.y += dy; this.#flown += Math.hypot(dx, dy);
+    }
+    for (const s of this.#shifts) if (s.at >= this.#samples.length) { this.#pos.x += s.dx; this.#pos.y += s.dy; }
   }
 }

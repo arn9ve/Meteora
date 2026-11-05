@@ -23,7 +23,7 @@ async function drone({ statePort, startSurfaceCm }) {
     const reply = (v) => setTimeout(() => { if (!closed) socket.send(v, peer.port, peer.address); }, 20);
     if (text === 'command') reply('ok'); else if (text === 'sn?') reply(SERIAL); else if (text === 'battery?') reply('90');
     else if (text === 'takeoff') { flying = true; reply('ok'); } else if (text === 'land') { flying = false; reply('ok'); }
-    else if ((m = /^forward (\d+)$/.exec(text))) { forward += Number(m[1]); reply('ok'); } else reply('error');
+    else if ((m = /^forward (\d+)$/.exec(text))) { forward += Number(m[1]); reply('ok'); } else if (text === 'streamon' || text === 'streamoff') reply('ok'); else reply('error');
   });
   await new Promise((resolve) => socket.bind(0, '127.0.0.1', resolve));
   const timer = setInterval(() => {
@@ -68,4 +68,18 @@ test('the plan says floor but it took off from a 70 cm box: the infrared correct
   await d.execute({ droneId: 'tello', action: 'move', direction: 'forward', centimeters: 100 });
   await sleep(900);
   assert.deepEqual(d.snapshot().startSurface, { heightCm: 70, source: 'sensor' });
+});
+
+test('a photo fix that puts the drone over a table while the infrared sees the floor is not believed', async (t) => {
+  const statePort = await freePort();
+  const fake = await drone({ statePort, startSurfaceCm: 0 }); // takes off from the floor: ToF 80 = floor
+  const d = new RealTello({ host: '127.0.0.1', port: fake.port, localPort: 0, statePort, expectedSerial: SERIAL, cameraWarmMs: 0,
+    surfaceAt: (x) => (x > 200 ? 75 : 0), localize: async () => ({ ok: true, x: 300, y: 0, seen: ['t1'], residualCm: 0, note: '' }) });
+  t.after(() => { d.close(); fake.close(); });
+  await d.execute({ droneId: 'tello', action: 'takeoff' });
+  await sleep(300);
+  const r = await d.execute({ droneId: 'tello', action: 'localize' });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /infrared sees the floor/);
+  assert.equal(d.map().pose.x, 0);
 });

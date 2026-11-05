@@ -1121,6 +1121,16 @@ export class RealTello {
     const dx = r.x - p.x, dy = r.y - p.y, shift = Math.round(Math.hypot(dx, dy));
     this.#flightLog?.({ event: 'fix', ok: true, from: p, to: { x: r.x, y: r.y }, shift, seen: r.seen, residualCm: r.residualCm, note: r.note });
     if (shift > 300) return this.#fail(`The photo puts the drone ${(shift / 100).toFixed(1)} m from where it thinks it is: not believed, position unchanged (${r.note})`);
+    // The infrared knows what is under the drone now (floor or a table top): the new spot must agree.
+    const h = this.#heightCm, tof = this.#tof;
+    const planned = this.#surfaceAt?.(r.x, r.y);
+    if (h !== null && tof !== null && h >= 30 && typeof planned === 'number') {
+      const measured = this.#base.heightCm + h - tof;
+      if (Math.abs(measured - planned) > 35) {
+        this.#flightLog?.({ event: 'fix-rejected', why: 'infrared', measuredSurfaceCm: measured, plannedSurfaceCm: planned, to: { x: r.x, y: r.y } });
+        return this.#fail(`The photo puts the drone over ${planned ? `a ${planned} cm table` : 'the floor'}, but the infrared sees ${measured > 35 ? 'a table' : 'the floor'} below it: not believed, position unchanged`);
+      }
+    }
     this.#world.setXY(r.x, r.y);
     this.#odo.shift(dx, dy);
     this.#needFix = false;

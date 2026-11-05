@@ -119,3 +119,31 @@ test('a real flight: the drone is tracked from its telemetry, take-off slide inc
   assert.ok(saved && saved.frame === 'body', JSON.stringify(saved));
   assert.ok(log.some((e) => e.event === 'takeoff') && log.filter((e) => e.event === 'sample').length > 20 && log.some((e) => e.event === 'calibrated'));
 });
+
+test('a photo fix survives when the flight is integrated again with a new reading (5 Nov bug)', () => {
+  const odo = new Odometry();
+  odo.fit = { version: 2, frame: 'body', yawSign: 1, mirror: 1, flip: 1, scale: 10, residual: 0 };
+  odo.reset({ x: 0, y: 0 });
+  let t = 0; const add = (vgx, vgy, n) => { for (let i = 0; i < n; i++) odo.add({ t: (t += 100), yaw: 0, heading: 0, vgx, vgy, vgz: 0 }); };
+  add(0, 0, 1);
+  let h = odo.beginMove(); add(5, 0, 20); odo.endMove(h, 100, 0);   // forward 100
+  odo.shift(0, 140);                                                // the photo says: 140 cm further left
+  h = odo.beginMove(); add(0, 5, 20); odo.endMove(h, 0, -100);       // right 100: two directions, recalibrates
+  const p = odo.position;
+  assert.ok(Math.abs(p.x - 100) < 3 && Math.abs(p.y - 40) < 3, JSON.stringify(p)); // 140 - 100, not -100
+});
+
+test('small scale updates do not count as a new reading; a different reading does', () => {
+  const odo = new Odometry();
+  const v0 = odo.version;
+  const raw = (f, r) => ({ vgx: Math.round(f / 10), vgy: Math.round(r / 10), vgz: 0 });
+  odo.reset({ x: 0, y: 0 });
+  let t = 0; const hold = (n, f, r) => { for (let i = 0; i < n; i++) odo.add({ t: (t += 100), yaw: -36, heading: 90, ...raw(f, r) }); };
+  hold(1, 0, 0);
+  let h = odo.beginMove(); hold(20, 50, 0); odo.endMove(h, 0, 100);
+  h = odo.beginMove(); hold(20, 0, 50); odo.endMove(h, 100, 0);
+  const v1 = odo.version;
+  assert.equal(v1, v0 + 1);
+  h = odo.beginMove(); hold(20, 52, 0); odo.endMove(h, 0, 100);    // 4% longer: same reading
+  assert.equal(odo.version, v1);
+});

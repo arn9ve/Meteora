@@ -1,38 +1,82 @@
 <p align="center"><img src="docs/assets/logo.svg" alt="Metoera" width="320"></p>
 
-Metoera flies two real drones indoors: **Black** (a Tello EDU) and **Red** (a RoboMaster TT). You fly them by voice through Grok realtime. Phones act as person detectors: each one watches a red zone drawn on a 3D/2D plan of the venue. When a phone sees a person in a red zone, the nearest drone takes off by itself and plans a route around tables and pillars. It flies into the zone, looks left, ahead and right, and Grok reports what it sees. Then Grok asks you what to do next.
+<p align="center"><b>Indoor security drones you talk to.</b><br>Phones spot a person in a red zone, the nearest drone flies there by itself, looks around and tells you what it sees.</p>
 
-Every command moves a physical drone. There is no simulator.
+Metoera turns off-the-shelf hardware into a security patrol for a venue: two small drones (a Tello EDU called **Black** and a RoboMaster TT called **Red**), the phones you already have as cameras, one laptop, and Grok as the voice you talk to. Nothing to install on the phones: they open a link.
 
-The venue is the **Capannone Gragnani** (`metoera-voice/room/capannone-gragnani.json`): a hall about 22.8 m long with four pillars and a 4.3 m ceiling.
+Every command moves a real drone. The demo GIFs below say when the drones in them are simulated.
 
-How the pieces talk to each other (ports, protocols, the zone mission step by step, coordinate frames, safety layers): [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+## See it
 
-## Demo
+### 1. A phone spots a person
 
-![Metoera: Grok on the left, the 3D room, the drones and the active phones and zones on the right](docs/media/overview.png)
+Any phone becomes a person detector by opening a link. When it sees someone inside a red zone, the zone turns red on the plan and the alarm starts. *(Real recording.)*
 
-These recordings come from the real app; the drones and phones in them are simulated, so the screens can be shown without hardware. Flights with the real drones are in the videos below.
+<p align="center"><img src="docs/media/person-detect.gif" alt="A phone detects a person in Zone 1" width="560"></p>
 
-The 3D room with the drones, the phones and the red zones ([MP4](docs/media/room-3d.mp4)):
+### 2. The nearest drone goes by itself
+
+The alarm sends the nearest free drone. It takes off, plans a route around tables and pillars, flies into the zone, looks left, ahead and right, and Grok says what it saw, then asks what to do next. *(Simulated drones, real app, 2× speed; [MP4](docs/media/zone-mission.mp4).)*
+
+![The nearest drone flies into Zone 1 and reports](docs/media/zone-mission.gif)
+
+### 3. Talk to the drones
+
+Grok realtime is the pilot: ask in plain English (or Italian) and it calls the right drone actions. The dots turn red while it listens and speaks. *(Real recording.)*
+
+<p align="center"><img src="docs/media/voice-panel.gif" alt="Asking Grok where both drones are" width="300"></p>
+
+Both drones at once, each with its own task, from one sentence. *(Simulated drones, real app, 2× speed; [MP4](docs/media/voice-two-drones.mp4).)*
+
+![Black to table 1, Red to table 5, at the same time](docs/media/voice-two-drones.gif)
+
+### 4. The venue in 3D
+
+The room at real size: walls, pillars, tables, the phones at their real height with what they see, the drones and the red zones. Click any tag to control it. *([MP4](docs/media/room-3d.mp4).)*
 
 ![The 3D room with drones, phones and red zones](docs/media/room-3d.gif)
 
-Drawing a red zone on the plan:
+Drawing a red zone takes four clicks:
 
 ![Drawing a red zone on the plan](docs/media/red-zones.gif)
 
-Phones as person detectors: phone 1 sees a person, Zone 1 turns red in the 3D view, and the Phones tab shows each phone's camera, lens, sensitivity and whether it sends a drone:
+Each phone's camera, lens, sensitivity and whether it may send a drone, in one place:
 
 ![Phones as person detectors](docs/media/phones.gif)
 
-The two drones, Black and Red:
+Flight videos with the real drones: [docs/media/videos/](docs/media/videos/).
 
-![The two drones](docs/media/drones.png)
+## Why it is ready for a real venue
 
-Flight videos: see [docs/media/videos/](docs/media/videos/).
+- **Cheap, standard hardware.** Programmable drones that cost a few hundred euros, any phone with a browser, one laptop. No custom electronics.
+- **Nothing to install on phones.** A phone joins by opening a link on the venue Wi-Fi.
+- **Set up in minutes.** One script puts each drone on the Wi-Fi, one command starts everything, zones are drawn on the plan with the mouse.
+- **Safe by design.** One Emergency land button, a single pilot per drone, the drone comes home or lands if the Wi-Fi drops, and limits enforced on the server, not left to the AI.
+- **Grows with the venue.** More phones, more zones, more drones on the same plan; several laptops can share the drones.
 
-## Features
+## Set up a venue
+
+1. **Drones on the Wi-Fi** (once per drone): `cd metoera-share-wifi/drone && python set_sta_mode.py`, then `python find_tello.py` to get its IP.
+2. **Keys and drones:** in `metoera-voice/`, copy `.env.example` to `.env` and add your xAI key; copy `.env.tello.example` to `.env.tello` and add each drone's IP and serial.
+3. **Start everything:**
+
+   ```sh
+   ./scripts/start.sh
+   ```
+
+   It starts the camera service, the phone detectors and the main app, and prints the links. Ctrl+C stops everything (flying drones land first).
+4. **Open** `http://localhost:18787`, type your name, and open the phone links (Phones tab) on the phones you want to use as cameras.
+5. **Draw** the red zones, place the phones and the drones on the plan (Room → Settings). Done.
+
+Requirements: macOS, Node.js 24.12 or later, Python 3.13 (for the camera service), an xAI API key, a 2.4 GHz Wi-Fi. Ports, every option, the first-time install of the camera service and the venue checklist are in **[docs/SETUP.md](docs/SETUP.md)**. How the parts talk to each other: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+## The floor plan
+
+Today the plan of the venue (the Capannone Gragnani, 22.8 m with four pillars and a 4.3 m ceiling) is made for this venue: walls and pillars come from its architectural drawing, tables are placed and measured on the page ([room/capannone-gragnani.json](metoera-voice/room/capannone-gragnani.json)).
+
+**Next:** scan the room with a LiDAR phone (any recent iPhone Pro or iPad Pro). A small companion app walks the room once and generates the plan on the spot: walls, pillars and tables at real size, ready to import. A new venue would then be ready in the time it takes to walk through it.
+
+## What it does
 
 **Person detector and red zones (the core).**
 - Up to three phones run person detection in the browser (TensorFlow.js COCO-SSD). Each phone is placed on the room plan, with the direction it faces, and watches one red zone.
@@ -100,177 +144,6 @@ The drone hovers until you answer. If the voice session is not running, the page
 | [metoera-link](metoera-link) | Small scripts to check the link with one drone and whether this computer has internet | Node.js |
 | [metoera-share-wifi](metoera-share-wifi) | Scripts that put a drone on the shared Wi-Fi (station mode) and find its IP | Python |
 
-## Quick start
-
-### Requirements
-
-- macOS. Start the servers from the macOS Terminal app, which has Local Network access.
-- Node.js 24.12 or later for `metoera-voice` (it runs `server.ts` directly). Node.js 20 is enough for `metoera-redzone` and `metoera-link`.
-- Python 3.13 for `metoera-vision`, Python 3 for `metoera-share-wifi`.
-- An xAI API key.
-- A 2.4 GHz WPA2-Personal Wi-Fi network for the drones, the laptop and the phones. The network name and password must not contain spaces.
-
-### Ports
-
-| Port | Protocol | Service | Who connects |
-| --- | --- | --- | --- |
-| 8889 / 8890 | UDP | drones | `metoera-voice` sends commands to 8889 and gets telemetry on 8890 |
-| 11111 | UDP | `metoera-vision` | the drones send video here |
-| 18786 | HTTP | `metoera-voice` | certificate page, opened once per phone |
-| 18787 | HTTP | `metoera-voice` | control page, this laptop only |
-| 18788 | HTTPS | `metoera-voice` | pilot page on a phone (needs the access key) |
-| 18789 | UDP | `metoera-voice` | the other laptops (who holds which drone) |
-| 18790 | HTTP | `metoera-vision` | `metoera-voice`, this laptop only |
-| 18791 | HTTP | `metoera-redzone` | Mac console and `metoera-voice` |
-| 18792 | HTTPS | `metoera-redzone` | detector phones (need the access key) |
-
-### 1. Put the drones on the shared Wi-Fi
-
-Do this once per drone, or again after a reset. The full steps are in [metoera-share-wifi](metoera-share-wifi).
-
-1. Turn on a drone. On the RoboMaster TT, set the expansion board switch to router mode.
-2. Join the laptop to the drone's own access point (`TELLO-XXXXXX` or `RMTT-XXXXXX`). The drone is at `192.168.10.1`.
-3. Create the Python environment and send the command:
-
-   ```sh
-   cd metoera-share-wifi/drone
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   cp .env.example .env
-   python set_sta_mode.py
-   ```
-
-   The script asks for the network name and password, shows them, and sends `ap` after you type `y`. The drone restarts on the shared network. Wait 30 to 60 seconds.
-4. Join the laptop to the same Wi-Fi and run `python find_tello.py`. If it finds nothing, set `LOCAL_SUBNET` in `.env` (for example `192.168.5.0/24`) and try again.
-5. Write down the IP. Repeat for the other drone, leaving the first one on.
-
-To get the drone's own access point back, turn it on and hold the power button for 5 seconds, until the light flashes yellow.
-
-A VPN that routes `192.168.10.1` blocks the link. If the firewall asks, allow incoming UDP on 8890 and 11111.
-
-Quick link check (nothing takes off):
-
-```sh
-node metoera-link/connect.mjs --host <drone IP> --local <laptop IP>
-node metoera-link/internet.mjs
-```
-
-### 2. metoera-voice
-
-```sh
-cd metoera-voice
-cp .env.example .env              # then add the xAI key
-cp .env.tello.example .env.tello  # then the IP and serial of each drone
-npm install
-npm start
-```
-
-`npm install` only downloads TypeScript and the Node types, for `npm run typecheck`. The server runs without a build.
-
-On start, the server prints:
-
-- `http://localhost:18787`: the control page, on this laptop only.
-- `https://<laptop IP>:18788/?key=<key>`: the same page for a phone on the same Wi-Fi. The key is in `metoera-voice/.phone/key.txt`. Do not share it.
-- `http://<laptop IP>:18786/`: the certificate page. Open it once on each phone, download `metoera-ca.cer` and install it. On iPhone, also turn it on in Settings → General → About → Certificate Trust Settings.
-
-Close the scripts in `metoera-voice/tools/` first: the server needs UDP 8889, 8890 and 18789. Ctrl+C lands the drones that are flying and hands them over to the other laptops.
-
-Details: [metoera-voice/README.md](metoera-voice/README.md). Notes on the Tello link: [metoera-voice/TELLO.md](metoera-voice/TELLO.md).
-
-### 3. metoera-vision
-
-```sh
-cd metoera-vision
-python3.13 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python -m metoera_vision --drones tello=<TELLO_IP>,rmtt=<RMTT_IP>
-```
-
-Use the same IPs as in `.env.tello`. The service sends nothing to the drones. It only listens for video on UDP 11111 and separates the two streams by sender address. Video arrives after `metoera-voice` has sent `streamon`.
-
-The YOLO weights (`yolo11n.pt`) download on first start. The depth model (Depth Anything V2 Metric Indoor, from Hugging Face) loads in the background at start; `--no-depth` turns it off. Annotated view of one drone: `http://127.0.0.1:18790/stream?drone=tello`.
-
-### 4. metoera-redzone
-
-```sh
-cd metoera-redzone
-npm start
-```
-
-There are no dependencies to install. The server prints the Mac console (`http://127.0.0.1:18791/console`) and one link per phone: `https://<laptop IP>:18792/?key=<key>&slot=1` (also `slot=2` and `slot=3`). The key is in `metoera-redzone/.phone/key.txt`. The certificate is self-signed, so accept it on the phone the first time.
-
-### 5. Environment variables
-
-The values live in `metoera-voice/.env`, `metoera-voice/.env.tello` and `metoera-redzone/.env`. All three are git-ignored. The examples are `.env.example` and `.env.tello.example`. Only the names are listed here; never write values into tracked files.
-
-**metoera-voice, `.env`**
-
-| Variable | Use |
-| --- | --- |
-| `XAI_API_KEY` | xAI key (required) |
-| `DECISION_MODE` | `0` turns off Grok decisions during missions (on by default) |
-| `DECISION_MODEL`, `VISION_LLM_MODEL` | Grok models for decisions and for vision |
-| `CAMERA_ALWAYS_ON` | `1` keeps the video on all the time. By default it turns on only when needed, to save battery |
-| `VISION_URL` | address of `metoera-vision` (default `http://127.0.0.1:18790`) |
-| `REDZONE_URL`, `REDZONE_PHONE_PORT` | address of `metoera-redzone`, and the port of its phones |
-| `ROOM_PLAN` | another room plan (default `room/capannone-gragnani.json`) |
-| `PHONE_ACCESS`, `PHONE_PORT`, `PHONE_CERT_PORT` | `PHONE_ACCESS=off` turns off phone access; the other two change ports 18788 and 18786 |
-| `PAD_HOP_MAX_CM` | longest hop between mission pads |
-
-**metoera-voice, `.env.tello`**
-
-| Variable | Use |
-| --- | --- |
-| `TELLO_IP`, `TELLO_SETUP_SERIAL` | IP and serial of Black (the serial as the drone reports it with `sn?`) |
-| `RMTT_IP`, `RMTT_SETUP_SERIAL` | IP and serial of Red |
-| `TELLO_SETUP_SSID`, `TELLO_SETUP_PASSWORD` | the shared network, for the setup scripts |
-| `TELLO_MAX_MOVE_CM` | longest single move (default 100) |
-| `TELLO_START`, `RMTT_START` | start point `x,y,heading` when the drone is not placed on the plan |
-| `METOERA_CLIENT_NAME`, `METOERA_PEERS`, `METOERA_CLAIMS_PORT` | several laptops: the name the others see, direct IPs when the Wi-Fi blocks broadcasts, the announcement port |
-
-**metoera-redzone, `.env`**
-
-| Variable | Use |
-| --- | --- |
-| `REDZONE_ARM_DEFAULT` | `0` starts the phones disarmed (armed by default) |
-| `PAD_NAV` | `1` turns the old pad-to-pad mission back on (off by default) |
-| `REDZONE_PORT`, `REDZONE_PHONE_PORT` | ports 18791 and 18792 |
-| `METOERA_VOICE_URL` | address of `metoera-voice` (default `http://127.0.0.1:18787`) |
-| `REDZONE_WEBHOOK_URL`, `REDZONE_DEBOUNCE_MS` | optional webhook, and the shortest time between two alarms of one phone |
-| `PAD_NAV_EXECUTE_PATH`, `PAD_NAV_DIRECT` | only for testing the pad mission |
-| `PHONE_ACCESS` | `off` turns off phone access |
-
-`metoera-vision` takes the same options on the command line or as `METOERA_VISION_*` variables (port, model, device, fps, depth model). See its README.
-
-### 6. Local files (git-ignored)
-
-These files stay on the laptop and are never committed:
-
-| File | Contents |
-| --- | --- |
-| `metoera-voice/.env`, `metoera-voice/.env.tello` | xAI key, drone IPs and serials |
-| `metoera-voice/.phone/`, `metoera-redzone/.phone/` | phone access key and certificates. Delete the folder to make a new key |
-| `metoera-voice/.room.json` | where the drones, phones, tables and red zones are, as set on the page |
-| `metoera-voice/.redzone-zones.json` | red zones (ignored for safety; the current zones are in `.room.json`) |
-| `metoera-voice/.odometry.json` | telemetry calibration learned in flight |
-| `metoera-voice/photos/` | photos taken by voice |
-| `metoera-voice/flights/` | flight logs and calibration reports |
-| `metoera-redzone/.env`, `metoera-redzone/data/` | redzone settings and its local event log |
-
-## How to use it in the venue
-
-1. **Network.** Drones on the shared Wi-Fi; laptop and phones on the same network. Each drone needs at least 20% battery; takeoff is refused below that.
-2. **Start.** Three terminals:
-   - `metoera-vision`: `.venv/bin/python -m metoera_vision --drones tello=<TELLO_IP>,rmtt=<RMTT_IP>`
-   - `metoera-redzone`: `npm start`
-   - `metoera-voice`: `npm start`
-3. **Page.** Open `http://localhost:18787`, type your name and start the voice. The pilot of a drone is whoever takes off with it. On the pilot's phone, use the `https://<IP>:18788/?key=<key>` link the server printed.
-4. **Detector phones.** The Phones tab lists the `https://<IP>:18792/?key=<key>&slot=N` links. Open them on the phones and put the phones in place. On the plan, mark where each phone stands, where it faces and which zone it watches, or calibrate it with 4 clicks on the plan.
-5. **Drones on the plan.** In the Room tab, put each drone on its start point and confirm which way its camera faces. Without this, the drone refuses to fly to a point in the room.
-6. **Calibration.** On the first flight in the venue, run the calibration test from a table, then measure where the drone landed and type it in. Run the preflight before a mission.
-7. **Red zones.** Draw the zones on the plan. With auto-send on (the default), a person seen in a zone sends the nearest drone, which flies in, looks around and reports.
-
 ## Tests
 
 No test flies a drone.
@@ -306,4 +179,3 @@ The full list of safety layers is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md
 - **RoboMaster TT link not fully checked.** Some Tello link behaviour was confirmed only on the Tello EDU. See [metoera-voice/TELLO.md](metoera-voice/TELLO.md).
 - **COCO classes only.** YOLO and COCO-SSD know 80 everyday classes, and nothing is tracked across frames.
 - **Two-drone handover.** Nobody has checked yet whether a stray `command` from a second laptop takes a drone's telemetry and video away from the first one. See TELLO.md.
-- **The interface is being redesigned.** The page has three tabs, **Room**, **Drones** and **Phones**, with the 3D map in front and one **Emergency land** button. This README does not describe each control.

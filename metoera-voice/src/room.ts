@@ -8,7 +8,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 export type Point = [number, number];
 export type Plan = { units: 'm'; walls: { a: Point; b: Point }[]; above?: { solid: string; min: Point; max: Point; z_m: number }[]; bounds: { min: Point; max: Point } };
 export type Pose = { x: number; y: number; heading: number };
-export type CameraConfig = { x?: number; y?: number; heading?: number; img?: Point[]; plan?: Point[]; h?: number[] | null };
+export type CameraConfig = { x?: number; y?: number; heading?: number; z?: number; tilt?: number; img?: Point[]; plan?: Point[]; h?: number[] | null };
 export type Zone = { id: string; name: string; points: Point[] };
 export type RoomObject = { id: string; name: string; kind: 'table' | 'shelf' | 'wall' | 'obstacle' | 'other'; x: number; y: number; w: number; d: number; rotation: number; heightM?: number };
 export type RoomConfig = { drones: Record<string, Pose>; cameras: Record<string, CameraConfig>; zones: Zone[]; objects: RoomObject[] };
@@ -179,4 +179,28 @@ export function parseVisionJson(answer: string | null): { people: number; summar
     if (people === null) return null;
     return { people, summary: typeof v.summary === 'string' ? v.summary.trim().slice(0, 160) : '' };
   } catch { return null; }
+}
+
+/**
+ * Where a person's feet are on the floor, seen by a phone mounted `z` metres above the floor and
+ * tilted `tilt` degrees down: the ray from the phone through the feet in the picture, down to the
+ * floor. Much better than the size estimate once the height and tilt are right. Returns null when
+ * the feet are at or above the horizon (no floor hit) or farther than 25 m.
+ */
+export function floorFromMount(cam: { x: number; y: number; heading: number; z: number; tilt: number }, box: { x: number; y: number; w: number; h: number }, lens = 'normal', aspect = 9 / 16): Point | null {
+  if (!(cam.z > 0)) return null;
+  const hfov = (LENS_FOV[lens] ?? LENS_FOV.normal) * Math.PI / 180;
+  const vfov = 2 * Math.atan(Math.tan(hfov / 2) * aspect);
+  const [u, v] = feet(box);
+  const a = (u - 0.5) * 2 * Math.tan(hfov / 2), b = (v - 0.5) * 2 * Math.tan(vfov / 2);
+  const h = cam.heading * Math.PI / 180, t = cam.tilt * Math.PI / 180;
+  const F = [Math.cos(h), Math.sin(h), 0], Rt = [Math.sin(h), -Math.cos(h), 0];
+  // Camera axes: forward pitched down by the tilt; "down" in the picture is perpendicular to it.
+  const f = [F[0] * Math.cos(t), F[1] * Math.cos(t), -Math.sin(t)];
+  const down = [-F[0] * Math.sin(t), -F[1] * Math.sin(t), -Math.cos(t)];
+  const ray = [0, 1, 2].map((i) => f[i] + a * Rt[i] + b * down[i]);
+  if (ray[2] >= -1e-6) return null;
+  const s = cam.z / -ray[2];
+  const p: Point = [cam.x + ray[0] * s, cam.y + ray[1] * s];
+  return Math.hypot(p[0] - cam.x, p[1] - cam.y) > 25 ? null : p;
 }

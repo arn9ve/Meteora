@@ -243,3 +243,9 @@
 .room-foot .autosend{margin:0;font-size:12px}
 .map-note{font-size:10px;color:#aaa;margin-left:auto}
 @media(max-width:1100px){.room-panel .room-body{grid-template-columns:1fr;grid-template-rows:minmax(320px,60svh) auto}}
+.seg{display:flex;border:1px solid #e3e3e3;border-radius:16px;overflow:hidden;margin-left:4px}
+.seg button{border:0;background:#f4f4f3;color:#777;font-size:11px;padding:6px 12px;min-height:30px}
+.seg button.active{background:#222;color:#fff}
+.map3d{position:absolute;inset:0}
+.map3d canvas{display:block}
+.map-wrap.is3d .map-zoom,.map-wrap.is3d .map-scale{display:none}

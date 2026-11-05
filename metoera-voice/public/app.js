@@ -742,7 +742,7 @@ try { new ResizeObserver(()=>{ if(view) viewTouched?applyView():fitView(); }).ob
 
 // ---- saving ----
 async function saveDrone(id){ const d=R().drones[id]; const j=await post('/api/room/drone',{id,x:d.x,y:d.y,heading:d.heading}); if(!j.ok) hint(j.error||'Could not place the drone'); await refreshRoom(); }
-async function savePhone(slot){ const c=R().cameras[slot]; const j=await post('/api/room/camera',{slot,x:c.x,y:c.y,heading:c.heading}); if(!j.ok) hint(j.error||'Could not place the phone'); await refreshRoom(); }
+async function savePhone(slot){ const c=R().cameras[slot]; const j=await post('/api/room/camera',{slot,x:c.x,y:c.y,heading:c.heading,...(Number.isFinite(c.z)?{z:c.z}:{}),...(Number.isFinite(c.tilt)?{tilt:c.tilt}:{})}); if(!j.ok) hint(j.error||'Could not place the phone'); await refreshRoom(); }
 async function saveZones(){ const j=await post('/api/room/zones',{zones:R().zones}); if(!j.ok) hint(j.error||'Could not save the zones'); await refreshRoom(); }
 async function saveObjects(){ const j=await post('/api/room/objects',{objects:R().objects}); if(!j.ok) hint(j.error||'Could not save the tables'); await refreshRoom(); }
 async function removeFromPlan(kind,id){
@@ -871,6 +871,8 @@ function phoneInspector(box,slot){
   else {
     const set=k=>v=>{ if(Number.isFinite(v)){ c[k]=v; void savePhone(slot); } };
     box.append(field('Position x',c.x,set('x')),field('Position y',c.y,set('y')),field('Looks at',c.heading,set('heading'),{step:5,suffix:'°'}),
+      field('Height',c.z,set('z'),{step:0.05,suffix:'m'}),field('Tilt down',c.tilt,set('tilt'),{step:1,suffix:'°'}),
+      para('Height = from the floor to the phone. Tilt down = 0° looking level, 90° looking straight at the floor. With both set, people are placed where the line from the phone through their feet meets the floor.'),
       para(c.calibrated?'Calibrated: people are placed exactly where their feet touch the floor.':'People are placed from where they are in the picture and how tall they look (about ±1 m at 5 m). For exact spots, calibrate below.'),
       btn('Remove from the plan',()=>void removeFromPlan('phone',slot),'danger'));
     const det=document.createElement('details'); det.className='calibrate';
@@ -1093,13 +1095,27 @@ function draw(){
   }
 }
 
+// 3D: the same room at real height, to see where the phones are above the floor. Editing stays in
+// the list and inspector (and in 2D); the 3D view follows every change.
+let view3d=null;
+async function setView3d(on){
+  $('#view2d').classList.toggle('active',!on); $('#view3d').classList.toggle('active',on);
+  $('#view2d').setAttribute('aria-pressed',String(!on)); $('#view3d').setAttribute('aria-pressed',String(on));
+  $('#map3d').hidden=!on; mapSvg.style.visibility=on?'hidden':''; $('#mapWrap').classList.toggle('is3d',on);
+  if(on&&!view3d){ try { const m=await import('/room3d.js'); view3d=m.mount($('#map3d')); update3d(); } catch(e){ hint('3D view unavailable in this browser'); $('#map3d').hidden=true; mapSvg.style.visibility=''; } }
+  if(!on&&view3d){ view3d.dispose(); view3d=null; }
+}
+function update3d(){ view3d?.update({plan:roomData?.plan,room:R(),live:mapLive,slots:redzone?.slots||[],drones}); }
+$('#view2d').addEventListener?.('click',()=>void setView3d(false));
+$('#view3d').addEventListener?.('click',()=>void setView3d(true));
+
 async function renderMap(){
   if(!roomData){ await loadRoom(); }
   if(!view&&roomData) fitView();
   try { const r=await fetch('/api/map',{cache:'no-store'}); const data=await r.json(); if(r.ok&&Array.isArray(data.drones)) mapLive=data; } catch {}
   // Keep local edits while dragging; otherwise take the server's room (another page may edit it too).
   if(!drag&&!mode) { try { const r=await fetch('/api/room',{cache:'no-store'}); if(r.ok){ const fresh=await r.json(); fresh.room.objects??=[]; roomData=fresh; } } catch {} }
-  renderSide(); scheduleDraw();
+  renderSide(); scheduleDraw(); update3d();
   const people=mapLive?.people?.length||0;
   $('#mapNote').textContent=`${people?`${people} ${people===1?'person':'people'} seen by the phones · `:''}grid 1 m · scroll to zoom`;
 }

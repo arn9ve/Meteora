@@ -9,7 +9,7 @@ import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { RealTello, type Detections, type DepthView } from './src/tello.ts';
-import { loadPlan, loadConfig, saveConfig, estimateFromPose, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, type Point, type RoomConfig } from './src/room.ts';
+import { loadPlan, loadConfig, saveConfig, estimateFromPose, floorFromMount, homography, calibrationError, project, inside, feet, sanitizeObjects, resolveObjectPlace, parseVisionJson, type Point, type RoomConfig } from './src/room.ts';
 import { Claims, CLAIMS_PORT, describeElsewhere, parsePeers, udpTransport } from './src/claims.ts';
 import { Pilots, TAKEOFF } from './src/pilots.ts';
 
@@ -190,7 +190,7 @@ function droneViews() {
   }
   return views;
 }
-const files: Record<string, string> = {'/':'index.html','/app.js':'app.js','/style.css':'style.css'};
+const files: Record<string, string> = {'/':'index.html','/app.js':'app.js','/style.css':'style.css','/room3d.js':'room3d.js','/vendor/three.module.min.js':'vendor/three.module.min.js','/vendor/OrbitControls.js':'vendor/OrbitControls.js'};
 const types: Record<string, string> = {'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8'};
 const allowedOrigins = new Set([`http://localhost:${port}`, `http://127.0.0.1:${port}`]);
 
@@ -310,7 +310,8 @@ async function pollRedzone() {
     if (!cam.h && !placed) continue;
     for (const box of slot.people ?? []) {
       const [u, v] = feet(box);
-      const p = cam.h ? project(cam.h, u, v) : estimateFromPose({x:cam.x!, y:cam.y!, heading:cam.heading!}, box, slot.lens);
+      const mounted = placed && typeof cam.z === 'number' && cam.z > 0 && typeof cam.tilt === 'number';
+      const p = cam.h ? project(cam.h, u, v) : (mounted ? floorFromMount({x:cam.x!, y:cam.y!, heading:cam.heading!, z:cam.z!, tilt:cam.tilt!}, box, slot.lens) : null) ?? estimateFromPose({x:cam.x!, y:cam.y!, heading:cam.heading!}, box, slot.lens);
       if (p && plan && p[0] > plan.bounds.min[0] - 2 && p[0] < plan.bounds.max[0] + 2 && p[1] > plan.bounds.min[1] - 2 && p[1] < plan.bounds.max[1] + 2) {
         people.push({slot:slot.id, x:Math.round(p[0] * 100) / 100, y:Math.round(p[1] * 100) / 100, score:box.score, ...(cam.h ? {} : {approx:true})});
       }
@@ -547,13 +548,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
     }
     if (path === '/api/room/camera') {
       try {
-        const body = await readJson(req) as {slot?: unknown; x?: unknown; y?: unknown; heading?: unknown; img?: unknown; plan?: unknown; clear?: unknown; remove?: unknown};
+        const body = await readJson(req) as {slot?: unknown; x?: unknown; y?: unknown; heading?: unknown; img?: unknown; plan?: unknown; clear?: unknown; remove?: unknown; z?: unknown; tilt?: unknown};
         const slot = String(body?.slot ?? '');
         if (!/^[123]$/.test(slot)) { json(res, 400, {ok:false, error:'slot must be 1, 2 or 3'}); return; }
         if (body.remove === true) { delete room.cameras[slot]; await saveConfig(roomPath, room); json(res, 200, {ok:true}); return; }
         const cam = room.cameras[slot] ?? {};
         if (typeof body.x === 'number' && typeof body.y === 'number') { cam.x = body.x; cam.y = body.y; }
         if (typeof body.heading === 'number') cam.heading = body.heading;
+        // Height above the floor (m) and tilt down from level (degrees) of a phone on a stand or wall.
+        if (typeof body.z === 'number' && Number.isFinite(body.z)) cam.z = Math.min(6, Math.max(0, Math.round(body.z * 100) / 100));
+        if (typeof body.tilt === 'number' && Number.isFinite(body.tilt)) cam.tilt = Math.min(90, Math.max(-30, Math.round(body.tilt)));
         if (body.clear === true) { delete cam.img; delete cam.plan; cam.h = null; }
         const pts = (v: unknown) => Array.isArray(v) && v.every((p) => Array.isArray(p) && p.length === 2 && p.every((n) => typeof n === 'number' && Number.isFinite(n))) ? v as Point[] : null;
         const img = pts(body.img), planPts = pts(body.plan);

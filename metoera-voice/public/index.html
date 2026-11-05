@@ -34,6 +34,7 @@
       <button class="chip" id="addZone" title="Draw a red zone: click its corners on the plan">Red zone</button>
       <span id="roomHint" class="room-hint" role="status"></span>
       <span id="roomCursor" class="room-cursor" aria-hidden="true"></span>
+      <div class="seg" role="group" aria-label="View"><button id="view2d" class="active" aria-pressed="true">2D</button><button id="view3d" aria-pressed="false">3D</button></div>
     </div>
     <div class="room-body">
       <div class="map-wrap" id="mapWrap">
@@ -41,6 +42,7 @@
         <div class="map-zoom"><button id="zoomIn" aria-label="Zoom in">+</button><button id="zoomOut" aria-label="Zoom out">−</button><button id="zoomFit" aria-label="Fit the room">⤢</button></div>
         <div class="map-scale" aria-hidden="true"><span id="scaleBar"></span><small id="scaleText">1 m</small></div>
         <div id="phoneHover" class="phone-hover" hidden><img alt=""><p></p></div>
+        <div id="map3d" class="map3d" hidden></div>
       </div>
       <aside class="room-side">
         <div id="roomList" class="room-list"></div>

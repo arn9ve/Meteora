@@ -66,3 +66,18 @@ test('tables: corners, a stop point next to them, and "go to tavolo 1" with a cl
   assert.deepEqual(parseVisionJson('```json\n{"people": 2, "summary": "two people sitting"}\n```'), { people: 2, summary: 'two people sitting' });
   assert.equal(parseVisionJson('no idea'), null);
 });
+
+test('a phone 2 m up, tilted 45° down: feet at the picture centre are 2 m ahead on the floor', async () => {
+  const { floorFromMount } = await import('../src/room.ts');
+  const cam = { x: 1, y: 1, heading: 0, z: 2, tilt: 45 };
+  const centre = floorFromMount(cam, { x: 0.45, y: 0.3, w: 0.1, h: 0.2 });
+  assert.ok(Math.abs(centre[0] - 3) < 1e-9 && Math.abs(centre[1] - 1) < 1e-9, JSON.stringify(centre));
+  // Lower in the picture = nearer; right in the picture = to the right of the heading (y down).
+  const near = floorFromMount(cam, { x: 0.45, y: 0.5, w: 0.1, h: 0.3 });
+  assert.ok(near[0] < 3 && near[0] > 1, JSON.stringify(near));
+  const right = floorFromMount(cam, { x: 0.8, y: 0.3, w: 0.1, h: 0.2 });
+  assert.ok(right[1] < 1, JSON.stringify(right));
+  // Looking up at the horizon: no floor hit.
+  assert.equal(floorFromMount({ ...cam, tilt: 0 }, { x: 0.45, y: 0.1, w: 0.1, h: 0.3 }), null);
+  assert.equal(floorFromMount({ ...cam, z: 0 }, { x: 0.45, y: 0.3, w: 0.1, h: 0.2 }), null);
+});

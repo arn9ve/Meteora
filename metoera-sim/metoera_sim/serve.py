@@ -1,7 +1,13 @@
 """Simulated Tellos on UDP, for metoera-voice and metoera-vision to use instead of real drones.
 
+    python -m metoera_sim.serve venue                       # the event venue, from the floor plan
     python -m metoera_sim.serve scenes/practice             # both drones, in an aligned scan
     python -m metoera_sim.serve synthetic --drones tello    # the install check's synthetic room
+
+In the venue (venue.py) the drones start where they are placed on the voice page's Room panel
+(or TELLO_START / RMTT_START in sim.env), the Room panel's tables are furniture, and changes made
+there are followed while the simulator runs: furniture is rebuilt, a landed drone moved on the
+plan is carried there.
 
 Each drone listens on this computer only (127.0.0.1):
 
@@ -17,9 +23,10 @@ by address only. sim.env sets the voice server to match.
 Then, in two more terminals:
 
     metoera-voice:   node --env-file=../metoera-sim/sim.env server.ts
-    metoera-vision:  python -m metoera_vision --drones tello=127.0.0.1:50001,rmtt=127.0.0.1:50002
+    metoera-vision:  python -m metoera_vision --port 18800 --drones tello=127.0.0.1:50001,rmtt=127.0.0.1:50002
 
-tello starts on the takeoff pad facing +x; rmtt on pad B (from scene.json), or 1 m to the left.
+In a scan, tello starts on the takeoff pad facing +x; rmtt on pad B (from scene.json), or 1 m to
+the left.
 
 Moves drift by 3 % (--drift), as a real Tello's do, and the drones see the mission pads marked
 in the viewer (after `mon`), so the voice server's position tracking can be tried here.
@@ -57,6 +64,7 @@ VIDEO_PORT = 11111
 STATE_HZ = 10
 SYNTHETIC_PADS = {"b": (2.0, -1.0)}  # the magenta pad of check.synthetic_room()
 LOG_HZ = 5
+ROOM_CHECK_S = 1.0  # how often the venue looks for changes made on the Room panel
 RUNS = Path(__file__).resolve().parent.parent / "runs"
 
 
@@ -180,25 +188,93 @@ class Drone:
                 pass  # receiver busy or not there yet: drop, like a lossy Wi-Fi link
 
 
-def load(scene_arg: str, max_gaussians: Optional[int]):
-    """(splats in the world frame, alignment pads {name: (x, y)}, mission pads {number: (x, y, z)})."""
+@dataclass
+class World:
+    """What the drones fly in: splats, mission pads {number: (x, y, z)}, and where each drone
+    starts {name: (x, y, z of the body centre, heading)}."""
+
+    splats: object
+    mission_pads: dict
+    starts: dict
+    room_mtime: Optional[float] = None  # the venue: .room.json's time when it was read
+
+
+def load(scene_arg: str, max_gaussians: Optional[int], margin: float) -> World:
+    if scene_arg == "venue":
+        return load_venue()
     if scene_arg == "synthetic":
         from .check import synthetic_room
         from .room import SYNTHETIC_PADS as MISSION_PADS
 
-        return synthetic_room(posters=True), dict(SYNTHETIC_PADS), dict(MISSION_PADS)
-    from .scene import load_scene
+        splats, pads, mission = synthetic_room(posters=True), dict(SYNTHETIC_PADS), dict(MISSION_PADS)
+    else:
+        from .scene import load_scene
 
-    scene = load_scene(scene_arg, max_gaussians=max_gaussians)
-    if "origin" not in scene.meta.get("aligned", []):
-        print(f"warning: {scene_arg} is not aligned yet (no takeoff pad): run the viewer and save with p first")
-    pads = {k: (float(v[0]), float(v[1])) for k, v in scene.meta.get("pads", {}).items()}
-    return scene.splats, pads, scene.meta.get("mission_pads", {})
+        scene = load_scene(scene_arg, max_gaussians=max_gaussians)
+        if "origin" not in scene.meta.get("aligned", []):
+            print(f"warning: {scene_arg} is not aligned yet (no takeoff pad): run the viewer and save with p first")
+        pads = {k: (float(v[0]), float(v[1])) for k, v in scene.meta.get("pads", {}).items()}
+        splats, mission = scene.splats, scene.meta.get("mission_pads", {})
+    # tello on the takeoff pad facing +x; rmtt on pad B, or 1 m to the left.
+    obstacles = Obstacles(splats, margin=margin)
+    starts = {}
+    for name, (x, y) in (("tello", (0.0, 0.0)), ("rmtt", pads.get("b", (0.0, 1.0)))):
+        starts[name] = (x, y, obstacles.ground_below(Pose(x, y, 0.5)) + LANDED_Z, 0.0)
+    return World(splats, mission, starts)
+
+
+def load_venue(pads: Optional[dict] = None) -> World:
+    """The Capannone Gragnani from metoera-voice's floor plan, with the furniture, drone spots
+    and phones of the voice server's .room.json (see venue.py). The mission pads: `pads`, or
+    pad 1 under Black's spot and pad 2 two metres ahead of it."""
+    from . import venue
+
+    path = venue.data_dir() / ".room.json"
+    config = venue.room_config()
+    objects = config.get("objects", [])
+    spots = venue.start_spots(config)
+    pads = pads if pads is not None else venue.default_pads(spots, objects)
+    starts = {name: (x, y, venue.surface_height(objects, x, y) + LANDED_Z, heading) for name, (x, y, heading) in spots.items()}
+    return World(venue.build(venue.load_plan(), objects, pads), pads, starts, path.stat().st_mtime)
+
+
+def venue_changed(world: World) -> Optional[World]:
+    """The venue again if the Room panel changed .room.json since it was read, else None."""
+    from . import venue
+
+    try:
+        mtime = (venue.data_dir() / ".room.json").stat().st_mtime
+    except OSError:
+        return None
+    if world.room_mtime is None or mtime == world.room_mtime:
+        return None
+    try:
+        return load_venue(world.mission_pads)  # the pads stay where they lie
+    except (OSError, ValueError, KeyError) as e:
+        print(f"venue: cannot read the Room panel's changes ({e}); keeping the old room")
+        world.room_mtime = mtime
+        return None
+
+
+def follow_room(world: World, drones: list[Drone], margin: float):
+    """The Room panel changed .room.json (the venue was rebuilt with its furniture): carry a
+    landed drone to the spot it was moved to on the plan, as a person would."""
+    obstacles = Obstacles(world.splats, margin=margin)
+    for d in drones:
+        d.sim.obstacles = obstacles
+        x, y, z, heading = world.starts[d.name]
+        p = d.sim.pose
+        if not d.sim.flying and not d.sim.busy and (abs(p.x - x) > 0.02 or abs(p.y - y) > 0.02 or abs(p.yaw - heading) > 1):
+            d.sim.carry(Pose(x, y, z, heading))
+            log(d.name, f"carried to ({x:+.2f}, {y:+.2f}), facing {heading:.0f} deg (moved on the Room panel)")
+            d.flight_log.write(d.name, "event", text=f"carried to {x:.2f},{y:.2f} facing {heading:.0f}")
+    log("room", f"venue rebuilt from the Room panel: {len(world.splats):,} Gaussians")
+    return world, world.splats, obstacles
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Simulated Tellos on UDP, flying in a scanned room.")
-    p.add_argument("scene", help='scene folder (aligned with the viewer), or "synthetic"')
+    p.add_argument("scene", help='"venue" (the event venue), a scene folder (aligned with the viewer), or "synthetic"')
     p.add_argument("--drones", default="tello,rmtt", help="which drones: tello, rmtt or both (default)")
     p.add_argument("--margin", type=float, default=MARGIN_M, help="metres kept clear around the body (default 0.05)")
     p.add_argument("--battery", type=float, default=90.0, help="starting battery, percent")
@@ -209,6 +285,8 @@ def main(argv=None) -> int:
     p.add_argument("--verbose", action="store_true", help="also log the `battery?` keep-alives")
     p.add_argument("--drift", type=float, default=0.03, help="how far moves come out off, as a fraction (default 0.03)")
     p.add_argument("--seed", type=int, default=None, help="repeatable drift")
+    p.add_argument("--imu-errors", type=float, default=0.0,
+                   help="chance that a move answers `error No valid imu` (default 0; half of those move anyway)")
     p.add_argument("--no-log", action="store_true", help="no flight log in runs/")
     a = p.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)  # the log shows up at once, even in a file
@@ -221,7 +299,8 @@ def main(argv=None) -> int:
     from .render import Renderer
 
     t0 = time.perf_counter()
-    splats, pads, mission_pads = load(a.scene, a.max_gaussians)
+    world = load(a.scene, a.max_gaussians, a.margin)
+    splats, mission_pads = world.splats, world.mission_pads
     flight_log = FlightLog(None if a.no_log else RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}.jsonl")
     obstacles = Obstacles(splats, margin=a.margin)
     renderer = Renderer()
@@ -231,10 +310,10 @@ def main(argv=None) -> int:
     drones: list[Drone] = []
     for i, name in enumerate(names):
         spec = DRONES[name]
-        x, y = (0.0, 0.0) if name == "tello" else pads.get("b", (0.0, 1.0))
-        ground = obstacles.ground_below(Pose(x, y, 0.5))
-        sim = SimTello(name, spec["serial"], Pose(x, y, ground + LANDED_Z, 0.0), obstacles, battery=a.battery,
-                       drift=a.drift, seed=None if a.seed is None else a.seed + i, mission_pads=mission_pads)
+        x, y, z, heading = world.starts[name]
+        sim = SimTello(name, spec["serial"], Pose(x, y, z, heading), obstacles, battery=a.battery,
+                       drift=a.drift, seed=None if a.seed is None else a.seed + i, mission_pads=mission_pads,
+                       imu_errors=a.imu_errors)
         try:
             drone = Drone(name, sim, spec["state_port"], a.reply_port, _udp(a.bind, spec["command_port"]),
                           _udp(a.bind, spec["video_port"]), _udp(a.bind, 0), verbose=a.verbose, flight_log=flight_log)
@@ -242,16 +321,19 @@ def main(argv=None) -> int:
             print(f"{name}: cannot open its UDP ports ({e}); is another simulator running?")
             return 1
         drones.append(drone)
-        print(f"  {name:5} at ({x:+.2f}, {y:+.2f}) m: commands on {a.bind}:{spec['command_port']} (replies to :{a.reply_port}), "
+        print(f"  {name:5} at ({x:+.2f}, {y:+.2f}) m, {z - LANDED_Z:.2f} m up, facing {heading:.0f} deg: "
+              f"commands on {a.bind}:{spec['command_port']} (replies to :{a.reply_port}), "
               f"telemetry to :{spec['state_port']}, video from :{spec['video_port']} to :{VIDEO_PORT}, serial {spec['serial']}")
     print(f"  moves drift {a.drift:.0%}; mission pads {', '.join(sorted(map(str, mission_pads))) or 'none (mark them in the viewer: m)'}"
           + (f"; flight log {flight_log.path}" if flight_log.path else ""))
     vision = ",".join(f"{d.name}=127.0.0.1:{DRONES[d.name]['video_port']}" for d in drones)
     print("Then:\n  metoera-voice:   node --env-file=../metoera-sim/sim.env server.ts   (page: http://localhost:18797)\n"
-          f"  metoera-vision:  python -m metoera_vision --drones {vision}\nCtrl+C stops.")
+          f"  metoera-vision:  python -m metoera_vision --port 18800 --drones {vision}\nCtrl+C stops.")
+    if world.room_mtime is not None:
+        print("The Room panel's tables, drone spots and phones are followed while this runs.")
 
     frame_period, state_period, log_period = 1.0 / FPS, 1.0 / STATE_HZ, 1.0 / LOG_HZ
-    next_frame = next_state = next_log = time.monotonic()
+    next_frame = next_state = next_log = next_room = time.monotonic()
     sockets = [d.commands for d in drones]
     try:
         while True:
@@ -271,6 +353,11 @@ def main(argv=None) -> int:
                 for d in drones:
                     d.log_state(obstacles)
                 next_log = max(next_log + log_period, now)
+            if now >= next_room:
+                changed = venue_changed(world)
+                if changed:
+                    world, splats, obstacles = follow_room(changed, drones, a.margin)
+                next_room = now + ROOM_CHECK_S
             if now >= next_frame:
                 for d in drones:
                     d.send_frame(renderer, splats)

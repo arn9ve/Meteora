@@ -370,6 +370,14 @@ class SimTello:
         self._motion = _Motion("flip", self._pose, self._pose, now, FLIP_S)
         return None
 
+    def carry(self, pose: Pose) -> bool:
+        """Picked up on the ground and put down at `pose`, as a person would. The IMU keeps its
+        yaw 0 (it was not switched off), so the telemetry yaw shows the new heading."""
+        if self.flying or self.busy:
+            return False
+        self._pose = pose
+        return True
+
     # ---- time passing
     def step(self, now: Optional[float] = None) -> list[str]:
         """Advance to `now`; the replies of motions that just ended."""

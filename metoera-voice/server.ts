@@ -127,6 +127,7 @@ async function askDecision(prompt: string): Promise<string | null> {
 }
 // The last decision of each drone, for the live map.
 const decisionsLive = new Map<string, {step: number; action: string; reason: string; by: string; overruled: string | null; ms: number; at: number}>();
+const planLive = new Map<string, {text: string; at: number}>();
 // Calibration tests: the latest report of each drone (also saved in flights/), and its progress live.
 const calibrations = new Map<string, CalibrationReport>();
 const calibrationRunning = new Map<string, string[]>();
@@ -151,10 +152,12 @@ async function decidedGoTo(id: string, drone: RealTello, body: Record<string, un
   const map = drone.map() as {places: Record<string, {x: number; y: number}>};
   const name = typeof routed.place === 'string' ? routed.place.trim().toLowerCase() : null;
   const to = name ? map.places[name] : typeof routed.x === 'number' && typeof routed.y === 'number' ? {x:routed.x, y:routed.y} : null;
-  if (!to || !plan) return drone.execute(routed);
-  const result = await missionGoTo(id, drone, {x:to.x, y:to.y, name:typeof body.place === 'string' ? body.place : `(${to.x}, ${to.y})`, ...(typeof routed.pad === 'number' ? {pad:routed.pad} : {}), ...(typeof routed.minHeightCm === 'number' ? {minHeightCm:routed.minHeightCm} : {})}, {
+  const {face, label: placeLabel, centre: _centre, ...plainRouted} = routed as Record<string, unknown>;
+  if (!to || !plan) return drone.execute(plainRouted);
+  const result = await missionGoTo(id, drone, {x:to.x, y:to.y, name:typeof placeLabel === 'string' ? placeLabel : typeof body.place === 'string' ? body.place : `(${to.x}, ${to.y})`, ...(typeof routed.pad === 'number' ? {pad:routed.pad} : {}), ...(typeof routed.minHeightCm === 'number' ? {minHeightCm:routed.minHeightCm} : {}), ...(face ? {face:face as {x: number; y: number}} : {})}, {
     plan, objects:room.objects, people:() => redzone.people, decide:process.env.XAI_API_KEY ? askDecision : null,
     log:(event) => flightLog(id, event),
+    onPlan:(text) => { planLive.set(id, {text, at:Date.now()}); console.log(`${new Date().toLocaleTimeString()} ${label(id)} · plan: ${text}`); },
     onStep:(info) => { decisionsLive.set(id, {...info, at:Date.now()}); console.log(`${new Date().toLocaleTimeString()} ${label(id)} · step ${info.step}: ${info.action} (${info.by}${info.overruled ? `, overruled: ${info.overruled}` : ''}) ${info.reason} ${info.ms} ms`); },
   });
   return {mode:'real', ...result, drone:drone.snapshot()};
@@ -490,8 +493,20 @@ function routeGoTo(drone: RealTello, body: Record<string, unknown>): Record<stri
   let command: Record<string, unknown> = body;
   const map = drone.map() as {pose: {x: number; y: number}; places: Record<string, {x: number; y: number}>};
   if (typeof body.place === 'string' && !drone.hasPlace(body.place)) {
-    const target = resolveObjectPlace(room.objects, body.place, map.pose);
-    if (target) { const {place: _place, ...rest} = body; command = {...rest, ...target}; }
+    // "centre of table 3", "sopra il tavolo 3", or centre: true: over the middle of the table, not next to it.
+    const centreWords = /\b(centre|center|centro|middle|sopra|above|over)\b(\s+(of|del|della|il|la))*\s*/gi;
+    const wantsCentre = body.centre === true || centreWords.test(body.place);
+    const placeName = body.place.replace(centreWords, '').trim();
+    const target = resolveObjectPlace(room.objects, placeName, map.pose);
+    const object = room.objects.find((o) => o.name.toLowerCase() === placeName.toLowerCase().replace(/^tavolo\s+(\d+)$/, 'table $1') || o.id.toLowerCase() === placeName.toLowerCase());
+    if (target && object) {
+      const {place: _place, centre: _centre, ...rest} = body;
+      command = wantsCentre && !target.pad
+        ? {...rest, x:Math.round(object.x * 100), y:Math.round(object.y * 100), minHeightCm:Math.min(250, Math.round((object.heightM ?? 0.75) * 100) + 50)}
+        : {...rest, ...target};
+      command.face = {x:Math.round(object.x * 100), y:Math.round(object.y * 100)};
+      command.label = `${wantsCentre ? 'the centre of ' : ''}${object.name}`;
+    }
   }
   if (!plan) return command;
   const name = typeof command.place === 'string' ? command.place.trim().toLowerCase() : null;
@@ -620,7 +635,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
   // The drones live, 10 times a second, for the map (server-sent events).
   if (req.method === 'GET' && path === '/api/live') {
     res.writeHead(200, {'Content-Type':'text/event-stream', 'Cache-Control':'no-store', Connection:'keep-alive'});
-    const send = () => res.write(`data: ${JSON.stringify({t:Date.now(), drones:[...drones].filter(([id]) => refusal(id) === null).map(([id, d]) => { const l = d.live(); return {...l, decision:decisionsLive.get(id) ?? null, where:plan ? describePlace(room.objects, plan.pillars ?? [], l.pose.x, l.pose.y) : null}; })})}\n\n`);
+    const send = () => res.write(`data: ${JSON.stringify({t:Date.now(), drones:[...drones].filter(([id]) => refusal(id) === null).map(([id, d]) => { const l = d.live(); return {...l, decision:decisionsLive.get(id) ?? null, plan:planLive.get(id) ?? null, where:plan ? describePlace(room.objects, plan.pillars ?? [], l.pose.x, l.pose.y) : null}; })})}\n\n`);
     send();
     const timer = setInterval(send, 100);
     req.on('close', () => clearInterval(timer));
@@ -904,7 +919,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, remot
               else {
                 const command = action === 'go_to' ? routeGoTo(drone, body) : body;
                 if ('error' in command) timed(res, 200, {ok:false, mode:'real', error:command.error});
-                else timed(res, 200, await drone.execute(command));
+                else { const {face: _face, label: _label, centre: _centre, ...plain} = command as Record<string, unknown>; timed(res, 200, await drone.execute(plain)); }
               }
             }
           } finally {
@@ -978,14 +993,16 @@ for (const [id, drone] of drones) {
 // has been gone for 15 s while it flies is landed by the server (retried every 5 s), because
 // nobody else may land it.
 const goneLanding = new Map<string, number>();
+const goneTries = new Map<string, number>();
 setInterval(() => {
   for (const [id, drone] of drones) {
     const {flight} = drone.snapshot();
-    if (pilots.settle(id, flight, drone.busy)) { goneLanding.delete(id); continue; }
+    if (pilots.settle(id, flight, drone.busy)) { goneLanding.delete(id); goneTries.delete(id); continue; }
     if (flight !== 'flying' || !pilots.absent(id) || refusal(id) !== null) continue;
-    if (Date.now() - (goneLanding.get(id) ?? 0) < 5000) continue;
-    goneLanding.set(id, Date.now());
-    console.log(`${pilots.pilotOf(id)} is gone: landing ${label(id)}`);
+    const tries = goneTries.get(id) ?? 0;
+    if (Date.now() - (goneLanding.get(id) ?? 0) < (tries >= 3 ? 60000 : 5000)) continue;
+    goneLanding.set(id, Date.now()); goneTries.set(id, tries + 1);
+    console.log(tries < 3 ? `${pilots.pilotOf(id)} is gone: landing ${label(id)}` : `${label(id)}: still not landed after ${tries} tries (${drone.live().connected ? 'it does not answer the land command' : 'no link to it'}); trying again every minute`);
     void drone.forceLand();
   }
   lockChanged(); // telemetry also moves the lock (h above 20 cm: flying; on the ground for 2 s: landed)

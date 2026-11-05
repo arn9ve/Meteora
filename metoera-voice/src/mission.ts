@@ -22,6 +22,8 @@ export type MissionDeps = {
   decide: ((prompt: string) => Promise<string | null>) | null;
   log?: (event: Record<string, unknown>) => void;
   onStep?: (info: { step: number; action: string; reason: string; by: 'model' | 'rules' | 'timeout'; overruled: string | null; ms: number }) => void;
+  /** The plan, worked out before anything moves (to be said to the person). */
+  onPlan?: (text: string) => void;
   timeoutMs?: number;
   hoverMs?: number;
   maxSteps?: number;
@@ -37,15 +39,20 @@ function segPointDist(p: Point, a: Point, b: Point): number {
 }
 
 /** Flies `droneId` to `target` (room cm). Ends when there, landed, stopped from outside, or out of steps. */
-export async function missionGoTo(droneId: string, drone: MissionDrone, target: { x: number; y: number; name: string; pad?: number; minHeightCm?: number }, deps: MissionDeps): Promise<Result> {
+export async function missionGoTo(droneId: string, drone: MissionDrone, target: { x: number; y: number; name: string; pad?: number; minHeightCm?: number; face?: { x: number; y: number } }, deps: MissionDeps): Promise<Result> {
   const maxSteps = deps.maxSteps ?? 30, timeoutMs = deps.timeoutMs ?? 1500;
   if (!drone.live().flying) return { ok: false, error: 'Take off first' };
   const generation = drone.generation;
   const lastSteps: DecisionState['lastSteps'] = [];
-  let safe: Point | null = null, checked = false, stuck = 0;
+  let safe: Point | null = null, checked = false, stuck = 0, photoFails = 0;
   const choices: string[] = [];
+  // Think first: where the target is from here, how far, which way to turn, over what.
+  const plan = planText(drone.live().pose, target, deps);
+  deps.onPlan?.(plan);
+  deps.log?.({ event: 'mission', target, plan });
   for (let step = 1; step <= maxSteps; step += 1) {
     if (drone.generation !== generation) return { ok: false, error: 'Mission stopped (stop, land or emergency)', steps: step - 1, choices };
+    if (!drone.live().flying) return { ok: false, error: 'The drone landed: mission over', steps: step - 1, choices };
     const live = drone.live(), at: Point = [live.pose.x / 100, live.pose.y / 100];
     const remainingCm = Math.round(Math.hypot(target.x - live.pose.x, target.y - live.pose.y));
     // Tables are obstacles only when the drone flies lower than 50 cm above them; pillars and walls always.
@@ -86,6 +93,8 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
       if (answer === 'timeout') { by = 'timeout'; choice = { action: 'hover' }; reason = `no answer in ${timeoutMs} ms`; }
       else { const parsed = parseChoice(answer); if (parsed) { by = 'model'; choice = parsed.choice; reason = parsed.reason; } }
     }
+    // Photos that keep failing here are not worth more tries in this mission.
+    if (choice.action === 'localize' && photoFails >= 2) { choice = state.nextLegCm >= 20 ? { action: 'continue' } : { action: 'hover' }; reason = 'photos are not helping here'; }
     const checkedChoice = checkChoice(choice, state);
     const ms = Date.now() - t0;
     const c = checkedChoice.choice;
@@ -96,15 +105,26 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
     if (drone.generation !== generation) return { ok: false, error: 'Mission stopped (stop, land or emergency)', steps: step, choices };
     let r: Result;
     switch (c.action) {
-      case 'done': return { ok: true, action: 'go_to', reached: true, remainingCm, steps: step, choices, checkedWithPhoto: checked };
+      case 'done': {
+        // Arrived: face what we came to (a table), so the camera looks at it.
+        if (target.face) { const turn = turnTo(live.pose, target.face); if (Math.abs(turn) >= 20) await drone.execute({ droneId, action: 'rotate', direction: turn > 0 ? 'counterclockwise' : 'clockwise', degrees: Math.min(180, Math.abs(turn)) }); }
+        return { ok: true, action: 'go_to', reached: true, remainingCm, steps: step, choices, checkedWithPhoto: checked, plan };
+      }
       case 'land': r = await drone.forceLand(); return { ...r, action: 'go_to', reached: false, landed: true, steps: step, choices };
       case 'hover': await sleep(deps.hoverMs ?? 1000); r = { ok: true }; break;
-      case 'localize': r = await drone.execute({ droneId, action: 'localize' }); if (r.ok) checked = true; break;
+      case 'localize': r = await drone.execute({ droneId, action: 'localize' }); if (r.ok) checked = true; else photoFails += 1; break;
       case 'climb': r = await drone.execute({ droneId, action: 'move', direction: 'up', centimeters: c.cm }); break;
       case 'descend': r = await drone.execute({ droneId, action: 'move', direction: 'down', centimeters: c.cm }); break;
       case 'turn': r = await drone.execute({ droneId, action: 'rotate', direction: c.deg > 0 ? 'clockwise' : 'counterclockwise', degrees: Math.abs(c.deg) }); break;
       case 'back': r = safe ? await drone.execute({ droneId, action: 'go_to', x: Math.round(safe[0] * 100), y: Math.round(safe[1] * 100), check: false }) : { ok: false, error: 'no safe point' }; break;
-      case 'continue': r = legEnd ? await drone.execute({ droneId, action: 'go_to', x: Math.round(legEnd[0] * 100), y: Math.round(legEnd[1] * 100), check: false }) : { ok: true }; break;
+      case 'continue': {
+        if (!legEnd) { r = { ok: true }; break; }
+        // Face the way it is going first: the camera then sees what is ahead.
+        const turn = turnTo(live.pose, { x: legEnd[0] * 100, y: legEnd[1] * 100 });
+        if (Math.abs(turn) >= 20) { const t = await drone.execute({ droneId, action: 'rotate', direction: turn > 0 ? 'counterclockwise' : 'clockwise', degrees: Math.min(180, Math.abs(turn)) }); if (!t.ok) { r = t; break; } }
+        r = await drone.execute({ droneId, action: 'go_to', x: Math.round(legEnd[0] * 100), y: Math.round(legEnd[1] * 100), check: false });
+        break;
+      }
     }
     // A move that did not move the drone is not progress: three in a row and the mission stops.
     const after = drone.live().pose;
@@ -123,4 +143,25 @@ export async function missionGoTo(droneId: string, drone: MissionDrone, target: 
 /** The objects a drone at `zFloorCm` above the floor must fly around: those within 50 cm of its height. */
 export function blockingAt(objects: RoomObject[], zFloorCm: number): RoomObject[] {
   return objects.filter((o) => Math.round((o.heightM ?? (o.kind === 'table' ? 0.75 : 2)) * 100) + 50 > zFloorCm);
+}
+
+/** Degrees to turn (+ = counterclockwise) to face a point from a pose (room cm, heading in degrees). */
+export function turnTo(pose: { x: number; y: number; heading: number }, to: { x: number; y: number }): number {
+  const bearing = Math.atan2(to.y - pose.y, to.x - pose.x) * 180 / Math.PI;
+  let t = (bearing - pose.heading) % 360;
+  if (t > 180) t -= 360;
+  if (t <= -180) t += 360;
+  return Math.round(t);
+}
+
+/** The plan in words, before moving: distance, which way, the turn, what it flies over. */
+export function planText(pose: { x: number; y: number; heading: number; zFloor: number }, target: { x: number; y: number; name: string; pad?: number }, deps: Pick<MissionDeps, 'plan' | 'objects'>): string {
+  const d = Math.hypot(target.x - pose.x, target.y - pose.y) / 100;
+  const turn = turnTo(pose, target);
+  const side = Math.abs(turn) < 20 ? 'straight ahead' : Math.abs(turn) > 160 ? 'behind it' : `${turn > 0 ? 'to its left' : 'to its right'} (${Math.abs(turn)}°)`;
+  const route = planRoute(deps.plan, blockingAt(deps.objects, pose.zFloor), [pose.x / 100, pose.y / 100], [target.x / 100, target.y / 100]);
+  if (!route) return `${target.name} is ${d.toFixed(1)} m away, ${side}, but there is no safe way from here.`;
+  const over = deps.objects.filter((o) => !blockingAt([o], pose.zFloor).length && [[pose.x / 100, pose.y / 100], ...route].some((p, i, all) => i > 0 && segPointDist([o.x, o.y], all[i - 1] as Point, p as Point) < Math.max(o.w, o.d) / 2)).map((o) => o.name);
+  const legs = route.length;
+  return `${target.name} is ${d.toFixed(1)} m away, ${side}. ${Math.abs(turn) >= 20 ? `Turning ${Math.abs(turn)}° ${turn > 0 ? 'left' : 'right'}, then` : 'Then'} ${legs > 1 ? `${legs} straight legs around the pillars` : 'one straight line'}${over.length ? `, over ${over.join(' and ')}` : ''}${target.pad ? `, and centring on pad ${target.pad}` : ''}.`;
 }

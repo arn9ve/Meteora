@@ -112,3 +112,37 @@ test('where the drone is, in words', async () => {
   assert.equal(describePlace(tables, pillars, 272, -108), 'next to table 3 (59 cm from its edge)');
   assert.match(describePlace(tables, pillars, 900, 300), /m from /);
 });
+
+import { planText, turnTo } from '../src/mission.ts';
+
+test('the plan, worked out before moving, in words', () => {
+  assert.equal(turnTo({ x: 0, y: 0, heading: 90 }, { x: 100, y: 0 }), -90); // target on the right: turn right
+  const t1 = { id: 't1', name: 'table 1', kind: 'table', x: 2, y: 3, w: 1.8, d: 1.8, rotation: 0, heightM: 0.75 };
+  const text = planText({ x: 100, y: 300, heading: 90, zFloor: 155 }, { x: 400, y: 300, name: 'table 3' }, { plan, objects: [t1] });
+  assert.equal(text, 'table 3 is 3.0 m away, to its right (90°). Turning 90° right, then one straight line, over table 1.');
+});
+
+test('it turns to face each leg before flying it, and faces the table on arrival', async () => {
+  const { d, sent, pose } = fakeDrone({ startX: 100, startY: 300 });
+  pose.heading = 90;
+  d.execute = ((orig) => async (c) => { if (c.action === 'rotate') pose.heading += c.direction === 'counterclockwise' ? c.degrees : -c.degrees; return orig(c); })(d.execute);
+  const plans = [];
+  const r = await missionGoTo('tello', d, { x: 400, y: 300, name: 'table 3', face: { x: 500, y: 200 } }, { plan, objects: [], people: () => [], decide: null, hoverMs: 1, onPlan: (p) => plans.push(p) });
+  assert.equal(r.ok, true, r.error);
+  assert.deepEqual(sent.slice(0, 2).map((c) => c.action === 'rotate' ? `rotate ${c.direction} ${c.degrees}` : c.action), ['rotate clockwise 90', 'go_to']);
+  assert.equal(sent.at(-1).action, 'rotate'); // faces table 3 at the end
+  assert.equal(plans.length, 1);
+});
+
+test('photos that keep failing are not asked for again; a landed drone ends the mission', async () => {
+  const { d, sent } = fakeDrone({ startX: 100, startY: 300 });
+  d.live = ((orig) => () => ({ ...orig(), source: 'commands' }))(d.live);
+  d.execute = ((orig) => async (c) => (c.action === 'localize' ? { ok: false, error: 'no landmarks' } : orig(c)))(d.execute);
+  const r = await missionGoTo('tello', d, { x: 400, y: 300, name: 'x' }, { plan, objects: [], people: () => [], decide: async () => '{"action":"localize","reason":"doubt"}', hoverMs: 1 });
+  assert.equal(r.ok, true, r.error);
+  assert.ok(sent.filter((c) => c.action === 'localize').length <= 2, JSON.stringify(sent.map((c) => c.action)));
+  const landed = fakeDrone({ startX: 100, startY: 300 });
+  let n = 0; landed.d.live = ((orig) => () => ({ ...orig(), flying: ++n < 3 }))(landed.d.live);
+  const r2 = await missionGoTo('tello', landed.d, { x: 900, y: 300, name: 'x' }, { plan, objects: [], people: () => [], decide: null, hoverMs: 1 });
+  assert.match(r2.error, /landed/);
+});

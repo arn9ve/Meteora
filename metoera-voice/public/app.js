@@ -308,7 +308,7 @@ const buildTools=()=>[
   droneTool('memory','What this drone remembers: position in the room, the last actions, saved places and things it saw with their position'),
   droneTool('face','Turn this drone to face a point of the room map (x,y from memory)',{x:{type:'integer'},y:{type:'integer'}},['x','y']),
   droneTool('mark','Save the current position under a name (ricorda questo punto come …)',{name:{type:'string'}},['name']),
-  droneTool('go_to','Fly to a table or object of the room plan by its name (table 1 … table 6), or to a remembered place: home (where it took off), last_landing, previous, a name saved with mark, or room coordinates x,y in cm from memory. The server plans a way around tables, pillars and walls and stops next to a table, not above it; a table with a mission pad is the exception: the drone goes over it and centres exactly on the pad. Drone must be flying',{place:{type:'string'},x:{type:'integer'},y:{type:'integer'}},[]),
+  droneTool('go_to','Fly to a table or object of the room plan by its name (table 1 … table 6; with centre true it goes over the middle of the table: al centro del tavolo, sopra il tavolo), or to a remembered place: home (where it took off), last_landing, previous, a name saved with mark, or room coordinates x,y in cm from memory. The server plans a way around tables, pillars and walls and stops next to a table, not above it; a table with a mission pad is the exception: the drone goes over it and centres exactly on the pad. Drone must be flying',{place:{type:'string'},x:{type:'integer'},y:{type:'integer'},centre:{type:'boolean',description:'Over the middle of the table instead of next to it'}},[]),
   droneTool('calibrate','Calibration test (fai la calibrazione, testa la precisione): the drone must be on the ground on its take-off spot; it takes off, flies right, left, right, forward, back, forward, comes back to the start with its telemetry and lands, then reports the error of each move. Takes about a minute',{sizeCm:{type:'integer',minimum:20,maximum:80,description:'Size of the moves, default 50'},photo:{type:'boolean',description:'Also check the position with a photo'}},[]),
   droneTool('localize','Check where the drone really is: one photo, Grok vision recognises the pillars and tables of the room plan in it, and the position is corrected (dove sei esattamente, controlla la posizione, ricalibra la posizione). Must be flying; it is also done by itself at the end of a go_to when the position is in doubt'),
   droneTool('photo','Take a photo with the camera of this drone (with the object boxes) and show it on the page (fai una foto, scatta)'),
@@ -724,6 +724,8 @@ function startLive(){
     let data; try { data=JSON.parse(e.data); } catch { return; }
     for(const d of data.drones||[]){
       const was=liveDrones[d.id]; liveDrones[d.id]=d;
+      // A new flight plan for a drone this person flies: Grok says it before the drone moves.
+      if(d.plan&&d.plan.at!==was?.plan?.at&&was&&drones.find(x=>x.id===d.id)?.pilot?.me&&Date.now()-d.plan.at<5000) notifyGrok(`${nameOf(d.id)} plan, before moving: ${d.plan.text} Say it in one short sentence, in the person's language, then say you are going.`,true);
       if(d.flying&&!was?.flying) trails[d.id]=[];
       if(d.flying){ const t=trails[d.id]||=[]; const q=t[t.length-1]; if(!q||Math.hypot(q[0]-d.pose.x,q[1]-d.pose.y)>=3){ t.push([d.pose.x,d.pose.y]); if(t.length>3000) t.shift(); } }
     }

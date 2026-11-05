@@ -72,10 +72,20 @@ function updatePanel(slot) {
   }
 
   const dwell = typeof slot.dwellMs === 'number' ? Math.min(100, Math.round((slot.dwellMs / 1000) * 100)) : 0;
+  const s = slot.sensors;
+  const sensorBits = s
+    ? [
+        s.headingDeg != null ? `compass ${Number(s.headingDeg).toFixed(0)}°` : null,
+        s.tiltDeg != null ? `tilt↓ ${Number(s.tiltDeg).toFixed(0)}°` : null,
+        s.depthM != null ? `depth~ ${Number(s.depthM).toFixed(1)} m` : 'depth —',
+        slot.sensorsLive ? 'live' : 'cached',
+      ].filter(Boolean).join(' · ')
+    : 'sensors off';
+  const est = Array.isArray(slot.personEstimates) ? slot.personEstimates.length : 0;
   panel.querySelector('[data-detail]').textContent =
     `ROI ${slot.roi ? 'set' : 'none'} · score ${
       slot.personScore == null ? '—' : Number(slot.personScore).toFixed(2)
-    } · dwell ${dwell}%${slot.lastError ? ` · ${slot.lastError}` : ''}`;
+    } · dwell ${dwell}% · ${sensorBits}${est ? ` · ${est} mapped` : ''}${slot.lastError ? ` · ${slot.lastError}` : ''}`;
 
   for (const btn of panel.querySelectorAll('[data-act]')) {
     const act = btn.getAttribute('data-act');

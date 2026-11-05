@@ -106,6 +106,79 @@ test('slot join + intrusion while disarmed + debounce', async () => {
   });
 });
 
+test('heartbeat stores compass/tilt sensors; people posts personEstimates', async () => {
+  await withServer(async (port) => {
+    const joined = await (
+      await fetch(`http://127.0.0.1:${port}/api/slots/2/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: '13 Pro Max' }),
+      })
+    ).json();
+    const token = joined.token;
+    assert.ok(token);
+
+    const hb = await (
+      await fetch(`http://127.0.0.1:${port}/api/slots/2/heartbeat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token,
+          watching: false,
+          armed: false,
+          lens: 'normal',
+          sensors: {
+            headingDeg: 214.4,
+            headingSource: 'webkit-compass',
+            tiltDeg: 38,
+            rollDeg: -2,
+            absolute: true,
+            depthM: null,
+            depthSource: null,
+            webxrSupported: false,
+            permission: 'granted',
+            at: Date.now(),
+          },
+        }),
+      })
+    ).json();
+    assert.equal(hb.ok, true);
+    assert.equal(hb.slot.sensors.headingDeg, 214.4);
+    assert.equal(hb.slot.sensors.tiltDeg, 38);
+    assert.equal(hb.slot.sensorsLive, true);
+
+    const people = await (
+      await fetch(`http://127.0.0.1:${port}/api/slots/2/people`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token,
+          boxes: [{ x: 0.4, y: 0.2, w: 0.15, h: 0.5, score: 0.8 }],
+          estimates: [
+            {
+              box: { x: 0.4, y: 0.2, w: 0.15, h: 0.5, score: 0.8 },
+              yawOffsetDeg: -6,
+              distanceM: 3.2,
+              distanceSource: 'bbox',
+              compassBearingDeg: 208,
+              tiltDeg: 38,
+            },
+          ],
+        }),
+      })
+    ).json();
+    assert.equal(people.ok, true);
+    assert.equal(people.estimates, 1);
+
+    const slots = await (await fetch(`http://127.0.0.1:${port}/api/slots`)).json();
+    const slot = slots.slots.find((s) => s.id === '2');
+    assert.equal(slot.people.length, 1);
+    assert.equal(slot.personEstimates.length, 1);
+    assert.equal(slot.personEstimates[0].distanceM, 3.2);
+    assert.equal(slot.sensors.headingSource, 'webkit-compass');
+  });
+});
+
 test('console page is served', async () => {
   await withServer(async (port) => {
     const res = await fetch(`http://127.0.0.1:${port}/console`);

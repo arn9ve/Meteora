@@ -1,9 +1,19 @@
 /**
  * Metoera red-zone phone client (one of up to 3 slots).
  * Local COCO-SSD person detection; Mac console via heartbeat + JPEG snapshots.
+ * Compass / tilt / depth-proxy via ./sensors.js (Safari-honest: no Apple LiDAR).
  */
+import {
+  enableSensors,
+  estimatePerson,
+  formatSensorsLine,
+  getSensors,
+  setVideoTrack,
+} from './sensors.js';
+
 const LENS_KEY = 'metoera-redzone-lens';
 const SENS_KEY = 'metoera-redzone-sens';
+const SENSORS_KEY = (id) => `metoera-redzone-sensors:${id}`;
 /** Default sensitivity 35 → confidence ~0.65 (stricter than old 0.45). */
 const DEFAULT_SENSITIVITY = 35;
 const DETECT_EVERY_MS = 280;
@@ -40,6 +50,9 @@ const btnTest = $('btnTest');
 const sensSlider = $('sensSlider');
 const sensValue = $('sensValue');
 const dwellStatus = $('dwellStatus');
+const btnSensors = $('btnSensors');
+const sensorBadge = $('sensorBadge');
+const sensorStatus = $('sensorStatus');
 const lensButtons = {
   wide: $('camWide'),
   normal: $('camNormal'),
@@ -425,6 +438,7 @@ async function startLens(lensId) {
   }
   if (opt?.zoom != null) await applyZoom(track, opt.zoom);
   video.srcObject = stream;
+  setVideoTrack(track || null);
   await ensureLiveVideoPlaying();
   activeLens = lenses[lensId] ? lensId : 'normal';
   activeDeviceId = settings.deviceId || opt?.deviceId || null;
@@ -438,6 +452,54 @@ async function startLens(lensId) {
   renderLensButtons();
   camStatus.textContent = `Live · ${finalOpt?.label || 'Back'} · ${activeLens}`;
 }
+
+function persistLocalSensors(snapshot) {
+  if (!slotId || !snapshot?.at) return;
+  try {
+    localStorage.setItem(SENSORS_KEY(slotId), JSON.stringify(snapshot));
+  } catch {
+    /* ignore quota */
+  }
+}
+
+function updateSensorUi() {
+  const s = getSensors();
+  if (sensorStatus) sensorStatus.textContent = formatSensorsLine(s);
+  if (!sensorBadge) return;
+  if (s.permission === 'granted' && (s.headingDeg != null || s.tiltDeg != null)) {
+    sensorBadge.textContent =
+      s.headingDeg != null ? `${Math.round(s.headingDeg)}°` : `tilt ${Math.round(s.tiltDeg)}°`;
+    sensorBadge.className = 'badge ready';
+  } else if (s.permission === 'denied') {
+    sensorBadge.textContent = 'Denied';
+    sensorBadge.className = 'badge off';
+  } else {
+    sensorBadge.textContent = 'Sensors off';
+    sensorBadge.className = 'badge idle';
+  }
+}
+
+async function onEnableSensors() {
+  if (btnSensors) btnSensors.disabled = true;
+  try {
+    const s = await enableSensors();
+    persistLocalSensors(s);
+    updateSensorUi();
+    setMessage(
+      s.permission === 'granted'
+        ? 'Sensors on — compass + tilt stream with heartbeats.'
+        : s.permission === 'denied'
+          ? 'Motion permission denied in Safari settings.'
+          : 'Orientation API unavailable in this browser.',
+      s.permission !== 'granted',
+    );
+  } finally {
+    if (btnSensors) btnSensors.disabled = false;
+  }
+}
+
+btnSensors?.addEventListener('click', () => void onEnableSensors());
+setInterval(updateSensorUi, 400);
 
 async function switchLens(lensId) {
   if (!lenses[lensId]) {
@@ -514,12 +576,21 @@ async function postPeople(people, vw, vh) {
   const now = Date.now();
   if (!slotToken || now - lastPeoplePost < 500) return;
   lastPeoplePost = now;
-  const boxes = people.slice(0, 12).map((p) => ({ x: p.bbox[0] / vw, y: p.bbox[1] / vh, w: p.bbox[2] / vw, h: p.bbox[3] / vh, score: p.score }));
+  // height/width — same convention as metoera-voice estimateFromPose (landscape 16:9 → 9/16).
+  const aspect = vw > 0 ? vh / vw : 9 / 16;
+  const boxes = people.slice(0, 12).map((p) => ({
+    x: p.bbox[0] / vw,
+    y: p.bbox[1] / vh,
+    w: p.bbox[2] / vw,
+    h: p.bbox[3] / vh,
+    score: p.score,
+  }));
+  const estimates = boxes.map((box) => ({ box, ...estimatePerson(box, activeLens, aspect) }));
   try {
     await fetch(`/api/slots/${slotId}/people`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Slot-Token': slotToken },
-      body: JSON.stringify({ token: slotToken, boxes }),
+      body: JSON.stringify({ token: slotToken, boxes, estimates, sensors: getSensors() }),
     });
   } catch {
     /* the next detection tries again */
@@ -708,6 +779,8 @@ async function applyRemoteCommands(commands) {
 
 async function heartbeat() {
   if (!slotId || !slotToken) return;
+  const sensors = getSensors();
+  if (sensors.permission === 'granted') persistLocalSensors(sensors);
   try {
     const response = await fetch(`/api/slots/${slotId}/heartbeat`, {
       method: 'POST',
@@ -727,6 +800,7 @@ async function heartbeat() {
         roi,
         personScore: lastPersonScore,
         error: lastError,
+        sensors,
       }),
     });
     const data = await response.json();
@@ -806,6 +880,7 @@ async function joinSlot(id) {
   setDetectUi('idle');
   setSensitivityUi(sensitivity);
   setLink(true, `P${id}`);
+  updateSensorUi();
 
   // Show shell first so <video> has layout, then open the live camera stream.
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));

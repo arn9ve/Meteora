@@ -265,6 +265,26 @@ body {
 
 .actions { margin-bottom: 0.7rem; }
 
+.sensors {
+  margin: 0 0 0.7rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.sensors-row {
+  align-items: center;
+  margin-bottom: 0.35rem;
+}
+
+.sensor-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
 .btn {
   appearance: none;
   border: 1px solid var(--line);

@@ -392,8 +392,10 @@ async function proxyStream(source: string, res: http.ServerResponse) {
 // Grok about and, with auto-send on, use to send the nearest drone to that person.
 const redzoneUrl = (process.env.REDZONE_URL ?? 'http://127.0.0.1:18791').replace(/\/$/, '');
 const redzonePhonePort = Number(process.env.REDZONE_PHONE_PORT ?? 18792);
-type RedzoneSlot = {id: string; name?: string; online: boolean; watching: boolean; armed: boolean; personScore?: number | null; lastIntrusionAt: number | null; hasPreview: boolean; joined: boolean; lens?: string; people?: {x: number; y: number; w: number; h: number; score: number | null}[]};
-type Person = {slot: string; x: number; y: number; score: number | null; approx?: boolean};
+type RedzoneSensors = {headingDeg?: number | null; tiltDeg?: number | null; depthM?: number | null; at?: number; permission?: string};
+type RedzoneEstimate = {box?: {x: number; y: number; w: number; h: number; score: number | null}; yawOffsetDeg?: number | null; distanceM?: number | null; distanceSource?: string | null; compassBearingDeg?: number | null; tiltDeg?: number | null};
+type RedzoneSlot = {id: string; name?: string; online: boolean; watching: boolean; armed: boolean; personScore?: number | null; lastIntrusionAt: number | null; hasPreview: boolean; joined: boolean; lens?: string; people?: {x: number; y: number; w: number; h: number; score: number | null}[]; sensors?: RedzoneSensors | null; sensorsLive?: boolean; personEstimates?: RedzoneEstimate[]};
+type Person = {slot: string; x: number; y: number; score: number | null; approx?: boolean; distanceSource?: string | null};
 type ZoneEvent = {id: string; zone: string; name: string; at: number; x: number; y: number; claimedBy: string | null};
 const redzone = {available:false, slots:[] as RedzoneSlot[], people:[] as Person[], events:[] as ZoneEvent[]};
 const zoneState = new Map<string, {occupied: boolean; lastEventAt: number}>();
@@ -408,18 +410,36 @@ async function pollRedzone() {
   } catch { redzone.available = false; redzone.slots = []; }
   // People on the plan from every connected phone: exact with a calibration (4 clicks), otherwise
   // estimated from where the phone stands and faces on the plan and how big the person looks.
+  // Live phone tilt (DeviceOrientation) overrides the Room panel tilt when fresh; distance from
+  // personEstimates (bbox / focus / WebXR proxy — Safari still has no Apple LiDAR) beats bbox-only.
   const people: Person[] = [];
   for (const slot of redzone.slots) {
     const cam = room.cameras[slot.id];
     if (!cam || !slot.online) continue;
     const placed = typeof cam.x === 'number' && typeof cam.y === 'number' && typeof cam.heading === 'number';
     if (!cam.h && !placed) continue;
+    const liveTilt = slot.sensorsLive && typeof slot.sensors?.tiltDeg === 'number' ? slot.sensors.tiltDeg : null;
+    const tilt = liveTilt ?? (typeof cam.tilt === 'number' ? cam.tilt : null);
+    const estimates = Array.isArray(slot.personEstimates) ? slot.personEstimates : [];
     for (const box of slot.people ?? []) {
       const [u, v] = feet(box);
-      const mounted = placed && typeof cam.z === 'number' && cam.z > 0 && typeof cam.tilt === 'number';
-      const p = cam.h ? project(cam.h, u, v) : (mounted ? floorFromMount({x:cam.x!, y:cam.y!, heading:cam.heading!, z:cam.z!, tilt:cam.tilt!}, box, slot.lens) : null) ?? estimateFromPose({x:cam.x!, y:cam.y!, heading:cam.heading!}, box, slot.lens);
+      const est = estimates.find((e) => e.box && Math.abs((e.box.x ?? -1) - box.x) < 1e-6 && Math.abs((e.box.y ?? -1) - box.y) < 1e-6) ?? estimates.find((e) => e.box && Math.hypot((e.box.x ?? 0) - box.x, (e.box.y ?? 0) - box.y) < 0.05);
+      let p: Point | null = null;
+      let distanceSource: string | null = null;
+      if (cam.h) {
+        p = project(cam.h, u, v);
+      } else if (placed && typeof est?.distanceM === 'number' && est.distanceM > 0) {
+        // Plan heading + bbox yaw offset (magnetic compass ≠ plan +x; do not substitute compass for heading).
+        const yaw = typeof est.yawOffsetDeg === 'number' ? est.yawOffsetDeg : 0;
+        const bearing = ((cam.heading! + yaw) * Math.PI) / 180;
+        p = [cam.x! + Math.cos(bearing) * est.distanceM, cam.y! + Math.sin(bearing) * est.distanceM];
+        distanceSource = est.distanceSource ?? 'estimate';
+      } else {
+        const mounted = placed && typeof cam.z === 'number' && cam.z > 0 && tilt != null;
+        p = (mounted ? floorFromMount({x:cam.x!, y:cam.y!, heading:cam.heading!, z:cam.z!, tilt}, box, slot.lens) : null) ?? estimateFromPose({x:cam.x!, y:cam.y!, heading:cam.heading!}, box, slot.lens);
+      }
       if (p && plan && p[0] > plan.bounds.min[0] - 2 && p[0] < plan.bounds.max[0] + 2 && p[1] > plan.bounds.min[1] - 2 && p[1] < plan.bounds.max[1] + 2) {
-        people.push({slot:slot.id, x:Math.round(p[0] * 100) / 100, y:Math.round(p[1] * 100) / 100, score:box.score, ...(cam.h ? {} : {approx:true})});
+        people.push({slot:slot.id, x:Math.round(p[0] * 100) / 100, y:Math.round(p[1] * 100) / 100, score:box.score, ...(cam.h ? {} : {approx:true}), ...(distanceSource ? {distanceSource} : {})});
       }
     }
   }
@@ -512,7 +532,7 @@ async function redzoneView() {
     available:redzone.available, console:`${redzoneUrl}/console`,
     slots:await Promise.all(slotIds.map(async (id) => {
       const s = redzone.slots.find((x) => x.id === id);
-      return {...(s ?? {id, online:false}), people:undefined, peopleCount:s?.people?.length ?? 0, calibrated:Boolean(room.cameras[id]?.h), link:await redzonePhoneLink(id)};
+      return {...(s ?? {id, online:false}), people:undefined, personEstimates:undefined, peopleCount:s?.people?.length ?? 0, calibrated:Boolean(room.cameras[id]?.h), link:await redzonePhoneLink(id), sensors:s?.sensors ?? null, sensorsLive:Boolean(s?.sensorsLive)};
     })),
     people:redzone.people,
     events:redzone.events.slice(-10).map((e) => ({...e, claimed:e.claimedBy !== null})),
